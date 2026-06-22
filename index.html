@@ -83,24 +83,20 @@ async function sbFetch(method, table, body, qs) {
     "Authorization": "Bearer " + SUPABASE_KEY,
     "Content-Type": "application/json"
   };
-  if (method === "POST") {
-    headers["Prefer"] = "resolution=merge-duplicates,return=minimal";
-  }
+  if (method === "POST") headers["Prefer"] = "resolution=merge-duplicates,return=minimal";
   const res = await fetch(url, {
-    method,
-    headers,
+    method, headers,
     body: body != null ? JSON.stringify(body) : undefined
   });
   if (!res.ok) {
     const msg = await res.text();
-    throw new Error("Supabase " + method + " " + table + ": " + msg);
+    throw new Error("Supabase " + method + " " + table + " (" + res.status + "): " + msg);
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 }
 
 window.storage = {
-
   async get(key, shared) {
     if (key.startsWith("sinergy_est_")) {
       const eid = key.replace("sinergy_est_", "");
@@ -120,26 +116,13 @@ window.storage = {
       try { tasks = JSON.parse(value); } catch(e) {}
       if (!Array.isArray(tasks)) tasks = [];
 
-      // Busca IDs existentes desta esteira
-      const existing = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "task_id" });
-      const existingIds = new Set((existing || []).map(r => r.task_id));
-      const newIds = new Set(tasks.map(t => t.id));
-
-      // Remove tarefas deletadas
-      for (const tid of existingIds) {
-        if (!newIds.has(tid)) {
-          await sbFetch("DELETE", "tasks", null, { task_id: "eq." + tid });
-        }
-      }
-
-      // Upsert tarefas atuais
+      // Apaga TODAS as tarefas desta esteira e regrava as atuais (operação atômica simples)
+      await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
       if (tasks.length > 0) {
         await sbFetch("POST", "tasks", tasks.map(t => ({ task_id: t.id, eid, data: t })));
       }
       return { key, value, shared };
     }
-
-    // Chave-valor geral
     await sbFetch("POST", "kv", { id: key, value: String(value) });
     return { key, value, shared };
   },
@@ -4060,7 +4043,7 @@ function App() {
             return _context16.a(2);
         }
       }, _callee16, null, [[1, 3]]);
-    })), 280);
+    })), 50);
   }, []);
   var mutate = useCallback(function (nt) {
     var prev = tasksRef.current;
@@ -4132,7 +4115,7 @@ function App() {
     return _regenerator().w(function (_context19) {
       while (1) switch (_context19.p = _context19.n) {
         case 0:
-          if (!(lastWriteRef.current && Date.now() - lastWriteRef.current < 3500)) {
+          if (!(lastWriteRef.current && Date.now() - lastWriteRef.current < 8000)) {
             _context19.n = 1;
             break;
           }
@@ -4317,7 +4300,7 @@ function App() {
           _context19.p = 33;
           _t1 = _context19.v;
         case 34:
-          if (!(lastWriteRef.current && Date.now() - lastWriteRef.current < 3500)) {
+          if (!(lastWriteRef.current && Date.now() - lastWriteRef.current < 8000)) {
             _context19.n = 35;
             break;
           }
