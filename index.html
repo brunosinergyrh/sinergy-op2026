@@ -72,9 +72,8 @@ var lucide = (function() {
 <body>
 <div id="root"></div>
 <script>
-// ── SUPABASE STORAGE ──
 const SUPABASE_URL = "https://slmbgwpnegzvnxkllorh.supabase.co";
-const SUPABASE_KEY = "sb_publishable_Vcjh6LVq01H6wrY-tM3tdQ_zHpn9N6A";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbWJnd3BuZWd6dm54a2xsb3JoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNTMxNDMsImV4cCI6MjA5NzcyOTE0M30.Fs_Th99bpkfAlHEgxPJiL26XGYtIb-R1H-XQ6Qx5tqU";
 
 async function sbFetch(method, table, body, qs) {
   let url = SUPABASE_URL + "/rest/v1/" + table;
@@ -84,7 +83,7 @@ async function sbFetch(method, table, body, qs) {
     "Authorization": "Bearer " + SUPABASE_KEY,
     "Content-Type": "application/json"
   };
-  if (method === "POST" || method === "PUT") {
+  if (method === "POST") {
     headers["Prefer"] = "resolution=merge-duplicates,return=minimal";
   }
   const res = await fetch(url, {
@@ -100,23 +99,16 @@ async function sbFetch(method, table, body, qs) {
   return text ? JSON.parse(text) : null;
 }
 
-// Cada "key" do app vira uma linha na tabela `kv` com id=key, value=texto
-// Tabela kv: id text primary key, value text not null
-// Tasks ficam na tabela `tasks`: task_id text pk, eid text, data jsonb
-
 window.storage = {
 
   async get(key, shared) {
-    // Tarefas por esteira
     if (key.startsWith("sinergy_est_")) {
       const eid = key.replace("sinergy_est_", "");
       const rows = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "data" });
       if (!rows || rows.length === 0) throw new Error("not found: " + key);
-      const arr = rows.map(r => r.data);
-      return { key, value: JSON.stringify(arr), shared };
+      return { key, value: JSON.stringify(rows.map(r => r.data)), shared };
     }
-    // Lixeira e demais: tabela kv
-    const rows = await sbFetch("GET", "kv", null, { id: "eq." + encodeURIComponent(key), select: "value" });
+    const rows = await sbFetch("GET", "kv", null, { id: "eq." + key, select: "value" });
     if (!rows || rows.length === 0) throw new Error("not found: " + key);
     return { key, value: rows[0].value, shared };
   },
@@ -128,26 +120,26 @@ window.storage = {
       try { tasks = JSON.parse(value); } catch(e) {}
       if (!Array.isArray(tasks)) tasks = [];
 
-      // Busca IDs existentes para esta esteira
+      // Busca IDs existentes desta esteira
       const existing = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "task_id" });
       const existingIds = new Set((existing || []).map(r => r.task_id));
       const newIds = new Set(tasks.map(t => t.id));
 
-      // Deleta removidos
-      const toDelete = [...existingIds].filter(id => !newIds.has(id));
-      for (const tid of toDelete) {
-        await sbFetch("DELETE", "tasks", null, { task_id: "eq." + tid });
+      // Remove tarefas deletadas
+      for (const tid of existingIds) {
+        if (!newIds.has(tid)) {
+          await sbFetch("DELETE", "tasks", null, { task_id: "eq." + tid });
+        }
       }
 
-      // Upsert todos os presentes
+      // Upsert tarefas atuais
       if (tasks.length > 0) {
-        const rows = tasks.map(t => ({ task_id: t.id, eid, data: t }));
-        await sbFetch("POST", "tasks", rows);
+        await sbFetch("POST", "tasks", tasks.map(t => ({ task_id: t.id, eid, data: t })));
       }
       return { key, value, shared };
     }
 
-    // Demais chaves: upsert na tabela kv
+    // Chave-valor geral
     await sbFetch("POST", "kv", { id: key, value: String(value) });
     return { key, value, shared };
   },
@@ -157,7 +149,7 @@ window.storage = {
       const eid = key.replace("sinergy_est_", "");
       await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
     } else {
-      await sbFetch("DELETE", "kv", null, { id: "eq." + encodeURIComponent(key) });
+      await sbFetch("DELETE", "kv", null, { id: "eq." + key });
     }
     return { key, deleted: true, shared };
   },
