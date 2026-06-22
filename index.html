@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SinergyRH – Operação 2026</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/lucide/0.263.1/umd/lucide.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:'Inter',system-ui,sans-serif;}
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+// Storage polyfill for standalone use (in-memory)
+window.storage = (() => {
+  const store = {};
+  const sharedStore = {};
+  return {
+    async get(key, shared=false) {
+      const s = shared ? sharedStore : store;
+      if (key in s) return { key, value: s[key], shared };
+      throw new Error('Key not found: ' + key);
+    },
+    async set(key, value, shared=false) {
+      const s = shared ? sharedStore : store;
+      s[key] = value;
+      return { key, value, shared };
+    },
+    async delete(key, shared=false) {
+      const s = shared ? sharedStore : store;
+      delete s[key];
+      return { key, deleted: true, shared };
+    },
+    async list(prefix='', shared=false) {
+      const s = shared ? sharedStore : store;
+      const keys = Object.keys(s).filter(k => k.startsWith(prefix));
+      return { keys, prefix, shared };
+    }
+  };
+})();
+
+const {useState,useEffect,useCallback,useRef,memo} = React;
+const {Lock,Trash2,Pencil,X,Check,ChevronUp,ChevronDown,Upload,Download,Copy,Users,ShieldCheck,Layers,ScrollText,Sun,Moon,Filter,Plus,LogOut,Inbox,RotateCcw,Briefcase,AlertTriangle} = lucide;
+
+/* ── CONSTANTS ── */
+const ESTEIRAS_DEFAULT=[{id:"ferias",label:"Ferias",color:"#6366f1",order:0},{id:"rescisao",label:"Rescisao",color:"#f43f5e",order:1},{id:"folha",label:"Folha",color:"#0ea5e9",order:2},{id:"encargos",label:"Encargos",color:"#f97316",order:3},{id:"beneficios",label:"Beneficios",color:"#10b981",order:4},{id:"auditoria",label:"Auditoria",color:"#a855f7",order:5},{id:"keyuser",label:"Key User",color:"#eab308",order:6},{id:"atendimento",label:"Atendimento",color:"#14b8a6",order:7}];
+const PALETTE=["#6366f1","#f43f5e","#0ea5e9","#f97316","#10b981","#a855f7","#eab308","#14b8a6","#ec4899","#06b6d4","#84cc16","#f59e0b"];
+const PRI={alta:{label:"Alta",color:"#ef4444",bg:"rgba(239,68,68,0.12)"},media:{label:"Media",color:"#f59e0b",bg:"rgba(245,158,11,0.12)"},baixa:{label:"Baixa",color:"#22c55e",bg:"rgba(34,197,94,0.12)"}};
+const MONTHS=["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+const TRASH_DAYS=10,TRASH_MS=TRASH_DAYS*86400*1000;
+const TASKS_PREFIX="sinergy_est_";
+const TRASH_KEY="sinergy_trash_v1";
+const LEGACY_TASKS_KEY="sinergy_op2026_v2";
+const USERS_KEY="sinergy_auth_v1",LOG_KEY="sinergy_log_v1",EST_KEY="sinergy_esteiras_v1",GROUPS_KEY="sinergy_groups_v1",PREFS_KEY="sinergy_prefs_v1";
+const PERM_KEYS=["create_task","edit_task","edit_own","complete_task","delete_task","bulk_ops","import","export","view_log","export_log","manage_users","manage_groups","manage_esteiras","view_trash","restore_trash","view_workspace"];
+const ALL_P=Object.fromEntries(PERM_KEYS.map(k=>[k,true]));
+const NO_P=Object.fromEntries(PERM_KEYS.map(k=>[k,false]));
+const DEFAULT_GROUPS=[
+  {id:"admin",name:"Administrador / Diretor",locked:true,fullAccess:true,perms:{...ALL_P},esteiras:"all"},
+  {id:"gerente",name:"Gerente",locked:false,isGerente:true,perms:{...NO_P,create_task:true,edit_task:true,edit_own:true,complete_task:true,delete_task:true,bulk_ops:true,import:true,export:true,view_log:true,export_log:true,view_trash:true,restore_trash:true,view_workspace:true},esteiras:"all"},
+  {id:"coord",name:"Coordenador",locked:false,perms:{...NO_P,create_task:true,edit_task:true,edit_own:true,complete_task:true,bulk_ops:true,import:true,export:true,view_log:true,export_log:true,view_workspace:true},esteiras:"all"},
+  {id:"analista",name:"Analista",locked:true,perms:{...NO_P,create_task:true,edit_own:true,complete_task:true,view_workspace:true},esteiras:"all"},
+];
+const DEFAULT_USERS=[{id:"bruno_admin",name:"Bruno",pin:"1234",role:"admin",groupId:"admin",gerenteId:"all"}];
+const PERM_SECTIONS=[
+  {s:"Tarefas",items:[["create_task","Criar tarefas"],["edit_task","Editar qualquer tarefa"],["edit_own","Editar proprias tarefas"],["complete_task","Concluir tarefas"],["delete_task","Excluir tarefas"],["bulk_ops","Operacoes em lote"]]},
+  {s:"Dados",items:[["import","Importar XLSX"],["export","Exportar XLSX"],["view_log","Visualizar log"],["export_log","Exportar log"]]},
+  {s:"Admin",items:[["manage_users","Gerenciar usuarios"],["manage_groups","Gerenciar grupos"],["manage_esteiras","Gerenciar esteiras"],["view_trash","Ver lixeira"],["restore_trash","Restaurar lixeira"]]},
+  {s:"Geral",items:[["view_workspace","Minha Area"]]},
+];
+const STATUS_GROUPS={atraso:{label:"Em Atraso",color:"#ef4444",order:0},andamento:{label:"Em Andamento",color:"#f97316",order:1},planejada:{label:"Planejadas",color:"#6366f1",order:2},feito:{label:"Concluidas",color:"#22c55e",order:3}};
+const ACTION_LABELS={created:"Criou tarefa",edited:"Editou tarefa",completed:"Concluiu tarefa",uncompleted:"Reabriu tarefa",deleted:"Excluiu tarefa",restored:"Restaurou tarefa",bulkDeleted:"Excluiu em lote",bulkEdited:"Editou em lote",imported:"Importou tarefas",exported:"Exportou tarefas",userAdded:"Cadastrou usuario",userRemoved:"Removeu usuario",userEdited:"Editou usuario",pinReset:"Resetou PIN",login:"Login",esteiraAdded:"Criou esteira",esteiraEdited:"Editou esteira",esteiraRemoved:"Removeu esteira",groupAdded:"Criou grupo",groupEdited:"Editou grupo",groupRemoved:"Removeu grupo"};
+const SORT_OPTIONS=[{field:"deadline",dir:"asc",label:"Prazo (proximo)"},{field:"deadline",dir:"desc",label:"Prazo (distante)"},{field:"priority",dir:"asc",label:"Prioridade (Alta a Baixa)"},{field:"priority",dir:"desc",label:"Prioridade (Baixa a Alta)"},{field:"title",dir:"asc",label:"Titulo A-Z"},{field:"title",dir:"desc",label:"Titulo Z-A"},{field:"responsible",dir:"asc",label:"Analista A-Z"},{field:"coordenador",dir:"asc",label:"Coordenador A-Z"},{field:"gerente",dir:"asc",label:"Gerente A-Z"},{field:"cliente",dir:"asc",label:"Cliente A-Z"},{field:"createdAt",dir:"desc",label:"Criacao (recente)"},{field:"createdAt",dir:"asc",label:"Criacao (antiga)"},{field:"mes",dir:"asc",label:"Mes (antigo)"},{field:"mes",dir:"desc",label:"Mes (recente)"}];
+const BULK_FIELDS=[{key:"esteira",label:"Esteira",type:"esteira"},{key:"responsible",label:"Analista",type:"text"},{key:"coordenador",label:"Coordenador",type:"text"},{key:"gerente",label:"Gerente",type:"gerente"},{key:"cliente",label:"Cliente",type:"text"},{key:"processo",label:"Processo",type:"text"},{key:"deadline",label:"Prazo",type:"date"},{key:"priority",label:"Prioridade",type:"priority"},{key:"mes",label:"Mes",type:"month"}];
+const COL_FIELDS=[{key:"category",label:"Categoria",required:true,kws:["categ","esteira","area","setor","tipo","fluxo"]},{key:"title",label:"Tarefa",required:true,kws:["tarefa","atividade","task","descri","titulo","nome","item"]},{key:"responsible",label:"Analista",required:false,kws:["responsav","analista","analyst","owner","pessoa"]},{key:"coordenador",label:"Coordenador",required:false,kws:["coord","supervisor"]},{key:"gerente",label:"Gerente",required:false,kws:["gerente","gestor","lotac","manager"]},{key:"deadline",label:"Prazo",required:false,kws:["prazo","deadline","data","vencim","entrega","limite"]},{key:"priority",label:"Prioridade",required:false,kws:["prioridade","priority","urgenc","nivel"]},{key:"cliente",label:"Cliente",required:false,kws:["cliente","client","empresa","company"]},{key:"processo",label:"Processo",required:false,kws:["processo","process","workflow"]},{key:"mes",label:"Mes",required:false,kws:["mes","month","competencia","periodo","referencia"]}];
+const INIT_F={status:"all",priority:"all",responsible:"all",coordenador:"all",gerente:"all",cliente:"all",processo:"all",mes:"all"};
+const DARK={bg:"linear-gradient(135deg,#0d0d1a,#12101f,#0a1525)",surface:"#13131f",s2:"#0f0f1e",formBg:"rgba(255,255,255,0.03)",card:"rgba(255,255,255,0.04)",cardB:"rgba(255,255,255,0.08)",cardD:"rgba(255,255,255,0.012)",cardDB:"rgba(255,255,255,0.04)",panelBg:"rgba(255,255,255,0.025)",panelB:"rgba(255,255,255,0.09)",tabA:"rgba(255,255,255,0.07)",text:"#f1f5f9",textS:"#94a3b8",textM:"#64748b",textD:"#475569",border:"rgba(255,255,255,0.08)",borderL:"rgba(255,255,255,0.06)",inpBg:"rgba(255,255,255,0.05)",inpB:"rgba(255,255,255,0.1)",selBg:"#0f0f1e",progBg:"rgba(255,255,255,0.06)",ov:"rgba(0,0,0,0.82)",cs:"dark"};
+const LIGHT={bg:"linear-gradient(135deg,#f0f4ff,#f8fafc,#eef2ff)",surface:"#ffffff",s2:"#f1f5f9",formBg:"rgba(0,0,0,0.02)",card:"#ffffff",cardB:"rgba(0,0,0,0.1)",cardD:"#f8fafc",cardDB:"rgba(0,0,0,0.05)",panelBg:"rgba(0,0,0,0.025)",panelB:"rgba(0,0,0,0.08)",tabA:"rgba(0,0,0,0.06)",text:"#0f172a",textS:"#334155",textM:"#64748b",textD:"#94a3b8",border:"rgba(0,0,0,0.08)",borderL:"rgba(0,0,0,0.06)",inpBg:"rgba(0,0,0,0.04)",inpB:"rgba(0,0,0,0.12)",selBg:"#f8fafc",progBg:"rgba(0,0,0,0.07)",ov:"rgba(0,0,0,0.55)",cs:"light"};
+
+/* ── HELPERS ── */
+const norm=s=>s?.toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").trim()??"";
+const distinct=arr=>[...new Set(arr.filter(x=>x&&String(x).trim()).map(x=>String(x).trim()))].sort((a,b)=>a.localeCompare(b));
+const respArr=t=>Array.isArray(t.responsibles)?t.responsibles.filter(Boolean):(t.responsible?[t.responsible]:[]);
+const respStr=t=>respArr(t).join(", ");
+let _seq=0;
+const genCode=()=>{_seq=(_seq+1)%46656;return"T-"+Date.now().toString(36).toUpperCase().slice(-5)+"-"+(_seq.toString(36).toUpperCase().padStart(3,"0"))+Math.random().toString(36).slice(2,4).toUpperCase();};
+const migrateTask=t=>{let n={...t};if(!n.code)n.code=genCode();if(!Array.isArray(n.responsibles))n.responsibles=t.responsible?[t.responsible]:[];return n;};
+const groupOf=(u,groups)=>groups.find(g=>g.id===u?.groupId);
+const isGerenteUser=(u,groups)=>!!groupOf(u,groups)?.isGerente;
+const isCoordUser=(u,groups)=>{const g=groupOf(u,groups);return g&&!g.fullAccess&&!g.isGerente&&(g.id==="coord"||norm(g.name).includes("coord"));};
+const userScope=(u,groups)=>{if(!u)return null;const g=groupOf(u,groups);if(g?.fullAccess)return"all";if(g?.isGerente)return u.id;return u.gerenteId||"__none__";};
+const mapEsteira=(val,ests)=>{const n=norm(val);if(!n||!ests?.length)return null;for(const e of ests){if(norm(e.label)===n)return e.id;}for(const e of ests){const ln=norm(e.label);if(ln&&(n.includes(ln)||ln.includes(n)))return e.id;}if(n.includes("encargo")||n.includes("contab")){const f=ests.find(e=>norm(e.label).includes("folha")||norm(e.label).includes("encargo"));if(f)return f.id;}return null;};
+const mapPri=val=>{const n=norm(val??"");if(n.includes("alt")||n==="1")return"alta";if(n.includes("baix")||n==="3")return"baixa";return"media";};
+const splitNames=val=>String(val||"").split(/[,;\/]+/).map(s=>s.trim()).filter(Boolean);
+const detectCol=(hdrs,kws)=>{for(const h of hdrs){const n=norm(h);if(kws.some(k=>n.includes(k)))return h;}return"";};
+const toDateStr=val=>{if(!val)return"";if(val instanceof Date){if(isNaN(val))return"";return`${val.getFullYear()}-${String(val.getMonth()+1).padStart(2,"0")}-${String(val.getDate()).padStart(2,"0")}`;}if(typeof val==="number"){const d=new Date(Math.round((val-25569)*86400*1000));return isNaN(d)?"":`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}const s=String(val).trim();const m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);if(m)return`${m[3]}-${m[2].padStart(2,"0")}-${m[1].padStart(2,"0")}`;const d=new Date(s);return isNaN(d)?"":d.toISOString().slice(0,10);};
+const toMonthStr=val=>{if(!val)return"";const s=String(val).trim();if(/^\d{4}-\d{2}$/.test(s))return s;const m1=s.match(/^(\d{1,2})\/(\d{4})$/);if(m1)return`${m1[2]}-${m1[1].padStart(2,"0")}`;const mn={jan:"01",fev:"02",mar:"03",abr:"04",mai:"05",jun:"06",jul:"07",ago:"08",set:"09",out:"10",nov:"11",dez:"12"};const m2=s.toLowerCase().match(/^([a-z]+)[\/\-](\d{4})$/);if(m2&&mn[m2[1]])return`${m2[2]}-${mn[m2[1]]}`;return s;};
+const fmtDate=d=>d?new Date(d+"T12:00:00").toLocaleDateString("pt-BR"):null;
+const fmtMonth=m=>{if(!m)return null;const[y,mo]=m.split("-");if(!y||!mo)return m;return`${MONTHS[parseInt(mo)-1]}/${y}`;};
+const fmtDT=iso=>{if(!iso)return"";const d=new Date(iso);return d.toLocaleDateString("pt-BR")+" "+d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});};
+const getStatusGroup=t=>{if(t.status==="concluida")return"feito";if(!t.deadline)return"planejada";const today=new Date();today.setHours(0,0,0,0);const diff=Math.floor((new Date(t.deadline+"T00:00:00")-today)/(86400*1000));if(diff<0)return"atraso";if(diff<=1)return"andamento";return"planejada";};
+const daysLeft=da=>da?Math.max(0,Math.ceil((TRASH_MS-(Date.now()-new Date(da).getTime()))/(86400*1000))):TRASH_DAYS;
+const makeSortFn=(field,dir)=>{const m=dir==="asc"?1:-1;const pO={alta:0,media:1,baixa:2};return(a,b)=>{if(field==="priority")return(pO[a.priority]-pO[b.priority])*m;const av=(a[field]??"").toString().toLowerCase();const bv=(b[field]??"").toString().toLowerCase();if(av===bv)return 0;if(!av)return 1;if(!bv)return-1;return(av<bv?-1:1)*m;};};
+const hasPerm=(session,groups,perm)=>{if(!session)return false;const g=groups.find(x=>x.id===session.groupId);return g?g.perms[perm]===true:false;};
+const visibleEsts=(session,groups,ests)=>{if(!session)return[];const g=groups.find(x=>x.id===session.groupId);if(!g||g.esteiras==="all")return ests;return Array.isArray(g.esteiras)?ests.filter(e=>g.esteiras.includes(e.id)):ests;};
+
+/* ── STYLE FACTORIES ── */
+const mkI=T=>({padding:"8px 12px",borderRadius:8,border:`1px solid ${T.inpB}`,background:T.inpBg,color:T.text,fontSize:13,outline:"none",width:"100%",boxSizing:"border-box",fontFamily:"inherit"});
+const mkB=(color,ghost,T)=>ghost?{padding:"7px 15px",borderRadius:8,border:`1px solid ${T.border}`,background:"transparent",color:T.textM,fontSize:12.5,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6}:{padding:"7px 15px",borderRadius:8,border:`1px solid ${color||"transparent"}`,background:color||"transparent",color:"#fff",fontSize:12.5,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6};
+const ICON_BTN={background:"transparent",border:"none",cursor:"pointer",display:"inline-flex",alignItems:"center",justifyContent:"center",lineHeight:0};
+
+/* ── SHARED ── */
+function OVL({zi,ov,children}){return(<div style={{position:"absolute",inset:0,background:ov,zIndex:zi,display:"flex",alignItems:"flex-start",justifyContent:"center",padding:"36px 24px",overflowY:"auto"}}>{children}</div>);}
+function CloseBtn({onClick,T}){return(<button onClick={onClick} style={{...ICON_BTN,color:T.textM,padding:6,borderRadius:8}}><X size={18}/></button>);}
+function ModalHead({title,subtitle,onClose,T}){return(<div style={{padding:"18px 24px",borderBottom:`1px solid ${T.borderL}`,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><div style={{fontSize:15,fontWeight:700,color:T.text}}>{title}</div>{subtitle&&<div style={{fontSize:11,color:T.textM,marginTop:2}}>{subtitle}</div>}</div><CloseBtn onClick={onClose} T={T}/></div>);}
+
+/* ── AutoInput ── */
+const AutoInput=memo(function AutoInput({value,onChange,suggestions,placeholder,disabled,T,onEnter}){
+  const[open,setOpen]=useState(false);const v=value||"";
+  const list=(suggestions||[]).filter(s=>s&&norm(s).includes(norm(v))&&norm(s)!==norm(v)).slice(0,8);
+  const I=mkI(T);
+  return(<div style={{position:"relative"}}><input value={v} disabled={disabled} onChange={e=>{onChange(e.target.value);setOpen(true);}} onFocus={()=>setOpen(true)} onBlur={()=>setTimeout(()=>setOpen(false),130)} placeholder={placeholder} style={{...I,opacity:disabled?0.6:1}} onKeyDown={e=>{if(e.key==="Enter"){setOpen(false);onEnter&&onEnter();}if(e.key==="Escape")setOpen(false);}}/>{open&&!disabled&&list.length>0&&(<div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,zIndex:40,background:T.surface,border:`1px solid ${T.inpB}`,borderRadius:8,boxShadow:"0 10px 28px rgba(0,0,0,0.3)",maxHeight:190,overflowY:"auto"}}>{list.map((s,i)=>(<div key={i} onMouseDown={()=>{onChange(s);setOpen(false);}} style={{padding:"7px 11px",fontSize:13,color:T.text,cursor:"pointer",borderBottom:i<list.length-1?`1px solid ${T.borderL}`:"none"}}>{s}</div>))}</div>)}</div>);
+});
+
+/* ── MultiAutoInput ── */
+const MultiAutoInput=memo(function MultiAutoInput({values,onChange,suggestions,placeholder,T}){
+  const[txt,setTxt]=useState("");const[open,setOpen]=useState(false);const vals=values||[];
+  const list=(suggestions||[]).filter(s=>s&&!vals.some(v=>norm(v)===norm(s))&&norm(s).includes(norm(txt))).slice(0,8);
+  const add=v=>{const n=(v||"").trim();if(!n)return;if(!vals.some(x=>norm(x)===norm(n)))onChange([...vals,n]);setTxt("");setOpen(false);};
+  const remove=i=>onChange(vals.filter((_,j)=>j!==i));
+  const I=mkI(T);
+  return(<div style={{position:"relative"}}><div style={{...I,padding:"4px 6px",minHeight:34,display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>{vals.map((v,i)=>(<span key={i} style={{display:"inline-flex",alignItems:"center",gap:4,background:"rgba(99,102,241,0.15)",color:"#818cf8",borderRadius:6,padding:"2px 7px",fontSize:12,fontWeight:500}}>{v}<X size={11} style={{cursor:"pointer"}} onClick={()=>remove(i)}/></span>))}<input value={txt} onChange={e=>{setTxt(e.target.value);setOpen(true);}} onFocus={()=>setOpen(true)} onBlur={()=>setTimeout(()=>setOpen(false),130)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();add(txt);}if(e.key==="Backspace"&&!txt&&vals.length)remove(vals.length-1);}} placeholder={vals.length?"":placeholder} style={{flex:1,minWidth:70,border:"none",outline:"none",background:"transparent",color:T.text,fontSize:13,fontFamily:"inherit",padding:"3px 2px"}}/></div>{open&&list.length>0&&(<div style={{position:"absolute",top:"calc(100% + 4px)",left:0,right:0,zIndex:40,background:T.surface,border:`1px solid ${T.inpB}`,borderRadius:8,boxShadow:"0 10px 28px rgba(0,0,0,0.3)",maxHeight:190,overflowY:"auto"}}>{list.map((s,i)=>(<div key={i} onMouseDown={()=>add(s)} style={{padding:"7px 11px",fontSize:13,color:T.text,cursor:"pointer",borderBottom:i<list.length-1?`1px solid ${T.borderL}`:"none"}}>{s}</div>))}</div>)}</div>);
+});
+
+/* ── AdminPanel ── */
+const AdminPanel=memo(function AdminPanel({users,groups,session,onSaveUsers,onLog,onClose,T}){
+  const[nu,setNu]=useState({name:"",pin:"",groupId:"analista",gerenteId:""});
+  const[rId,setRId]=useState(null);const[rPin,setRPin]=useState("");
+  const[eId,setEId]=useState(null);const[eName,setEName]=useState("");const[eGrp,setEGrp]=useState("");const[eLot,setELot]=useState("");
+  const I=mkI(T);
+  const gerentes=users.filter(u=>isGerenteUser(u,groups));
+  const lotNeeded=gid=>{const g=groups.find(x=>x.id===gid);return g&&!g.fullAccess&&!g.isGerente;};
+  const lotLabel=u=>{const g=groups.find(x=>x.id===u.groupId);if(g?.fullAccess)return"Todos";if(g?.isGerente)return"Propria lotacao";const ge=users.find(x=>x.id===u.gerenteId);return ge?ge.name:"-";};
+  const finalGId=(gid,lot,uid)=>{const g=groups.find(x=>x.id===gid);if(g?.fullAccess)return"all";if(g?.isGerente)return uid;return lot;};
+  const addUser=async()=>{if(!nu.name.trim()||nu.pin.length<4)return;if(lotNeeded(nu.groupId)&&!nu.gerenteId)return;if(users.find(u=>norm(u.name)===norm(nu.name)))return;const id=Date.now().toString();const u={id,name:nu.name.trim(),pin:nu.pin,role:nu.groupId==="admin"?"admin":"user",groupId:nu.groupId,gerenteId:finalGId(nu.groupId,nu.gerenteId,id)};await onSaveUsers([...users,u]);onLog("userAdded",`${u.name}`);setNu({name:"",pin:"",groupId:"analista",gerenteId:""}); };
+  const removeUser=async u=>{if(u.id===session.id)return;if(u.groupId==="admin"&&users.filter(x=>x.groupId==="admin").length<=1)return;await onSaveUsers(users.filter(x=>x.id!==u.id));onLog("userRemoved",u.name);};
+  const doReset=async()=>{if(rPin.length<4)return;const u=users.find(x=>x.id===rId);await onSaveUsers(users.map(x=>x.id===rId?{...x,pin:rPin}:x));onLog("pinReset",u?.name||"");setRId(null);setRPin("");};
+  const saveEdit=async u=>{if(!eName.trim())return;if(users.find(x=>x.id!==u.id&&norm(x.name)===norm(eName)))return;if(u.groupId==="admin"&&eGrp!=="admin"&&users.filter(x=>x.groupId==="admin").length<=1){setEId(null);return;}if(lotNeeded(eGrp)&&!eLot)return;const ng=finalGId(eGrp,eLot,u.id);await onSaveUsers(users.map(x=>x.id===u.id?{...x,name:eName.trim(),groupId:eGrp,role:eGrp==="admin"?"admin":"user",gerenteId:ng}:x));onLog("userEdited",`${u.name}${norm(u.name)!==norm(eName)?" -> "+eName:""}`);setEId(null);};
+  const startEdit=u=>{setEId(u.id);setEName(u.name);setEGrp(u.groupId);setELot(lotNeeded(u.groupId)?u.gerenteId||"":"");};
+  return(<div style={{width:"100%",maxWidth:620,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+    <ModalHead title="Gerenciar Acessos" subtitle={`${users.length} usuario${users.length!==1?"s":""} · ${gerentes.length} gerente(s)`} onClose={onClose} T={T}/>
+    <div style={{padding:24}}>
+      <div style={{marginBottom:20}}>{users.map(u=>{const g=groups.find(x=>x.id===u.groupId);const isAd=g?.fullAccess,isGer=g?.isGerente;const accent=isAd?"#a855f7":isGer?"#eab308":"#818cf8";const lastAd=u.groupId==="admin"&&users.filter(x=>x.groupId==="admin").length<=1;const editing=eId===u.id;return(<div key={u.id} style={{display:"flex",alignItems:editing?"flex-start":"center",gap:10,padding:"10px 12px",borderRadius:8,border:`1px solid ${T.borderL}`,background:T.panelBg,marginBottom:6,flexWrap:"wrap"}}><div style={{width:34,height:34,borderRadius:"50%",background:accent+"22",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:700,color:accent,flexShrink:0}}>{u.name.charAt(0).toUpperCase()}</div><div style={{flex:1,minWidth:160}}>{editing?(<div style={{display:"flex",gap:6,flexWrap:"wrap"}}><input value={eName} onChange={ev=>setEName(ev.target.value)} style={{...I,padding:"4px 8px",fontSize:12,width:130}}/><select value={eGrp} onChange={ev=>{setEGrp(ev.target.value);if(!lotNeeded(ev.target.value))setELot("");}} style={{...I,padding:"4px 8px",fontSize:11,background:T.selBg,colorScheme:T.cs,width:"auto"}}>{groups.map(gg=><option key={gg.id} value={gg.id}>{gg.name}</option>)}</select>{lotNeeded(eGrp)&&<select value={eLot} onChange={ev=>setELot(ev.target.value)} style={{...I,padding:"4px 8px",fontSize:11,background:T.selBg,colorScheme:T.cs,width:"auto"}}><option value="">Lotacao...</option>{gerentes.map(ge=><option key={ge.id} value={ge.id}>{ge.name}</option>)}</select>}</div>):(<><div style={{fontSize:13,fontWeight:500,color:T.text}}>{u.name}{u.id===session.id&&<span style={{fontSize:10,color:T.textD,marginLeft:6}}>(voce)</span>}</div><div style={{fontSize:11,color:accent,display:"flex",alignItems:"center",gap:5,marginTop:1}}>{isAd&&<Lock size={10}/>}{isGer&&<Briefcase size={10}/>}{g?.name||""}<span style={{color:T.textM}}>· {lotLabel(u)}</span></div></>)}</div>{rId===u.id?(<div style={{display:"flex",alignItems:"center",gap:6}}><input type="password" inputMode="numeric" value={rPin} onChange={ev=>setRPin(ev.target.value.replace(/\D/g,"").slice(0,6))} placeholder="Novo PIN" style={{...I,width:90,padding:"5px 8px",fontSize:12}} maxLength={6}/><button onClick={doReset} disabled={rPin.length<4} style={{...mkB("#10b981",false,T),padding:"5px 10px",fontSize:11,opacity:rPin.length<4?0.5:1}}>OK</button><button onClick={()=>{setRId(null);setRPin("");}} style={{...mkB(null,true,T),padding:"5px 8px"}}><X size={13}/></button></div>):editing?(<div style={{display:"flex",gap:6}}><button onClick={()=>saveEdit(u)} disabled={!eName.trim()||(lotNeeded(eGrp)&&!eLot)} style={{...mkB("#10b981",false,T),padding:"4px 10px",fontSize:11,opacity:(!eName.trim()||(lotNeeded(eGrp)&&!eLot))?0.5:1}}>Salvar</button><button onClick={()=>setEId(null)} style={{...mkB(null,true,T),padding:"4px 8px"}}><X size={13}/></button></div>):(<div style={{display:"flex",gap:6,flexShrink:0}}><button onClick={()=>startEdit(u)} style={{...mkB(null,true,T),padding:"4px 10px",fontSize:11}}><Pencil size={11}/>Editar</button><button onClick={()=>{setRId(u.id);setRPin("");}} style={{...mkB(null,true,T),padding:"4px 10px",fontSize:11}}>PIN</button>{u.id!==session.id&&!lastAd&&<button onClick={()=>removeUser(u)} style={{padding:"4px 10px",borderRadius:8,border:"1px solid rgba(239,68,68,0.3)",background:"transparent",color:"#ef4444",fontSize:11,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:4}}><Trash2 size={12}/>Remover</button>}</div>)}</div>);})}</div>
+      <div style={{padding:14,borderRadius:10,border:`1px solid ${T.borderL}`,background:T.panelBg}}><div style={{fontSize:11,fontWeight:600,color:T.textM,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.08em"}}>Adicionar usuario</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:8}}><div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Nome</div><input value={nu.name} onChange={ev=>setNu(n=>({...n,name:ev.target.value}))} placeholder="Ex: Adrielle" style={{...I,padding:"7px 10px"}}/></div><div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>PIN</div><input type="password" inputMode="numeric" value={nu.pin} onChange={ev=>setNu(n=>({...n,pin:ev.target.value.replace(/\D/g,"").slice(0,6)}))} placeholder="..." style={{...I,padding:"7px 10px"}} maxLength={6}/></div><div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Grupo</div><select value={nu.groupId} onChange={ev=>setNu(n=>({...n,groupId:ev.target.value,gerenteId:""}))} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"7px 10px"}}>{groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></div><div><div style={{fontSize:11,color:T.textM,marginBottom:4,display:"flex",alignItems:"center",gap:5}}>Lotacao<span style={{fontSize:9,fontWeight:700,color:"#10b981",background:"rgba(16,185,129,0.15)",padding:"1px 6px",borderRadius:20}}>novo</span></div>{lotNeeded(nu.groupId)?<select value={nu.gerenteId} onChange={ev=>setNu(n=>({...n,gerenteId:ev.target.value}))} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"7px 10px",border:`1px solid ${nu.gerenteId?T.inpB:"rgba(239,68,68,0.4)"}`}}><option value="">Selecione...</option>{gerentes.map(ge=><option key={ge.id} value={ge.id}>{ge.name}</option>)}</select>:<input disabled value={groups.find(g=>g.id===nu.groupId)?.fullAccess?"Todos":"Propria lotacao"} style={{...I,padding:"7px 10px",opacity:0.6}}/>}</div></div><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}><div style={{display:"flex",alignItems:"center",gap:6,fontSize:11,color:T.textM,padding:"6px 10px",borderRadius:8,background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)"}}><Lock size={11} color="#f59e0b"/>Analistas e coordenadores so veem tarefas da lotacao selecionada.</div><button onClick={addUser} disabled={!nu.name.trim()||nu.pin.length<4||(lotNeeded(nu.groupId)&&!nu.gerenteId)} style={{...mkB("#6366f1",false,T),padding:"7px 18px",opacity:(!nu.name.trim()||nu.pin.length<4||(lotNeeded(nu.groupId)&&!nu.gerenteId))?0.4:1}}><Plus size={14}/>Adicionar</button></div></div>
+    </div>
+  </div>);
+});
+
+/* ── EsteirasManager ── */
+const EsteirasManager=memo(function EsteirasManager({esteiras,onSave,onLog,onClose,T}){
+  const[editing,setEditing]=useState(null);const[ed,setEd]=useState({label:"",color:PALETTE[0]});const[showNew,setShowNew]=useState(false);const[delC,setDelC]=useState(null);
+  const I=mkI(T);const sorted=[...esteiras].sort((a,b)=>a.order-b.order);
+  const startEd=e=>{setEditing(e.id);setEd({label:e.label,color:e.color});setShowNew(false);};
+  const saveEd=async()=>{if(!ed.label.trim())return;const old=esteiras.find(e=>e.id===editing);await onSave(esteiras.map(e=>e.id===editing?{...e,label:ed.label.trim(),color:ed.color}:e));onLog("esteiraEdited",`${old?.label} para ${ed.label.trim()}`);setEditing(null);};
+  const saveNew=async()=>{if(!ed.label.trim())return;const id="e"+Date.now().toString(36);await onSave([...esteiras,{id,label:ed.label.trim(),color:ed.color,order:esteiras.length}]);onLog("esteiraAdded",ed.label.trim());setShowNew(false);setEd({label:"",color:PALETTE[0]});};
+  const move=async(id,d)=>{const s=[...sorted];const i=s.findIndex(e=>e.id===id);const j=i+d;if(j<0||j>=s.length)return;[s[i],s[j]]=[s[j],s[i]];await onSave(s.map((e,o)=>({...e,order:o})));};
+  const doDelete=async e=>{await onSave(esteiras.filter(x=>x.id!==e.id));onLog("esteiraRemoved",e.label);setDelC(null);};
+  const CP=({val,onPick})=>(<div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{PALETTE.map(c=><div key={c} onClick={()=>onPick(c)} style={{width:20,height:20,borderRadius:4,background:c,cursor:"pointer",border:val===c?"2px solid #fff":"2px solid transparent",boxShadow:val===c?`0 0 0 2px ${c}`:"none"}}/>)}</div>);
+  return(<div style={{width:"100%",maxWidth:600,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+    <ModalHead title="Gerenciar Esteiras" subtitle={`${esteiras.length} esteiras`} onClose={onClose} T={T}/>
+    <div style={{padding:24}}>
+      {sorted.map((e,i)=>(<div key={e.id} style={{marginBottom:6}}>{editing===e.id?(<div style={{padding:"12px 14px",borderRadius:10,border:`1px solid ${ed.color}66`,background:`${ed.color}0d`}}><div style={{display:"grid",gridTemplateColumns:"2fr 1fr auto auto",gap:10,alignItems:"center"}}><input value={ed.label} onChange={ev=>setEd(p=>({...p,label:ev.target.value}))} style={{...I,padding:"7px 10px"}}/><CP val={ed.color} onPick={c=>setEd(p=>({...p,color:c}))}/><button onClick={saveEd} disabled={!ed.label.trim()} style={{...mkB("#10b981",false,T),padding:"6px 12px",fontSize:11,opacity:!ed.label.trim()?0.5:1}}>Salvar</button><button onClick={()=>setEditing(null)} style={{...mkB(null,true,T),padding:"6px 12px",fontSize:11}}>Cancelar</button></div></div>):(<div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:8,border:`1px solid ${T.borderL}`,background:T.panelBg}}><div style={{width:20,height:20,borderRadius:5,background:e.color,flexShrink:0}}/><div style={{flex:1}}><div style={{fontSize:13,fontWeight:500,color:T.text}}>{e.label}</div></div>{delC===e.id?(<div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={()=>setDelC(null)} style={{...mkB(null,true,T),padding:"4px 10px",fontSize:11}}>Cancelar</button><button onClick={()=>doDelete(e)} style={{padding:"4px 12px",borderRadius:8,border:"none",background:"#ef4444",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer"}}>Confirmar</button></div>):(<div style={{display:"flex",gap:4,flexShrink:0}}><button onClick={()=>move(e.id,-1)} disabled={i===0} style={{...mkB(null,true,T),padding:"5px 7px",opacity:i===0?0.3:1}}><ChevronUp size={14}/></button><button onClick={()=>move(e.id,1)} disabled={i===sorted.length-1} style={{...mkB(null,true,T),padding:"5px 7px",opacity:i===sorted.length-1?0.3:1}}><ChevronDown size={14}/></button><button onClick={()=>startEd(e)} style={{...mkB(null,true,T),padding:"4px 10px",fontSize:11}}><Pencil size={12}/>Editar</button><button onClick={()=>setDelC(e.id)} disabled={esteiras.length<=1} style={{padding:"4px 10px",borderRadius:8,border:"1px solid rgba(239,68,68,0.3)",background:"transparent",color:"#ef4444",fontSize:11,fontWeight:600,cursor:"pointer",opacity:esteiras.length<=1?0.4:1,display:"inline-flex",alignItems:"center",gap:4}}><Trash2 size={12}/>Remover</button></div>)}</div>)}</div>))}
+      {showNew?(<div style={{padding:"12px 14px",borderRadius:10,border:`1px solid ${ed.color}66`,background:`${ed.color}0d`,marginTop:8}}><div style={{fontSize:11,fontWeight:600,color:T.textM,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.08em"}}>Nova esteira</div><div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:10,alignItems:"center",marginBottom:10}}><input value={ed.label} onChange={ev=>setEd(p=>({...p,label:ev.target.value}))} placeholder="Nome" style={{...I,padding:"7px 10px"}} onKeyDown={ev=>ev.key==="Enter"&&saveNew()}/><CP val={ed.color} onPick={c=>setEd(p=>({...p,color:c}))}/></div><div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>{setShowNew(false);setEd({label:"",color:PALETTE[0]});}} style={{...mkB(null,true,T),fontSize:11,padding:"5px 12px"}}>Cancelar</button><button onClick={saveNew} disabled={!ed.label.trim()} style={{...mkB("#10b981",false,T),padding:"5px 14px",fontSize:11.5,opacity:!ed.label.trim()?0.5:1}}>Criar</button></div></div>):(<button onClick={()=>{setShowNew(true);setEd({label:"",color:PALETTE[esteiras.length%PALETTE.length]});setEditing(null);}} style={{...mkB("#6366f1",false,T),padding:"8px 16px",fontSize:12.5,width:"100%",marginTop:8}}><Plus size={14}/>Nova esteira</button>)}
+    </div>
+  </div>);
+});
+
+/* ── GroupsManager ── */
+const GroupsManager=memo(function GroupsManager({groups,users,esteiras,onSave,onLog,onClose,T}){
+  const[selId,setSelId]=useState(groups[0]?.id||"");const[showNew,setShowNew]=useState(false);const[newName,setNewName]=useState("");const[draft,setDraft]=useState(null);const[delC,setDelC]=useState(false);
+  const I=mkI(T);const sel=groups.find(g=>g.id===selId);
+  useEffect(()=>{if(sel)setDraft({name:sel.name,perms:{...sel.perms},esteiras:sel.esteiras});},[selId]);
+  const dirty=sel&&draft&&JSON.stringify({n:draft.name,p:draft.perms,e:draft.esteiras})!==JSON.stringify({n:sel.name,p:sel.perms,e:sel.esteiras});
+  const uCount=users.filter(u=>u.groupId===selId).length;
+  const toggleP=k=>setDraft(d=>({...d,perms:{...d.perms,[k]:!d.perms[k]}}));
+  const toggleEst=eid=>setDraft(d=>{const c=d.esteiras;if(c==="all")return{...d,esteiras:esteiras.filter(e=>e.id!==eid).map(e=>e.id)};const a=Array.isArray(c)?[...c]:[];if(a.includes(eid))return{...d,esteiras:a.filter(x=>x!==eid)};return{...d,esteiras:[...a,eid]};});
+  const save=async()=>{if(!draft||!dirty||!sel)return;await onSave(groups.map(g=>g.id===sel.id?{...g,name:draft.name.trim()||g.name,perms:draft.perms,esteiras:draft.esteiras}:g));onLog("groupEdited",sel.name);};
+  const create=async()=>{if(!newName.trim())return;const id="g"+Date.now().toString(36);const ng={id,name:newName.trim(),locked:false,perms:{...NO_P,create_task:true,complete_task:true,view_workspace:true},esteiras:"all"};await onSave([...groups,ng]);onLog("groupAdded",ng.name);setSelId(id);setShowNew(false);setNewName("");};
+  const del=async()=>{if(!sel||sel.locked||uCount>0)return;await onSave(groups.filter(g=>g.id!==sel.id));onLog("groupRemoved",sel.name);const next=groups.filter(g=>g.id!==sel.id);setSelId(next[0]?.id||"");setDelC(false);};
+  const isAllE=draft?.esteiras==="all";
+  return(<div style={{width:"100%",maxWidth:700,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+    <ModalHead title="Grupos de Acesso" subtitle={`${groups.length} grupos`} onClose={onClose} T={T}/>
+    <div style={{padding:"14px 24px 0",borderBottom:`1px solid ${T.borderL}`}}><div style={{display:"flex",gap:4,flexWrap:"wrap",alignItems:"center"}}>{groups.map(g=>(<button key={g.id} onClick={()=>setSelId(g.id)} style={{padding:"7px 14px",borderRadius:"8px 8px 0 0",border:"none",cursor:"pointer",fontSize:12.5,fontWeight:g.id===selId?700:500,background:g.id===selId?T.tabA:"transparent",color:g.id===selId?T.text:T.textM,borderBottom:`2px solid ${g.id===selId?"#6366f1":"transparent"}`,whiteSpace:"nowrap",display:"inline-flex",alignItems:"center",gap:5}}>{g.fullAccess&&<Lock size={11}/>}{g.isGerente&&<Briefcase size={11}/>}{g.name}</button>))}{showNew?(<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 8px"}}><input value={newName} onChange={ev=>setNewName(ev.target.value)} placeholder="Nome do grupo" style={{...I,width:140,padding:"4px 8px",fontSize:11}} onKeyDown={ev=>ev.key==="Enter"&&create()} autoFocus/><button onClick={create} disabled={!newName.trim()} style={{...mkB("#10b981",false,T),padding:"4px 10px",fontSize:11,opacity:!newName.trim()?0.5:1}}>Criar</button><button onClick={()=>{setShowNew(false);setNewName("");}} style={{...mkB(null,true,T),padding:"4px 8px"}}><X size={13}/></button></div>):(<button onClick={()=>setShowNew(true)} style={{...mkB(null,true,T),padding:"6px 12px",fontSize:11,marginLeft:6,borderStyle:"dashed"}}><Plus size={13}/>Novo</button>)}</div></div>
+    {sel&&draft&&(<div style={{padding:24,maxHeight:500,overflowY:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}><div style={{flex:1}}><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Nome</div><input value={draft.name} onChange={ev=>setDraft(d=>({...d,name:ev.target.value}))} disabled={sel.locked} style={{...I,padding:"7px 10px",opacity:sel.locked?0.6:1}}/></div><div style={{fontSize:11,color:T.textM}}>{uCount} usuario{uCount!==1?"s":""}</div></div>
+      <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:600,color:T.textM,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.08em"}}>Permissoes</div>{PERM_SECTIONS.map(sec=>(<div key={sec.s} style={{marginBottom:12}}><div style={{fontSize:11,fontWeight:600,color:T.textS,marginBottom:6}}>{sec.s}</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{sec.items.map(([k,lbl])=>(<label key={k} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:6,border:`1px solid ${T.borderL}`,background:draft.perms[k]?"rgba(99,102,241,0.07)":"transparent",cursor:"pointer"}}><input type="checkbox" checked={!!draft.perms[k]} disabled={sel.locked&&sel.fullAccess} onChange={()=>toggleP(k)}/><span style={{fontSize:12,color:T.text}}>{lbl}</span></label>))}</div></div>))}</div>
+      <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:600,color:T.textM,marginBottom:10,textTransform:"uppercase",letterSpacing:"0.08em"}}>Esteiras visiveis</div><div style={{display:"flex",gap:14,marginBottom:10}}><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="radio" checked={isAllE} onChange={()=>setDraft(d=>({...d,esteiras:"all"}))}/><span style={{fontSize:12,color:T.text}}>Todas</span></label><label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="radio" checked={!isAllE} onChange={()=>setDraft(d=>({...d,esteiras:esteiras.map(e=>e.id)}))}/><span style={{fontSize:12,color:T.text}}>Selecionar</span></label></div>{!isAllE&&(<div style={{display:"flex",flexWrap:"wrap",gap:6}}>{esteiras.map(e=>{const checked=Array.isArray(draft.esteiras)&&draft.esteiras.includes(e.id);return(<button key={e.id} onClick={()=>toggleEst(e.id)} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:20,border:`1px solid ${checked?e.color:T.border}`,background:checked?`${e.color}1f`:"transparent",cursor:"pointer",fontSize:11.5,fontWeight:500,color:checked?e.color:T.textM}}><span style={{width:8,height:8,borderRadius:"50%",background:e.color}}/>{e.label}</button>);})}</div>)}</div>
+      <div style={{display:"flex",gap:8,justifyContent:"space-between",alignItems:"center",paddingTop:12,borderTop:`1px solid ${T.borderL}`}}><div>{!sel.locked&&(delC?(<div style={{display:"flex",gap:8,alignItems:"center"}}><span style={{fontSize:11,color:uCount>0?"#ef4444":T.textM}}>{uCount>0?`${uCount} usuario(s)!`:"Confirmar?"}</span><button onClick={()=>setDelC(false)} style={{...mkB(null,true,T),fontSize:11,padding:"4px 10px"}}>Cancelar</button><button onClick={del} disabled={uCount>0} style={{padding:"4px 12px",borderRadius:8,border:"none",background:"#ef4444",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",opacity:uCount>0?0.4:1}}>Excluir</button></div>):(<button onClick={()=>setDelC(true)} style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(239,68,68,0.3)",background:"transparent",color:"#ef4444",fontSize:11,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:5}}><Trash2 size={12}/>Excluir grupo</button>))}</div><button onClick={save} disabled={!dirty} style={{...mkB("#10b981",false,T),padding:"7px 18px",fontSize:12.5,opacity:!dirty?0.4:1}}>Salvar</button></div>
+    </div>)}
+  </div>);
+});
+
+/* ── TrashModal ── */
+const TrashModal=memo(function TrashModal({trash,esteiras,canRestore,onRestore,onEmpty,onClose,T}){
+  const[confirm,setConfirm]=useState(false);const[busy,setBusy]=useState(false);
+  const trashed=[...trash].sort((a,b)=>new Date(b.deletedAt)-new Date(a.deletedAt));
+  const doEmpty=async()=>{setBusy(true);await onEmpty();setBusy(false);setConfirm(false);};
+  return(<div style={{width:"100%",maxWidth:760,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+    <div style={{padding:"18px 24px",borderBottom:`1px solid ${T.borderL}`,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+      <div><div style={{fontSize:15,fontWeight:700,color:T.text}}>Lixeira</div><div style={{fontSize:11,color:T.textM,marginTop:2}}>{trashed.length} excluida{trashed.length!==1?"s":""} · restauravel por {TRASH_DAYS} dias</div></div>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>{onEmpty&&trashed.length>0&&(confirm?<><span style={{fontSize:11,color:"#ef4444",fontWeight:500}}>Excluir {trashed.length} definitivamente?</span><button onClick={()=>setConfirm(false)} style={{...mkB(null,true,T),fontSize:11,padding:"5px 10px"}}>Cancelar</button><button onClick={doEmpty} disabled={busy} style={{padding:"5px 12px",borderRadius:8,border:"none",background:"#ef4444",color:"#fff",fontSize:11,fontWeight:700,cursor:"pointer",opacity:busy?0.5:1}}>{busy?"Limpando...":"Confirmar"}</button></>:<button onClick={()=>setConfirm(true)} style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:"#ef4444",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}><Trash2 size={13}/>Esvaziar lixeira</button>)}<CloseBtn onClick={onClose} T={T}/></div>
+    </div>
+    <div style={{maxHeight:500,overflowY:"auto",padding:trashed.length>0?12:0}}>
+      {trashed.length===0?<div style={{textAlign:"center",padding:"48px 0",color:T.textD}}><div style={{display:"flex",justifyContent:"center",marginBottom:10,opacity:0.4}}><Trash2 size={30}/></div><div style={{fontSize:13}}>Lixeira vazia</div></div>:trashed.slice(0,500).map(t=>{const e=esteiras.find(x=>x.id===t.eid);const rem=daysLeft(t.deletedAt);return(<div key={t.id} style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",borderRadius:10,border:`1px solid ${T.borderL}`,background:T.panelBg,marginBottom:6}}><span style={{padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:600,color:e?.color||"#6366f1",background:(e?.color||"#6366f1")+"22",whiteSpace:"nowrap"}}>{e?.label||t.eid}</span><div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:500,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.code&&<span style={{fontFamily:"monospace",fontSize:11,color:T.textM,marginRight:6}}>{t.code}</span>}{t.title}</div><div style={{fontSize:11,color:T.textM,marginTop:2}}>Por {t.deletedBy||""} em {fmtDT(t.deletedAt)}</div></div><div style={{fontSize:11,fontWeight:600,color:rem<=2?"#ef4444":T.textM,padding:"3px 9px",borderRadius:20,background:rem<=2?"rgba(239,68,68,0.1)":T.panelBg,whiteSpace:"nowrap"}}>{rem}d</div>{canRestore&&<button onClick={()=>onRestore(t.eid,t.id)} style={{...mkB("#10b981",false,T),padding:"5px 12px",fontSize:11}}><RotateCcw size={13}/>Restaurar</button>}</div>);})}
+      {trashed.length>500&&<div style={{textAlign:"center",padding:12,fontSize:11,color:T.textM}}>Exibindo 500 de {trashed.length} · Use "Esvaziar lixeira" para remover tudo.</div>}
+    </div>
+  </div>);
+});
+
+/* ── LogModal ── */
+const LogModal=memo(function LogModal({log,canExport,onClose,T}){
+  const[fAct,setFAct]=useState("all");const[fUser,setFUser]=useState("all");const[msg,setMsg]=useState("");
+  const I=mkI(T);const ulist=[...new Set(log.map(l=>l.user))].sort();
+  const filtered=log.filter(l=>(fAct==="all"||l.action===fAct)&&(fUser==="all"||l.user===fUser));
+  const buildText=()=>"SinergyRH Log\n"+filtered.map(l=>`[${fmtDT(l.ts)}] ${l.user} - ${ACTION_LABELS[l.action]||l.action}: ${l.target}`).join("\n");
+  const flash=m=>{setMsg(m);setTimeout(()=>setMsg(""),2600);};
+  const download=()=>{try{const blob=new Blob([buildText()],{type:"text/plain;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`Log_${new Date().toISOString().slice(0,10)}.txt`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),300);flash("Download iniciado");}catch(_){flash("Bloqueado - use Copiar");}};
+  const copy=async()=>{try{await navigator.clipboard.writeText(buildText());flash("Log copiado!");}catch(_){flash("Falha ao copiar");}};
+  return(<div style={{width:"100%",maxWidth:860,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+    <div style={{padding:"18px 24px",borderBottom:`1px solid ${T.borderL}`,display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}><div><div style={{fontSize:15,fontWeight:700,color:T.text}}>Log de Atividades</div><div style={{fontSize:11,color:T.textM,marginTop:2}}>{filtered.length}/{log.length} registros{msg&&<span style={{color:"#10b981",marginLeft:8}}>{msg}</span>}</div></div><div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}><select value={fUser} onChange={ev=>setFUser(ev.target.value)} style={{...I,width:"auto",padding:"5px 10px",fontSize:12,background:T.selBg,colorScheme:T.cs}}><option value="all">Todos usuarios</option>{ulist.map(u=><option key={u} value={u}>{u}</option>)}</select><select value={fAct} onChange={ev=>setFAct(ev.target.value)} style={{...I,width:"auto",padding:"5px 10px",fontSize:12,background:T.selBg,colorScheme:T.cs}}><option value="all">Todas acoes</option>{Object.entries(ACTION_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>{canExport&&<button onClick={copy} disabled={filtered.length===0} style={{...mkB("#6366f1",false,T),padding:"5px 12px",fontSize:11,opacity:filtered.length===0?0.4:1}}><Copy size={13}/>Copiar</button>}{canExport&&<button onClick={download} disabled={filtered.length===0} style={{...mkB(null,true,T),padding:"5px 12px",fontSize:11,opacity:filtered.length===0?0.4:1}}><Download size={13}/>Baixar .txt</button>}<CloseBtn onClick={onClose} T={T}/></div></div>
+    <div style={{maxHeight:520,overflowY:"auto"}}>{filtered.length===0?<div style={{textAlign:"center",padding:"48px 0",color:T.textD,fontSize:13}}>Nenhum registro</div>:<table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{background:T.panelBg,borderBottom:`1px solid ${T.borderL}`}}>{["Data/Hora","Usuario","Acao","Detalhe"].map(h=><th key={h} style={{padding:"9px 14px",color:T.textM,fontWeight:600,textAlign:"left",fontSize:11,textTransform:"uppercase",letterSpacing:"0.06em",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{filtered.map((l,i)=>(<tr key={l.id} style={{borderBottom:`1px solid ${T.borderL}`,background:i%2===0?"transparent":T.panelBg}}><td style={{padding:"9px 14px",color:T.textM,fontSize:12,whiteSpace:"nowrap"}}>{fmtDT(l.ts)}</td><td style={{padding:"9px 14px",color:T.textS,fontSize:13,fontWeight:500}}>{l.user}</td><td style={{padding:"9px 14px",fontSize:12}}><span style={{color:T.text,fontWeight:500}}>{ACTION_LABELS[l.action]||l.action}</span></td><td style={{padding:"9px 14px",color:T.text,fontSize:13,maxWidth:300,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l.target}</td></tr>))}</tbody></table>}</div>
+  </div>);
+});
+
+/* ── TaskCard ── */
+const TaskCard=memo(function TaskCard({task,esteiras,activeColor,showEst,canDelete,canEdit,canComplete,bulkMode,selected,T,onToggle,onSelect,onEdit,onDelete}){
+  const p=PRI[task.priority];const isDone=task.status==="concluida";
+  const overdue=task.deadline&&!isDone&&new Date(task.deadline+"T23:59:59")<new Date();
+  const est=showEst?esteiras.find(e=>e.id===task._eid):null;const ra=respArr(task);
+  const checkColor=bulkMode?(selected?"#6366f1":T.border):(isDone?activeColor:T.border);
+  const checkBg=bulkMode?(selected?"#6366f1":"transparent"):(isDone?activeColor:"transparent");
+  const showCheck=(bulkMode&&selected)||(!bulkMode&&isDone);
+  return(<div style={{padding:"13px 16px",borderRadius:10,border:`1px solid ${bulkMode&&selected?"#6366f1":(isDone?T.cardDB:T.cardB)}`,background:bulkMode&&selected?"rgba(99,102,241,0.08)":(isDone?T.cardD:T.card)}}>
+    <div style={{display:"grid",gridTemplateColumns:"auto 1fr auto auto auto auto",gap:10,alignItems:"start"}}>
+      <div onClick={()=>bulkMode?onSelect(task.id):canComplete&&onToggle(task.id)} style={{width:19,height:19,borderRadius:5,flexShrink:0,cursor:(bulkMode||canComplete)?"pointer":"default",border:`2px solid ${checkColor}`,background:checkBg,display:"flex",alignItems:"center",justifyContent:"center",marginTop:2,opacity:(!bulkMode&&!canComplete)?0.4:1}}>{showCheck&&<Check size={13} color="#fff" strokeWidth={3}/>}</div>
+      <div>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>{est&&<span style={{padding:"2px 8px",borderRadius:20,fontSize:11,fontWeight:600,color:est.color,background:est.color+"22"}}>{est.label}</span>}{task.code&&<span style={{fontFamily:"monospace",fontSize:10.5,color:T.textD,background:T.panelBg,padding:"1px 6px",borderRadius:5}}>{task.code}</span>}<div style={{fontSize:14,fontWeight:500,color:isDone?T.textD:T.text,textDecoration:isDone?"line-through":"none"}}>{task.title}</div></div>
+        {(ra.length||task.coordenador||task.gerente||task.deadline)&&(<div style={{display:"flex",gap:14,marginBottom:5,flexWrap:"wrap"}}>{ra.length>0&&<span style={{fontSize:13,fontWeight:500,color:T.textS}}>{ra.length>1?"analistas":"analista"}: {ra.join(", ")}</span>}{task.coordenador&&<span style={{fontSize:13,fontWeight:500,color:T.textS}}>coord: {task.coordenador}</span>}{task.gerente&&<span style={{fontSize:13,fontWeight:500,color:"#eab308"}}>gerente: {task.gerente}</span>}{task.deadline&&<span style={{fontSize:13,fontWeight:overdue?600:400,color:overdue?"#ef4444":T.textM}}>prazo: {fmtDate(task.deadline)}{overdue?" - Atrasada":""}</span>}</div>)}
+        {isDone&&task.completedBy&&<div style={{fontSize:12,color:"#22c55e",marginBottom:4}}>Concluido por {task.completedBy} - {fmtDT(task.completedAt)}</div>}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{task.cliente&&<span style={{padding:"3px 9px",borderRadius:20,fontSize:12,fontWeight:600,background:"rgba(14,165,233,0.15)",color:"#38bdf8"}}>cliente: {task.cliente}</span>}{task.processo&&<span style={{padding:"3px 9px",borderRadius:20,fontSize:12,fontWeight:600,background:"rgba(20,184,166,0.15)",color:"#2dd4bf"}}>proc: {task.processo}</span>}{task.mes&&<span style={{padding:"3px 9px",borderRadius:20,fontSize:12,fontWeight:600,background:"rgba(168,85,247,0.15)",color:"#c084fc"}}>mes: {fmtMonth(task.mes)}</span>}</div>
+      </div>
+      <span style={{padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:600,color:p.color,background:p.bg,whiteSpace:"nowrap"}}>{p.label}</span>
+      <span style={{padding:"3px 9px",borderRadius:20,fontSize:11,fontWeight:500,whiteSpace:"nowrap",color:isDone?"#22c55e":"#f59e0b",background:isDone?"rgba(34,197,94,0.1)":"rgba(245,158,11,0.1)"}}>{isDone?"Concluida":"Pendente"}</span>
+      {canEdit?<button onClick={()=>onEdit(task)} style={{...ICON_BTN,color:T.textD,padding:"3px 4px",marginTop:1}}><Pencil size={15}/></button>:<span/>}
+      {canDelete?<button onClick={()=>onDelete(task.id)} style={{...ICON_BTN,color:T.textD,padding:"3px 4px",marginTop:1}}><Trash2 size={15}/></button>:<span/>}
+    </div>
+  </div>);
+});
+
+/* ══════════════════════════ APP ══════════════════════════ */
+function App(){
+  const[session,setSession]=useState(null);
+  const[users,setUsers]=useState([]);const[groups,setGroups]=useState(DEFAULT_GROUPS);const[esteiras,setEsteiras]=useState(ESTEIRAS_DEFAULT);
+  const[loginName,setLoginName]=useState("");const[loginPin,setLoginPin]=useState("");const[loginErr,setLoginErr]=useState("");
+  const[showAdmin,setShowAdmin]=useState(false);const[showLog,setShowLog]=useState(false);const[showTrash,setShowTrash]=useState(false);const[showEst,setShowEst]=useState(false);const[showGrp,setShowGrp]=useState(false);
+  const[darkMode,setDarkMode]=useState(true);const[tab,setTab]=useState("workspace");
+  const[tasks,setTasks]=useState({});const[trash,setTrash]=useState([]);
+  const[log,setLog]=useState([]);
+  const[filters,setFilters]=useState(INIT_F);const[showFilters,setShowFilters]=useState(false);const[sortIdx,setSortIdx]=useState(0);
+  const[showForm,setShowForm]=useState(false);
+  const[form,setForm]=useState({title:"",responsibles:[],coordenador:"",gerente:"",deadline:"",priority:"alta",cliente:"",processo:"",mes:""});
+  const[lastSync,setLastSync]=useState(null);const[syncing,setSyncing]=useState(false);const[saveError,setSaveError]=useState("");
+  const[editId,setEditId]=useState(null);
+  const[bulkMode,setBulkMode]=useState(false);const[bulkSel,setBulkSel]=useState(()=>new Set());const[bulkConfirm,setBulkConfirm]=useState(false);const[bulkEditOpen,setBulkEditOpen]=useState(false);const[bulkF,setBulkF]=useState("");const[bulkV,setBulkV]=useState("");
+  const[pendingToggle,setPendingToggle]=useState(null);
+  const[showImport,setShowImport]=useState(false);const[xlsxReady,setXlsxReady]=useState(false);const[importStep,setImportStep]=useState(1);const[importHeaders,setImportHeaders]=useState([]);const[importRows,setImportRows]=useState([]);const[colMap,setColMap]=useState({});const[preview,setPreview]=useState(null);const[showSkipped,setShowSkipped]=useState(false);const[importing,setImporting]=useState(false);
+  const[collapsedGroups,setCollapsedGroups]=useState({});
+  const[restoreConfirm,setRestoreConfirm]=useState(null);
+  const fileRef=useRef();
+  const tasksRef=useRef({});const trashRef=useRef([]);
+  const lastWriteRef=useRef(0);
+  const logRef=useRef([]);useEffect(()=>{logRef.current=log;},[log]);
+  const sessionRef=useRef(session);useEffect(()=>{sessionRef.current=session;},[session]);
+  const estsRef=useRef(esteiras);useEffect(()=>{estsRef.current=esteiras;},[esteiras]);
+  const usersRef=useRef(users);useEffect(()=>{usersRef.current=users;},[users]);
+  const groupsRef=useRef(groups);useEffect(()=>{groupsRef.current=groups;},[groups]);
+  const saveTimersRef=useRef({});const savePendingRef=useRef({});
+  const T=darkMode?DARK:LIGHT;const I=mkI(T);
+  const has=p=>hasPerm(session,groups,p);
+  const visEsts=visibleEsts(session,groups,esteiras);
+  const isAdmin=session?.role==="admin";
+  const scope=userScope(session,groups);
+  const visTask=t=>scope==="all"||t.gerenteId===scope;
+  const gerenteUsers=users.filter(u=>isGerenteUser(u,groups));
+  const gerenteNames=distinct(gerenteUsers.map(u=>u.name));
+  const userNames=distinct(users.map(u=>u.name));
+  const myGerenteName=scope==="all"?"":(users.find(u=>u.id===scope)?.name||"");
+  const baseTasks=Object.values(tasks).flat().filter(t=>visTask(t));
+  const histCliente=distinct(baseTasks.map(t=>t.cliente));
+  const histProcesso=distinct(baseTasks.map(t=>t.processo));
+  const formGer=gerenteUsers.find(u=>norm(u.name)===norm(form.gerente));
+  const formGerId=scope==="all"?(formGer?.id||null):scope;
+  const inLot=u=>u.gerenteId===formGerId;
+  const memberNames=formGerId?distinct(users.filter(inLot).map(u=>u.name)):userNames;
+  const coordNames=formGerId?distinct(users.filter(u=>inLot(u)&&isCoordUser(u,groups)).map(u=>u.name)):distinct(users.filter(u=>isCoordUser(u,groups)).map(u=>u.name));
+  const formTasks=formGerId?Object.values(tasks).flat().filter(t=>t.gerenteId===formGerId):baseTasks;
+  const fCliente=distinct(formTasks.map(t=>t.cliente));
+  const fProcesso=distinct(formTasks.map(t=>t.processo));
+  const fTitle=distinct(formTasks.map(t=>t.title));
+
+  const saveEsteira=useCallback((eid,data)=>{
+    savePendingRef.current[eid]=data;lastWriteRef.current=Date.now();
+    if(saveTimersRef.current[eid])clearTimeout(saveTimersRef.current[eid]);
+    saveTimersRef.current[eid]=setTimeout(async()=>{
+      setSyncing(true);
+      const toSave=savePendingRef.current[eid]||[];
+      try{await window.storage.set(TASKS_PREFIX+eid,JSON.stringify(toSave),true);setLastSync(new Date());setSaveError("");}
+      catch(err){const mb=(JSON.stringify(toSave).length/1048576).toFixed(1);setSaveError(`Limite atingido na esteira ${eid} (${mb}MB). Esvazie a lixeira ou remova duplicatas.`);}
+      setSyncing(false);
+    },280);
+  },[]);
+
+  const mutate=useCallback(nt=>{
+    const prev=tasksRef.current;
+    tasksRef.current=nt;lastWriteRef.current=Date.now();setTasks(nt);
+    const eids=new Set([...Object.keys(prev||{}),...Object.keys(nt||{})]);
+    for(const eid of eids){if((nt[eid]||null)!==(prev[eid]||null))saveEsteira(eid,nt[eid]||[]);}
+  },[saveEsteira]);
+
+  const logAction=useCallback(async(action,target,asUser)=>{
+    const u=asUser||sessionRef.current?.name;if(!u)return;
+    const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2),ts:new Date().toISOString(),user:u,action,target};
+    const nl=[entry,...logRef.current].slice(0,10000);setLog(nl);
+    try{await window.storage.set(LOG_KEY,JSON.stringify(nl),true);}catch(_){}
+  },[]);
+
+  const resolveGerente=name=>usersRef.current.find(u=>isGerenteUser(u,groupsRef.current)&&norm(u.name)===norm(name))||null;
+
+  const load=useCallback(async()=>{
+    if(lastWriteRef.current&&Date.now()-lastWriteRef.current<3500){setLastSync(new Date());return;}
+    try{
+      let loaded={};let trashData=[];
+      let hasNew=false;
+      try{
+        const lr=await window.storage.list(TASKS_PREFIX,true);
+        if(lr&&lr.keys&&lr.keys.length>0){
+          hasNew=true;
+          for(const key of lr.keys){
+            try{const r=await window.storage.get(key,true);if(r){const eid=key.replace(TASKS_PREFIX,"");loaded[eid]=JSON.parse(r.value).map(migrateTask);}}catch(_){}
+          }
+        }
+      }catch(_){}
+      if(!hasNew){
+        try{
+          const leg=await window.storage.get(LEGACY_TASKS_KEY,true);
+          if(leg){
+            const ld=JSON.parse(leg.value);
+            for(const[eid,ts]of Object.entries(ld)){
+              const active=ts.filter(t=>!t.deletedAt).map(migrateTask);
+              const deleted=ts.filter(t=>t.deletedAt).map(t=>({...migrateTask(t),eid}));
+              loaded[eid]=active;trashData.push(...deleted);
+              if(active.length)try{await window.storage.set(TASKS_PREFIX+eid,JSON.stringify(active),true);}catch(_){}
+            }
+            if(trashData.length)try{await window.storage.set(TRASH_KEY,JSON.stringify(trashData),true);}catch(_){}
+          }
+        }catch(_){}
+      }else{
+        try{
+          const tr=await window.storage.get(TRASH_KEY,true);
+          if(tr){
+            const now2=Date.now();
+            const raw=JSON.parse(tr.value);
+            trashData=raw.filter(t=>!t.deletedAt||now2-new Date(t.deletedAt).getTime()<TRASH_MS);
+            if(trashData.length!==raw.length)try{await window.storage.set(TRASH_KEY,JSON.stringify(trashData),true);}catch(_){}
+          }
+        }catch(_){}
+      }
+      if(lastWriteRef.current&&Date.now()-lastWriteRef.current<3500){setLastSync(new Date());return;}
+      tasksRef.current=loaded;setTasks(loaded);trashRef.current=trashData;setTrash(trashData);setLastSync(new Date());
+    }catch(_){}
+  },[]);
+
+  const loadPrefsFor=async uid=>{try{const r=await window.storage.get(PREFS_KEY,true);const all=r?JSON.parse(r.value):{};return all[uid]||null;}catch(_){return null;}};
+  const savePrefsFor=useCallback(async(uid,f,si)=>{if(!uid)return;try{const r=await window.storage.get(PREFS_KEY,true);const all=r?JSON.parse(r.value):{};all[uid]={filters:f,sortIdx:si};await window.storage.set(PREFS_KEY,JSON.stringify(all),true);}catch(_){}},[]);
+  const loadUsers=useCallback(async()=>{try{const r=await window.storage.get(USERS_KEY,true);let loaded=r?JSON.parse(r.value):DEFAULT_USERS;let ch=false;loaded=loaded.map(u=>{let nu={...u};if(!nu.groupId){ch=true;nu.groupId=nu.role==="admin"?"admin":"analista";}if(nu.gerenteId===undefined){ch=true;nu.gerenteId=nu.role==="admin"?"all":"";}return nu;});if(!r||ch)try{await window.storage.set(USERS_KEY,JSON.stringify(loaded),true);}catch(_){}setUsers(loaded);}catch(_){setUsers(DEFAULT_USERS);}},[]);
+  const saveUsers=useCallback(async u=>{try{await window.storage.set(USERS_KEY,JSON.stringify(u),true);}catch(_){}setUsers(u);},[]);
+  const loadGroups=useCallback(async()=>{try{const r=await window.storage.get(GROUPS_KEY,true);if(r){const ld=JSON.parse(r.value);const merged=DEFAULT_GROUPS.map(dg=>{const c=ld.find(g=>g.id===dg.id);return c?{...dg,...c,locked:dg.locked,fullAccess:dg.fullAccess,isGerente:dg.isGerente,perms:{...NO_P,...(c.perms||{})}}:dg;});const custom=ld.filter(g=>!DEFAULT_GROUPS.find(dg=>dg.id===g.id)).map(g=>({...g,perms:{...NO_P,...(g.perms||{})}}));setGroups([...merged,...custom]);}else try{await window.storage.set(GROUPS_KEY,JSON.stringify(DEFAULT_GROUPS),true);}catch(_){}}catch(_){}},[]);
+  const saveGroups=useCallback(async g=>{try{await window.storage.set(GROUPS_KEY,JSON.stringify(g),true);}catch(_){}setGroups(g);},[]);
+  const loadEsteiras=useCallback(async()=>{try{const r=await window.storage.get(EST_KEY,true);if(r)setEsteiras(JSON.parse(r.value));else try{await window.storage.set(EST_KEY,JSON.stringify(ESTEIRAS_DEFAULT),true);}catch(_){}}catch(_){}},[]);
+  const saveEsteiras=useCallback(async e=>{try{await window.storage.set(EST_KEY,JSON.stringify(e),true);}catch(_){}setEsteiras(e);},[]);
+  useEffect(()=>{loadUsers();loadGroups();loadEsteiras();},[]);
+  useEffect(()=>{(async()=>{try{const r=await window.storage.get(LOG_KEY,true);if(r)setLog(JSON.parse(r.value));}catch(_){}})();},[]);
+  useEffect(()=>{if(window.XLSX){setXlsxReady(true);return;}const s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";s.onload=()=>setXlsxReady(true);document.head.appendChild(s);},[]);
+  useEffect(()=>{if(session){load();const t=setInterval(load,5000);return()=>clearInterval(t);}},[load,session]);
+  useEffect(()=>{if(showAdmin||showLog||showImport||showTrash||showEst||showGrp||pendingToggle||restoreConfirm)window.scrollTo(0,0);},[showAdmin,showLog,showImport,showTrash,showEst,showGrp,pendingToggle,restoreConfirm]);
+
+  const closeAdmin=useCallback(()=>setShowAdmin(false),[]);const closeLog=useCallback(()=>setShowLog(false),[]);const closeTrash=useCallback(()=>setShowTrash(false),[]);const closeEst=useCallback(()=>setShowEst(false),[]);const closeGrp=useCallback(()=>setShowGrp(false),[]);
+
+  const emptyTrash=useCallback(async()=>{
+    const removed=trashRef.current.length;
+    trashRef.current=[];setTrash([]);
+    try{await window.storage.set(TRASH_KEY,JSON.stringify([]),true);}catch(_){}
+    await logAction("bulkDeleted",`Lixeira esvaziada: ${removed} itens`);
+    return removed;
+  },[logAction]);
+
+  const restoreTask=useCallback(async(eid,id)=>{
+    const t=trashRef.current.find(x=>x.id===id&&x.eid===eid);if(!t)return;
+    const{eid:_e,deletedAt:_da,deletedBy:_db,...taskData}=t;
+    const nt={...tasksRef.current,[eid]:[...(tasksRef.current[eid]||[]),taskData]};
+    mutate(nt);
+    const nt2=trashRef.current.filter(x=>!(x.id===id&&x.eid===eid));
+    trashRef.current=nt2;setTrash(nt2);
+    try{await window.storage.set(TRASH_KEY,JSON.stringify(nt2),true);}catch(_){}
+    logAction("restored",`${taskData.code?taskData.code+" · ":""}${taskData.title}`);
+  },[mutate,logAction]);
+
+  const dedupeTasks=useCallback(async()=>{
+    const nt={...tasksRef.current};let removed=0;
+    for(const[eid,ts]of Object.entries(nt)){const seen=new Set();const kept=[];for(const t of ts){const key=`${norm(t.title)}|${norm(t.cliente)}|${t.mes||""}|${t.deadline||""}|${respStr(t)}`;if(seen.has(key)){removed++;continue;}seen.add(key);kept.push(t);}nt[eid]=kept;}
+    mutate(nt);
+    for(const[eid,ts]of Object.entries(nt))try{await window.storage.set(TASKS_PREFIX+eid,JSON.stringify(ts),true);}catch(_){}
+    lastWriteRef.current=Date.now();
+    await logAction("bulkDeleted",`Duplicatas removidas: ${removed}`);return removed;
+  },[mutate,logAction]);
+
+  const exportBackup=async()=>{
+    try{
+      const bk={version:2,exportedAt:new Date().toISOString(),app:"SinergyRH Operacao 2026"};
+      bk.tasks={...tasksRef.current};
+      for(const[key,name]of[[USERS_KEY,"users"],[GROUPS_KEY,"groups"],[EST_KEY,"esteiras"],[LOG_KEY,"log"],[TRASH_KEY,"trash"],[PREFS_KEY,"prefs"]]){try{const r=await window.storage.get(key,true);bk[name]=r?JSON.parse(r.value):null;}catch(_){bk[name]=null;}}
+      const json=JSON.stringify(bk,null,2);
+      try{const blob=new Blob([json],{type:"application/json;charset=utf-8"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=`SinergyRH_Backup_${new Date().toISOString().slice(0,10)}.json`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),300);}
+      catch(_){try{await navigator.clipboard.writeText(json);alert("Download bloqueado. Backup copiado para a area de transferencia.");}catch(e2){alert("Nao foi possivel exportar.");}}
+    }catch(e){alert("Erro ao gerar backup: "+e.message);}
+  };
+
+  const triggerRestore=()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".json";inp.style.cssText="position:fixed;opacity:0;pointer-events:none";document.body.appendChild(inp);inp.onchange=ev=>{const file=ev.target.files?.[0];document.body.removeChild(inp);if(!file)return;const fr=new FileReader();fr.onload=e=>{try{const bk=JSON.parse(e.target.result);if(!bk.version||!bk.tasks){setRestoreConfirm({error:"Arquivo invalido."});return;}setRestoreConfirm(bk);}catch(err){setRestoreConfirm({error:"Nao foi possivel ler: "+err.message});}};fr.readAsText(file);};inp.click();};
+
+  const doRestore=async()=>{
+    const bk=restoreConfirm;setRestoreConfirm(null);if(!bk||bk.error)return;
+    if(bk.tasks&&typeof bk.tasks==="object"&&!Array.isArray(bk.tasks)){
+      for(const[eid,ts]of Object.entries(bk.tasks))try{await window.storage.set(TASKS_PREFIX+eid,JSON.stringify(ts),true);}catch(_){}
+    }
+    for(const[key,name]of[[USERS_KEY,"users"],[GROUPS_KEY,"groups"],[EST_KEY,"esteiras"],[LOG_KEY,"log"],[TRASH_KEY,"trash"],[PREFS_KEY,"prefs"]]){if(bk[name]!=null)try{await window.storage.set(key,JSON.stringify(bk[name]),true);}catch(_){}}
+    await loadUsers();await loadGroups();await loadEsteiras();
+    try{const r=await window.storage.get(LOG_KEY,true);if(r)setLog(JSON.parse(r.value));}catch(_){}
+    await load();setSession(null);
+  };
+
+  const handleLogin=async()=>{
+    const user=users.find(u=>u.name===loginName&&u.pin===loginPin);
+    if(!user){setLoginErr("Usuario ou PIN incorreto.");setLoginPin("");return;}
+    const pr=await loadPrefsFor(user.id);
+    setFilters(pr?.filters?{...INIT_F,...pr.filters}:INIT_F);setSortIdx(typeof pr?.sortIdx==="number"?pr.sortIdx:0);
+    setTab("workspace");setSession({id:user.id,name:user.name,role:user.role,groupId:user.groupId,gerenteId:user.gerenteId});
+    setLoginErr("");setLoginPin("");await logAction("login","Sessao iniciada",user.name);
+  };
+
+  const handleFile=ev=>{const file=ev.target.files[0];if(!file||!window.XLSX)return;const reader=new FileReader();reader.onload=e=>{try{const wb=window.XLSX.read(e.target.result,{type:"array",cellDates:true});const ws=wb.Sheets[wb.SheetNames[0]];const data=window.XLSX.utils.sheet_to_json(ws,{header:1,defval:""});if(data.length<2)return;const hdrs=data[0].map(String);const drows=data.slice(1).filter(r=>r.some(c=>String(c).trim()!==""));setImportHeaders(hdrs);setImportRows(drows);const auto={};COL_FIELDS.forEach(f=>{auto[f.key]=detectCol(hdrs,f.kws);});setColMap(auto);setImportStep(2);}catch(err){console.error(err);}};reader.readAsArrayBuffer(file);};
+
+  const buildPreview=()=>{
+    const idx=k=>importHeaders.indexOf(colMap[k]||"");
+    const[ci,ti,ri,coi,gei,di,pi,clI,prI,mI]=[idx("category"),idx("title"),idx("responsible"),idx("coordenador"),idx("gerente"),idx("deadline"),idx("priority"),idx("cliente"),idx("processo"),idx("mes")];
+    const mapped={};const skippedList=[];
+    importRows.forEach((row,ri2)=>{
+      const catVal=ci>=0?String(row[ci]||""):"";const titleVal=ti>=0?String(row[ti]||"").trim():"";
+      const est=mapEsteira(catVal,estsRef.current);
+      if(!est){skippedList.push({linha:ri2+2,categoria:catVal,tarefa:titleVal,motivo:catVal.trim()?"Esteira nao reconhecida":"Sem categoria"});return;}
+      if(!titleVal){skippedList.push({linha:ri2+2,categoria:catVal,tarefa:"",motivo:"Sem titulo"});return;}
+      let gerName=gei>=0?String(row[gei]||"").trim():"";let gerId=null;
+      if(scope!=="all"){gerId=scope;gerName=myGerenteName;}
+      else if(gerName){const gu=resolveGerente(gerName);if(gu){gerId=gu.id;gerName=gu.name;}}
+      const task={id:Date.now().toString(36)+Math.random().toString(36).slice(2),code:genCode(),title:titleVal,responsibles:ri>=0?splitNames(row[ri]):[],coordenador:coi>=0?String(row[coi]||"").trim():"",gerente:gerName,gerenteId:gerId,deadline:di>=0?toDateStr(row[di]):"",priority:pi>=0?mapPri(row[pi]):"media",cliente:clI>=0?String(row[clI]||"").trim():"",processo:prI>=0?String(row[prI]||"").trim():"",mes:mI>=0?toMonthStr(String(row[mI]||"")):"",status:"pendente",createdAt:new Date().toISOString(),createdBy:sessionRef.current?.name||""};
+      if(!mapped[est])mapped[est]=[];mapped[est].push(task);
+    });
+    const unassigned=Object.values(mapped).flat().filter(t=>!t.gerenteId).length;
+    setPreview({mapped,skippedList,unassigned,total:importRows.length});setShowSkipped(false);setImportStep(3);
+  };
+
+  const doImport=async()=>{
+    if(!preview)return;setImporting(true);
+    const next={...tasksRef.current};let total=0;
+    Object.entries(preview.mapped).forEach(([est,ts])=>{next[est]=[...(next[est]||[]),...ts];total+=ts.length;});
+    const firstEst=Object.keys(preview.mapped)[0];
+    mutate(next);
+    let anyFail=false;
+    for(const eid of Object.keys(preview.mapped)){
+      let ok=false;
+      for(let i=0;i<3;i++){try{await window.storage.set(TASKS_PREFIX+eid,JSON.stringify(next[eid]),true);ok=true;break;}catch(_){await new Promise(r=>setTimeout(r,300));}}
+      if(!ok)anyFail=true;
+    }
+    lastWriteRef.current=Date.now();
+    if(anyFail)setSaveError("Falha ao gravar algumas esteiras. Esvazie a lixeira e tente novamente.");
+    await logAction("imported",`${total} importadas${preview.skippedList.length?`, ${preview.skippedList.length} ignoradas`:""}${anyFail?" [ERRO]":""}`);
+    setImporting(false);closeImport();
+    if(firstEst){setFilters(INIT_F);setTab(firstEst);}
+  };
+
+  const closeImport=()=>{setShowImport(false);setImportStep(1);setPreview(null);setImportRows([]);setImportHeaders([]);setShowSkipped(false);if(fileRef.current)fileRef.current.value="";};
+
+  const exportXLSX=async()=>{
+    if(!window.XLSX)return;
+    const data=Object.entries(tasksRef.current).flatMap(([eid,ts])=>ts.filter(t=>visTask(t)).map(t=>({Codigo:t.code||"",Categoria:estsRef.current.find(e=>e.id===eid)?.label||eid,Tarefa:t.title,Analistas:respStr(t),Coordenador:t.coordenador||"",Gerente:t.gerente||"",Cliente:t.cliente||"",Processo:t.processo||"",Mes:t.mes?fmtMonth(t.mes):"",Prazo:t.deadline?fmtDate(t.deadline):"",Prioridade:PRI[t.priority]?.label||"",Status:t.status==="concluida"?"Concluida":"Pendente","Concluido por":t.completedBy||"","Data Conclusao":t.completedAt?fmtDT(t.completedAt):""})));
+    const ws=window.XLSX.utils.json_to_sheet(data);const wb=window.XLSX.utils.book_new();window.XLSX.utils.book_append_sheet(wb,ws,"Operacao 2026");window.XLSX.writeFile(wb,`SinergyRH_${new Date().toISOString().slice(0,10)}.xlsx`);
+    await logAction("exported",`${data.length} tarefas`);
+  };
+
+  const switchTab=t=>{setTab(t);setBulkMode(false);setBulkSel(new Set());setBulkEditOpen(false);};
+  const setF=(k,v)=>setFilters(prev=>{const nf={...prev,[k]:v};if(sessionRef.current)savePrefsFor(sessionRef.current.id,nf,sortIdx);return nf;});
+  const clearFilters=()=>{setFilters(INIT_F);if(sessionRef.current)savePrefsFor(sessionRef.current.id,INIT_F,sortIdx);};
+  const changeSort=v=>{setSortIdx(v);if(sessionRef.current)savePrefsFor(sessionRef.current.id,filters,v);};
+  const activeFC=Object.values(filters).filter(v=>v!=="all").length;
+  const isWS=tab==="workspace";
+  const sortedEsts=[...visEsts].sort((a,b)=>a.order-b.order);
+  const decorate=(t,eid)=>({...t,_eid:eid,_resp:respArr(t),responsible:respStr(t)});
+  const allActive=Object.entries(tasks).flatMap(([eid,ts])=>ts.filter(t=>visTask(t)&&visEsts.some(e=>e.id===eid)).map(t=>decorate(t,eid)));
+  const cur=isWS?allActive.filter(t=>t._resp.includes(session?.name)):(tasks[tab]||[]).filter(t=>visTask(t)).map(t=>decorate(t,tab));
+  const activeE=isWS?{id:"workspace",label:"Minha Area",color:"#818cf8"}:esteiras.find(e=>e.id===tab)||{color:"#818cf8",label:""};
+  const done=cur.filter(t=>t.status==="concluida").length;const pct=cur.length?Math.round(done/cur.length*100):0;
+  const uVals=k=>[...new Set(cur.map(t=>t[k]).filter(Boolean))].sort();
+  const respOpts=distinct(cur.flatMap(t=>t._resp));
+  const filtered=cur.filter(t=>Object.entries(filters).every(([k,v])=>{if(v==="all")return true;if(k==="responsible")return t._resp.includes(v);return t[k]===v;}));
+  const sortOpt=SORT_OPTIONS[sortIdx]||SORT_OPTIONS[0];const sortFn=makeSortFn(sortOpt.field,sortOpt.dir);
+  const grouped={atraso:[],andamento:[],planejada:[],feito:[]};
+  filtered.forEach(t=>grouped[getStatusGroup(t)].push(t));Object.keys(grouped).forEach(k=>grouped[k].sort(sortFn));
+  const scopedTrash=trash.filter(t=>visTask(t));
+  const trashCount=scopedTrash.length;
+  const canTaskEdit=t=>has("edit_task")||(has("edit_own")&&respArr(t).includes(session?.name));
+
+  const addTask=async()=>{
+    if(!form.title.trim()||isWS||!has("create_task"))return;
+    let gerName,gerId;
+    if(scope==="all"){const gu=resolveGerente(form.gerente);gerId=gu?gu.id:null;gerName=gu?gu.name:form.gerente.trim();}
+    else{gerId=scope;gerName=myGerenteName;}
+    if(editId){
+      const old=(tasksRef.current[tab]||[]).find(t=>t.id===editId);if(old&&!canTaskEdit(old))return;
+      const nt={...tasksRef.current,[tab]:(tasksRef.current[tab]||[]).map(t=>t.id===editId?{...t,title:form.title.trim(),responsibles:form.responsibles,coordenador:form.coordenador,gerente:gerName,gerenteId:gerId,deadline:form.deadline,priority:form.priority,cliente:form.cliente,processo:form.processo,mes:form.mes}:t)};
+      mutate(nt);await logAction("edited",`${old?.code?old.code+" · ":""}${old?.title||form.title}`);setEditId(null);
+    }else{
+      const task={id:Date.now().toString(36)+Math.random().toString(36).slice(2),code:genCode(),title:form.title.trim(),responsibles:form.responsibles,coordenador:form.coordenador,gerente:gerName,gerenteId:gerId,deadline:form.deadline,priority:form.priority,cliente:form.cliente,processo:form.processo,mes:form.mes,status:"pendente",createdAt:new Date().toISOString(),createdBy:session.name};
+      const nt={...tasksRef.current,[tab]:[...(tasksRef.current[tab]||[]),task]};
+      mutate(nt);await logAction("created",`${task.code} · ${task.title}`);
+    }
+    setForm({title:"",responsibles:[],coordenador:"",gerente:"",deadline:"",priority:"alta",cliente:"",processo:"",mes:""});setShowForm(false);
+  };
+
+  const doToggle=async(eid,id)=>{const task=(tasksRef.current[eid]||[]).find(t=>t.id===id);if(!task)return;const bd=task.status!=="concluida";const nt={...tasksRef.current,[eid]:tasksRef.current[eid].map(t=>t.id===id?{...t,status:bd?"concluida":"pendente",completedBy:bd?session.name:null,completedAt:bd?new Date().toISOString():null}:t)};mutate(nt);await logAction(bd?"completed":"uncompleted",`${task.code?task.code+" · ":""}${task.title}`);};
+  const toggle=id=>{if(!has("complete_task"))return;const eid=isWS?(cur.find(t=>t.id===id)?._eid):tab;if(!eid)return;const task=(tasksRef.current[eid]||[]).find(t=>t.id===id);if(!task)return;const completing=task.status!=="concluida";if(completing&&!respArr(task).includes(session.name)){setPendingToggle({eid,id,title:task.title});return;}doToggle(eid,id);};
+  const confirmToggle=()=>{if(pendingToggle)doToggle(pendingToggle.eid,pendingToggle.id);setPendingToggle(null);};
+
+  const softDelete=async id=>{
+    if(!has("delete_task"))return;const eid=isWS?(cur.find(t=>t.id===id)?._eid):tab;if(!eid)return;
+    const task=(tasksRef.current[eid]||[]).find(t=>t.id===id);if(!task)return;
+    const nt={...tasksRef.current,[eid]:tasksRef.current[eid].filter(t=>t.id!==id)};mutate(nt);
+    const trashed={...task,eid,deletedAt:new Date().toISOString(),deletedBy:session.name};
+    const nt2=[...trashRef.current,trashed];trashRef.current=nt2;setTrash(nt2);
+    try{await window.storage.set(TRASH_KEY,JSON.stringify(nt2),true);}catch(_){}
+    await logAction("deleted",`${task.code?task.code+" · ":""}${task.title}`);
+  };
+
+  const bulkDelete=async()=>{
+    if(!has("bulk_ops")||!has("delete_task")||bulkSel.size===0)return;
+    const ids=new Set(bulkSel);const now=new Date().toISOString();const nt={...tasksRef.current};const newTrashed=[];let count=0;
+    for(const eid of Object.keys(nt)){const kept=[];for(const t of nt[eid]){if(ids.has(t.id)){newTrashed.push({...t,eid,deletedAt:now,deletedBy:session.name});count++;}else kept.push(t);}nt[eid]=kept;}
+    mutate(nt);const nt2=[...trashRef.current,...newTrashed];trashRef.current=nt2;setTrash(nt2);
+    try{await window.storage.set(TRASH_KEY,JSON.stringify(nt2),true);}catch(_){}
+    await logAction("bulkDeleted",`${count} tarefas`);setBulkSel(new Set());setBulkMode(false);setBulkConfirm(false);
+  };
+
+  const bulkEdit=async()=>{
+    if(!has("bulk_ops")||bulkSel.size===0||!bulkF)return;const ids=new Set(bulkSel);const nt={...tasksRef.current};let count=0;
+    if(bulkF==="esteira"){if(!bulkV)return;if(!nt[bulkV])nt[bulkV]=[];const moved=[];for(const eid of Object.keys(nt)){if(eid===bulkV)continue;nt[eid]=nt[eid].filter(t=>{if(ids.has(t.id)){moved.push(t);count++;return false;}return true;});}nt[bulkV]=[...(nt[bulkV]||[]),...moved];}
+    else if(bulkF==="gerente"){if(!bulkV)return;const gu=gerenteUsers.find(u=>u.id===bulkV);for(const eid of Object.keys(nt))nt[eid]=nt[eid].map(t=>{if(ids.has(t.id)){count++;return{...t,gerente:gu?.name||"",gerenteId:gu?.id||null};}return t;});}
+    else if(bulkF==="responsible"){for(const eid of Object.keys(nt))nt[eid]=nt[eid].map(t=>{if(ids.has(t.id)){count++;return{...t,responsibles:bulkV?[bulkV]:[],responsible:bulkV};}return t;});}
+    else{for(const eid of Object.keys(nt))nt[eid]=nt[eid].map(t=>{if(ids.has(t.id)){count++;return{...t,[bulkF]:bulkV};}return t;});}
+    mutate(nt);await logAction("bulkEdited",`${count} tarefas - campo ${bulkF}`);setBulkSel(new Set());setBulkMode(false);setBulkEditOpen(false);setBulkF("");setBulkV("");
+  };
+
+  const toggleSel=id=>{setBulkSel(prev=>{const n=new Set(prev);if(n.has(id))n.delete(id);else n.add(id);return n;});};
+  const startEdit=t=>{if(!canTaskEdit(t))return;setForm({title:t.title,responsibles:respArr(t),coordenador:t.coordenador||"",gerente:t.gerente||"",deadline:t.deadline||"",priority:t.priority,cliente:t.cliente||"",processo:t.processo||"",mes:t.mes||""});setEditId(t.id);if(isWS)setTab(t._eid);setShowForm(true);};
+  const cancelForm=()=>{setShowForm(false);setEditId(null);setForm({title:"",responsibles:[],coordenador:"",gerente:"",deadline:"",priority:"alta",cliente:"",processo:"",mes:""});};
+  const anyModal=showAdmin||showLog||showImport||showTrash||showEst||showGrp||pendingToggle||restoreConfirm;
+  const myGroup=groups.find(g=>g.id===session?.groupId);
+
+  let bulkValueInput=null;
+  if(bulkEditOpen){
+    const bft=BULK_FIELDS.find(x=>x.key===bulkF);
+    if(!bulkF)bulkValueInput=<input disabled placeholder="Selecione um campo" style={{...I,padding:"6px 10px",opacity:0.5}}/>;
+    else if(bulkF==="esteira")bulkValueInput=<select value={bulkV} onChange={ev=>setBulkV(ev.target.value)} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"6px 10px"}}><option value="">Selecione...</option>{esteiras.map(e=><option key={e.id} value={e.id}>{e.label}</option>)}</select>;
+    else if(bulkF==="gerente")bulkValueInput=<select value={bulkV} onChange={ev=>setBulkV(ev.target.value)} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"6px 10px"}}><option value="">Selecione...</option>{gerenteUsers.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select>;
+    else if(bulkF==="priority")bulkValueInput=<select value={bulkV} onChange={ev=>setBulkV(ev.target.value)} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"6px 10px"}}><option value="">Selecione...</option><option value="alta">Alta</option><option value="media">Media</option><option value="baixa">Baixa</option></select>;
+    else if(bft?.type==="date")bulkValueInput=<input type="date" value={bulkV} onChange={ev=>setBulkV(ev.target.value)} style={{...I,colorScheme:T.cs,padding:"6px 10px"}}/>;
+    else if(bft?.type==="month")bulkValueInput=<input type="month" value={bulkV} onChange={ev=>setBulkV(ev.target.value)} style={{...I,colorScheme:T.cs,padding:"6px 10px"}}/>;
+    else{const sug=bulkF==="responsible"?userNames:bulkF==="coordenador"?distinct(users.filter(u=>isCoordUser(u,groups)).map(u=>u.name)):bulkF==="cliente"?histCliente:bulkF==="processo"?histProcesso:[];bulkValueInput=<AutoInput value={bulkV} onChange={setBulkV} suggestions={sug} placeholder="Valor" T={T}/>;}
+  }
+
+  if(!session)return(
+    <div style={{minHeight:"100vh",background:T.bg,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Inter',sans-serif",padding:24}}>
+      <div style={{width:"100%",maxWidth:360}}>
+        <div style={{textAlign:"center",marginBottom:32}}>
+          <div style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:52,height:52,borderRadius:14,background:"rgba(99,102,241,0.15)",border:"1px solid rgba(99,102,241,0.3)",marginBottom:16,fontSize:24,fontWeight:700,color:"#818cf8"}}>S</div>
+          <div style={{fontSize:11,fontWeight:600,letterSpacing:"0.15em",color:T.textM,textTransform:"uppercase",marginBottom:6}}>SinergyRH</div>
+          <h1 style={{margin:0,fontSize:22,fontWeight:700,color:T.text}}>Operacao 2026</h1>
+          <p style={{margin:"6px 0 0",fontSize:13,color:T.textM,display:"flex",alignItems:"center",justifyContent:"center",gap:5}}><Lock size={12}/>Acesso restrito</p>
+        </div>
+        <div style={{background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,padding:24}}>
+          <div style={{marginBottom:16}}><div style={{fontSize:11,color:T.textM,marginBottom:6}}>Usuario</div><select value={loginName} onChange={ev=>{setLoginName(ev.target.value);setLoginErr("");}} style={{...I,background:T.selBg,colorScheme:T.cs}}><option value="">Selecione...</option>{users.map(u=><option key={u.id} value={u.name}>{u.name}</option>)}</select></div>
+          <div style={{marginBottom:20}}><div style={{fontSize:11,color:T.textM,marginBottom:6}}>PIN</div><input type="password" inputMode="numeric" value={loginPin} onChange={ev=>setLoginPin(ev.target.value.replace(/\D/g,"").slice(0,6))} placeholder="......" style={I} onKeyDown={ev=>ev.key==="Enter"&&handleLogin()} maxLength={6}/></div>
+          {loginErr&&<div style={{fontSize:12,color:"#ef4444",marginBottom:14,textAlign:"center",padding:"8px",background:"rgba(239,68,68,0.08)",borderRadius:6}}>{loginErr}</div>}
+          <button onClick={handleLogin} disabled={!loginName||loginPin.length<4} style={{...mkB("#6366f1",false,T),width:"100%",padding:"10px",fontSize:14,opacity:(!loginName||loginPin.length<4)?0.4:1}}>Entrar</button>
+        </div>
+        <div style={{display:"flex",justifyContent:"center",marginTop:14}}><button onClick={()=>setDarkMode(d=>!d)} style={{background:"transparent",border:`1px solid ${T.border}`,borderRadius:8,padding:"5px 14px",color:T.textM,fontSize:12,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}>{darkMode?<Sun size={14}/>:<Moon size={14}/>}{darkMode?"Modo Claro":"Modo Escuro"}</button></div>
+      </div>
+    </div>
+  );
+
+  return(
+    <div style={{minHeight:"100vh",height:anyModal?"100vh":undefined,overflow:anyModal?"hidden":undefined,background:T.bg,fontFamily:"'Inter',sans-serif",color:T.text,position:"relative"}}>
+      {showAdmin&&has("manage_users")&&<OVL zi={60} ov={T.ov}><AdminPanel users={users} groups={groups} session={session} onSaveUsers={saveUsers} onLog={logAction} onClose={closeAdmin} T={T}/></OVL>}
+      {showGrp&&has("manage_groups")&&<OVL zi={61} ov={T.ov}><GroupsManager groups={groups} users={users} esteiras={esteiras} onSave={saveGroups} onLog={logAction} onClose={closeGrp} T={T}/></OVL>}
+      {showEst&&has("manage_esteiras")&&<OVL zi={59} ov={T.ov}><EsteirasManager esteiras={esteiras} onSave={saveEsteiras} onLog={logAction} onClose={closeEst} T={T}/></OVL>}
+      {showLog&&has("view_log")&&<OVL zi={58} ov={T.ov}><LogModal log={log} canExport={has("export_log")} onClose={closeLog} T={T}/></OVL>}
+      {showTrash&&has("view_trash")&&<OVL zi={57} ov={T.ov}><TrashModal trash={scopedTrash} esteiras={esteiras} canRestore={has("restore_trash")} onRestore={restoreTask} onEmpty={isAdmin?emptyTrash:null} onClose={closeTrash} T={T}/></OVL>}
+
+      {pendingToggle&&(
+        <OVL zi={70} ov={T.ov}>
+          <div style={{width:"100%",maxWidth:400,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,padding:24}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}><AlertTriangle size={18} color="#f59e0b"/><div style={{fontSize:15,fontWeight:700,color:T.text}}>Tarefa de outro responsavel</div></div>
+            <div style={{fontSize:13,color:T.textM,marginBottom:16}}>Esta tarefa nao esta atribuida a voce. Deseja conclui-la mesmo assim?<div style={{marginTop:8,color:T.textS,fontWeight:500}}>{pendingToggle.title}</div></div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setPendingToggle(null)} style={mkB(null,true,T)}>Cancelar</button><button onClick={confirmToggle} style={mkB("#22c55e",false,T)}><Check size={14}/>Concluir</button></div>
+          </div>
+        </OVL>
+      )}
+      {restoreConfirm&&(
+        <OVL zi={71} ov={T.ov}>
+          <div style={{width:"100%",maxWidth:440,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,padding:28}}>
+            {restoreConfirm.error?(<><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}><AlertTriangle size={18} color="#ef4444"/><div style={{fontSize:15,fontWeight:700,color:T.text}}>Arquivo invalido</div></div><div style={{fontSize:13,color:T.textM,marginBottom:20}}>{restoreConfirm.error}</div><div style={{display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setRestoreConfirm(null)} style={mkB(null,true,T)}>Fechar</button></div></>)
+            :(<><div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}><RotateCcw size={18} color="#6366f1"/><div style={{fontSize:15,fontWeight:700,color:T.text}}>Confirmar restauracao</div></div>
+              <div style={{padding:"12px 14px",borderRadius:10,background:T.panelBg,border:`1px solid ${T.borderL}`,marginBottom:14}}>
+                <div style={{fontSize:12,color:T.textM,marginBottom:4}}>Gerado em: <strong style={{color:T.textS}}>{new Date(restoreConfirm.exportedAt).toLocaleString("pt-BR")}</strong></div>
+                <div style={{fontSize:12,color:T.textM}}>Tarefas: <strong style={{color:T.textS}}>{Object.values(restoreConfirm.tasks||{}).flat().length}</strong> · Usuarios: <strong style={{color:T.textS}}>{(restoreConfirm.users||[]).length}</strong> · Log: <strong style={{color:T.textS}}>{(restoreConfirm.log||[]).length}</strong> registros</div>
+              </div>
+              <div style={{fontSize:12,color:"#f59e0b",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:8,padding:"10px 12px",marginBottom:20,display:"flex",alignItems:"flex-start",gap:8}}><AlertTriangle size={14} style={{flexShrink:0,marginTop:1}}/>Todos os dados atuais serao substituidos. Esta acao nao pode ser desfeita.</div>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setRestoreConfirm(null)} style={mkB(null,true,T)}>Cancelar</button><button onClick={doRestore} style={mkB("#6366f1",false,T)}><RotateCcw size={14}/>Restaurar agora</button></div>
+            </>)}
+          </div>
+        </OVL>
+      )}
+
+      {showImport&&(
+        <OVL zi={50} ov={T.ov}>
+          <div style={{width:"100%",maxWidth:640,background:T.surface,borderRadius:16,border:`1px solid ${T.border}`,overflow:"hidden"}}>
+            <ModalHead title="Importar XLSX" subtitle={`Passo ${importStep} de 3`} onClose={closeImport} T={T}/>
+            {importStep===1&&(<div style={{padding:24}}>
+              <div onClick={()=>xlsxReady&&fileRef.current?.click()} style={{border:"2px dashed rgba(99,102,241,0.35)",borderRadius:12,padding:"28px 24px",textAlign:"center",cursor:xlsxReady?"pointer":"default",background:"rgba(99,102,241,0.04)",marginBottom:20}}>
+                <div style={{display:"flex",justifyContent:"center",marginBottom:10,color:"#818cf8"}}><Upload size={32}/></div>
+                <div style={{fontSize:14,fontWeight:600,color:T.text,marginBottom:4}}>{xlsxReady?"Clique para selecionar":"Carregando..."}</div>
+                <div style={{fontSize:12,color:T.textM}}>XLSX ou XLS · primeira linha = cabecalhos · analista aceita varios nomes separados por virgula</div>
+                <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={handleFile} style={{display:"none"}}/>
+              </div>
+              <div style={{padding:14,borderRadius:10,background:T.panelBg,border:`1px solid ${T.borderL}`}}>
+                <div style={{fontSize:11,fontWeight:600,color:T.textM,marginBottom:8,textTransform:"uppercase",letterSpacing:"0.1em"}}>Esteiras disponiveis</div>
+                {esteiras.map(e=>(<div key={e.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",borderBottom:`1px solid ${T.borderL}`}}><div style={{width:10,height:10,borderRadius:2,background:e.color}}/><span style={{fontSize:12,color:T.textS}}>{e.label}</span></div>))}
+              </div>
+            </div>)}
+            {importStep===2&&(<div style={{padding:24}}>
+              <div style={{fontSize:12,color:T.textM,marginBottom:16}}>{importRows.length} linhas, {importHeaders.length} colunas</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+                {COL_FIELDS.map(f=>(<div key={f.key}><div style={{fontSize:11,color:colMap[f.key]?T.textS:T.textM,marginBottom:4,display:"flex",alignItems:"center",gap:6}}>{f.label}{f.required&&<span style={{color:"#ef4444"}}>*</span>}{colMap[f.key]&&<Check size={12} color="#10b981"/>}</div><select value={colMap[f.key]||""} onChange={ev=>setColMap(m=>({...m,[f.key]:ev.target.value}))} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"6px 10px"}}><option value="">(nenhuma)</option>{importHeaders.map(h=><option key={h} value={h}>{h}</option>)}</select></div>))}
+              </div>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>{setImportStep(1);if(fileRef.current)fileRef.current.value="";}} style={mkB(null,true,T)}>Voltar</button><button onClick={buildPreview} disabled={!colMap.category||!colMap.title} style={{...mkB("#6366f1",false,T),opacity:(!colMap.category||!colMap.title)?0.4:1}}>Previa</button></div>
+            </div>)}
+            {importStep===3&&preview&&(<div style={{padding:24}}>
+              <div style={{display:"flex",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+                <div style={{padding:"10px",borderRadius:8,background:T.panelBg,border:`1px solid ${T.borderL}`,textAlign:"center",flex:1,minWidth:90}}><div style={{fontSize:22,fontWeight:700,color:"#10b981"}}>{Object.values(preview.mapped).flat().length}</div><div style={{fontSize:11,color:T.textM,marginTop:2}}>tarefas</div></div>
+                <div style={{padding:"10px",borderRadius:8,background:T.panelBg,border:`1px solid ${T.borderL}`,textAlign:"center",flex:1,minWidth:90}}><div style={{fontSize:22,fontWeight:700,color:"#6366f1"}}>{Object.keys(preview.mapped).length}</div><div style={{fontSize:11,color:T.textM,marginTop:2}}>esteiras</div></div>
+                {preview.unassigned>0&&<div style={{padding:"10px",borderRadius:8,background:"rgba(234,179,8,0.08)",border:"1px solid rgba(234,179,8,0.2)",textAlign:"center",flex:1,minWidth:90}}><div style={{fontSize:22,fontWeight:700,color:"#eab308"}}>{preview.unassigned}</div><div style={{fontSize:11,color:"#a16207",marginTop:2}}>sem gerente</div></div>}
+                {preview.skippedList.length>0&&<div onClick={()=>setShowSkipped(s=>!s)} style={{padding:"10px",borderRadius:8,background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.2)",textAlign:"center",flex:1,minWidth:90,cursor:"pointer"}}><div style={{fontSize:22,fontWeight:700,color:"#f59e0b"}}>{preview.skippedList.length}</div><div style={{fontSize:11,color:"#92400e",marginTop:2}}>nao importadas</div></div>}
+              </div>
+              {preview.skippedList.length>0&&(<div style={{marginBottom:16}}><button onClick={()=>setShowSkipped(s=>!s)} style={{...mkB(null,true,T),fontSize:11.5,padding:"6px 12px",width:"100%",justifyContent:"space-between"}}>{showSkipped?"Ocultar":"Ver"} relatorio de nao importadas ({preview.skippedList.length}){showSkipped?<ChevronUp size={14}/>:<ChevronDown size={14}/>}</button>{showSkipped&&(<div style={{marginTop:8,maxHeight:200,overflowY:"auto",border:`1px solid ${T.borderL}`,borderRadius:8}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:T.panelBg}}>{["Linha","Categoria","Tarefa","Motivo"].map(h=><th key={h} style={{padding:"6px 10px",textAlign:"left",color:T.textM,fontSize:10.5,textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead><tbody>{preview.skippedList.map((s,i)=>(<tr key={i} style={{borderTop:`1px solid ${T.borderL}`}}><td style={{padding:"6px 10px",color:T.textM}}>{s.linha}</td><td style={{padding:"6px 10px",color:T.textS,maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.categoria||"-"}</td><td style={{padding:"6px 10px",color:T.text,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.tarefa||"-"}</td><td style={{padding:"6px 10px",color:"#f59e0b"}}>{s.motivo}</td></tr>))}</tbody></table></div>)}</div>)}
+              {preview.unassigned>0&&<div style={{fontSize:11,color:"#a16207",marginBottom:14,padding:"8px 10px",borderRadius:8,background:"rgba(234,179,8,0.06)",border:"1px solid rgba(234,179,8,0.18)"}}>Tarefas sem gerente reconhecido ficarao visiveis so para o Admin ate serem atribuidas (Editar em lote &gt; Gerente).</div>}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:20}}>{Object.entries(preview.mapped).map(([eid,ts])=>{const e=esteiras.find(x=>x.id===eid);return(<div key={eid} style={{padding:"12px 14px",borderRadius:8,border:`1px solid ${e?.color||"#888"}33`,background:`${e?.color||"#888"}0d`}}><div style={{fontSize:13,fontWeight:600,color:e?.color||T.text,marginBottom:2}}>{e?.label||eid}</div><div style={{fontSize:11,color:T.textM}}>{ts.length} tarefa{ts.length!==1?"s":""}</div></div>);})}</div>
+              <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setImportStep(2)} style={mkB(null,true,T)}>Voltar</button><button onClick={doImport} disabled={importing||Object.keys(preview.mapped).length===0} style={{...mkB("#10b981",false,T),opacity:(importing||Object.keys(preview.mapped).length===0)?0.5:1}}>{importing?"Importando...":"Confirmar"}</button></div>
+            </div>)}
+          </div>
+        </OVL>
+      )}
+
+      {/* ── HEADER ── */}
+      <div style={{padding:"18px 28px 0",borderBottom:`1px solid ${T.borderL}`}}>
+        {saveError&&<div style={{margin:"0 0 12px",padding:"10px 14px",borderRadius:8,background:"rgba(239,68,68,0.12)",border:"1px solid rgba(239,68,68,0.4)",color:"#ef4444",fontSize:12.5,fontWeight:600,display:"flex",alignItems:"center",gap:8}}><AlertTriangle size={15}/>{saveError}<button onClick={()=>setSaveError("")} style={{marginLeft:"auto",background:"transparent",border:"none",color:"#ef4444",cursor:"pointer",display:"inline-flex"}}><X size={15}/></button></div>}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10}}>
+          <div><div style={{fontSize:11,fontWeight:600,letterSpacing:"0.12em",color:T.textM,textTransform:"uppercase",marginBottom:4}}>SinergyRH</div><h1 style={{margin:0,fontSize:20,fontWeight:700,color:T.text}}>Operacao 2026</h1></div>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            {has("manage_users")&&<button onClick={()=>setShowAdmin(true)} style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(168,85,247,0.3)",background:"rgba(168,85,247,0.08)",color:"#a855f7",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}><Users size={14}/>Acessos</button>}
+            {has("manage_groups")&&<button onClick={()=>setShowGrp(true)} style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(168,85,247,0.3)",background:"rgba(168,85,247,0.08)",color:"#a855f7",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}><ShieldCheck size={14}/>Grupos</button>}
+            {has("manage_esteiras")&&<button onClick={()=>setShowEst(true)} style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(168,85,247,0.3)",background:"rgba(168,85,247,0.08)",color:"#a855f7",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}><Layers size={14}/>Esteiras</button>}
+            {has("view_trash")&&<button onClick={()=>setShowTrash(true)} style={{padding:"6px 12px",borderRadius:8,border:`1px solid ${trashCount>0?"rgba(239,68,68,0.3)":T.border}`,background:trashCount>0?"rgba(239,68,68,0.08)":"transparent",color:trashCount>0?"#ef4444":T.textM,fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}><Trash2 size={14}/>Lixeira{trashCount>0?` (${trashCount})`:""}</button>}
+            {isAdmin&&<button onClick={async()=>{const n=await dedupeTasks();if(n>0)setSaveError(`Removidas ${n} duplicatas.`);setTimeout(()=>setSaveError(s=>s.startsWith("Removidas")?"":s),4000);}} style={{padding:"6px 12px",borderRadius:8,border:"1px solid rgba(245,158,11,0.4)",background:"rgba(245,158,11,0.1)",color:"#f59e0b",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}} title="Remover tarefas com mesmo titulo/cliente/mes/prazo/analista"><Layers size={14}/>Duplicatas</button>}
+            {has("import")&&<button onClick={()=>setShowImport(true)} style={{...mkB("#6366f1",false,T),padding:"6px 13px",fontSize:12}}><Upload size={14}/>Importar</button>}
+            {has("export")&&<button onClick={exportXLSX} style={{...mkB("#10b981",false,T),padding:"6px 13px",fontSize:12}}><Download size={14}/>Exportar</button>}
+            {has("view_log")&&<button onClick={()=>setShowLog(true)} style={{...mkB(null,true,T),padding:"6px 13px",fontSize:12}}><ScrollText size={14}/>Log</button>}
+            {isAdmin&&<button onClick={exportBackup} style={{...mkB("#10b981",false,T),padding:"6px 13px",fontSize:12}} title="Exportar backup completo (tarefas, usuarios, logs, configuracoes)"><Download size={14}/>Backup</button>}
+            {isAdmin&&<button onClick={triggerRestore} style={{padding:"6px 13px",borderRadius:8,border:"1px solid rgba(245,158,11,0.4)",background:"rgba(245,158,11,0.1)",color:"#f59e0b",fontSize:12,fontWeight:600,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}><Upload size={14}/>Restaurar</button>}
+            <button onClick={()=>setDarkMode(d=>!d)} style={{padding:"6px 10px",borderRadius:8,border:`1px solid ${T.border}`,background:"transparent",color:T.textM,fontSize:12,cursor:"pointer",display:"inline-flex",alignItems:"center",gap:6}}>{darkMode?<Sun size={14}/>:<Moon size={14}/>}{darkMode?"Claro":"Escuro"}</button>
+            <div style={{display:"flex",alignItems:"center",gap:8,paddingLeft:10,borderLeft:`1px solid ${T.border}`}}>
+              <div style={{width:30,height:30,borderRadius:"50%",background:isAdmin?"rgba(168,85,247,0.15)":"rgba(99,102,241,0.1)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:isAdmin?"#a855f7":"#818cf8"}}>{session.name.charAt(0).toUpperCase()}</div>
+              <div><div style={{fontSize:12,fontWeight:500,color:T.text,lineHeight:1.3}}>{session.name}</div><div style={{fontSize:10,color:isAdmin?"#a855f7":T.textM,display:"flex",alignItems:"center",gap:3}}>{isAdmin&&<Lock size={9}/>}{myGroup?.name||""}{scope!=="all"&&myGerenteName&&<span style={{color:T.textD}}>· {myGerenteName}</span>}</div></div>
+              <button onClick={()=>setSession(null)} style={{...mkB(null,true,T),fontSize:11,padding:"4px 10px",marginLeft:2}}><LogOut size={13}/>Sair</button>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:7,height:7,borderRadius:"50%",background:syncing?"#818cf8":"#22c55e"}}/><span style={{fontSize:11,color:T.textD}}>{syncing?"Sync...":lastSync?lastSync.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):""}</span></div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:2,overflowX:"auto",alignItems:"center"}}>
+          {has("view_workspace")&&<button onClick={()=>switchTab("workspace")} style={{padding:"9px 15px",borderRadius:"8px 8px 0 0",border:"none",cursor:"pointer",fontSize:12.5,fontWeight:isWS?600:500,whiteSpace:"nowrap",background:isWS?"rgba(129,140,248,0.12)":"transparent",color:isWS?"#818cf8":T.textM,borderBottom:`2px solid ${isWS?"#818cf8":"transparent"}`}}>Minha Area</button>}
+          {has("view_workspace")&&<div style={{width:1,background:T.borderL,alignSelf:"stretch",margin:"0 6px"}}/>}
+          {sortedEsts.map(e=>{const pending=(tasks[e.id]||[]).filter(t=>visTask(t)&&t.status==="pendente").length;const active=tab===e.id;return(<button key={e.id} onClick={()=>switchTab(e.id)} style={{padding:"9px 15px",borderRadius:"8px 8px 0 0",border:"none",cursor:"pointer",fontSize:12.5,fontWeight:active?600:400,whiteSpace:"nowrap",background:active?T.tabA:"transparent",color:active?e.color:T.textM,borderBottom:`2px solid ${active?e.color:"transparent"}`,display:"flex",alignItems:"center",gap:6}}>{e.label}{pending>0&&<span style={{background:e.color+"33",color:e.color,borderRadius:10,fontSize:10,padding:"1px 6px",fontWeight:700}}>{pending}</span>}</button>);})}
+        </div>
+      </div>
+
+      {/* ── CONTENT ── */}
+      <div style={{padding:"20px 28px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:240}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}><span style={{fontSize:12,color:T.textM}}>{filtered.length}/{cur.length} tarefa{cur.length!==1?"s":""}</span><span style={{fontSize:12,fontWeight:600,color:activeE.color}}>{done}/{cur.length} - {pct}%</span></div><div style={{height:5,borderRadius:99,background:T.progBg}}><div style={{height:"100%",width:`${pct}%`,borderRadius:99,background:activeE.color,transition:"width 0.5s ease"}}/></div></div>
+          <button onClick={()=>setShowFilters(f=>!f)} style={{...mkB(showFilters?activeE.color:null,!showFilters,T),padding:"6px 12px",fontSize:12}}><Filter size={13}/>Filtros{activeFC>0?` (${activeFC})`:""}</button>
+          <select value={sortIdx} onChange={ev=>changeSort(parseInt(ev.target.value))} style={{...I,width:"auto",padding:"6px 10px",fontSize:12,background:T.selBg,colorScheme:T.cs}}>{SORT_OPTIONS.map((o,i)=><option key={i} value={i}>{o.label}</option>)}</select>
+          {has("bulk_ops")&&!isWS&&<button onClick={()=>{setBulkMode(b=>!b);setBulkSel(new Set());setBulkConfirm(false);setBulkEditOpen(false);}} style={{...mkB(bulkMode?"#ef4444":null,!bulkMode,T),padding:"6px 12px",fontSize:12}}>{bulkMode?"Cancelar":"Selecionar"}</button>}
+          {!isWS&&!bulkMode&&has("create_task")&&<button onClick={()=>{cancelForm();setShowForm(true);}} style={{...mkB(activeE.color,false,T),fontSize:12,padding:"6px 13px"}}><Plus size={14}/>Nova tarefa</button>}
+        </div>
+
+        {bulkMode&&(<div style={{marginBottom:14,padding:"10px 14px",borderRadius:10,border:"1px solid rgba(99,102,241,0.3)",background:"rgba(99,102,241,0.08)"}}>
+          <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:600,color:"#818cf8"}}>{bulkSel.size} selecionada{bulkSel.size!==1?"s":""}</span>
+            <button onClick={()=>setBulkSel(new Set(filtered.map(t=>t.id)))} style={{...mkB(null,true,T),fontSize:11,padding:"4px 10px"}}>Todas ({filtered.length})</button>
+            <button onClick={()=>setBulkSel(new Set())} disabled={bulkSel.size===0} style={{...mkB(null,true,T),fontSize:11,padding:"4px 10px",opacity:bulkSel.size===0?0.5:1}}>Limpar</button>
+            <div style={{flex:1}}/>
+            <button onClick={()=>{setBulkEditOpen(o=>!o);setBulkConfirm(false);}} disabled={bulkSel.size===0} style={{padding:"6px 14px",borderRadius:8,border:"1px solid rgba(99,102,241,0.4)",background:bulkEditOpen?"rgba(99,102,241,0.2)":"rgba(99,102,241,0.1)",color:"#818cf8",fontSize:12.5,fontWeight:600,cursor:"pointer",opacity:bulkSel.size===0?0.4:1,display:"inline-flex",alignItems:"center",gap:6}}><Pencil size={13}/>Editar em lote</button>
+            {has("delete_task")&&(bulkConfirm?<><span style={{fontSize:12,color:"#ef4444",fontWeight:500}}>Confirmar exclusao?</span><button onClick={()=>setBulkConfirm(false)} style={{...mkB(null,true,T),fontSize:11,padding:"4px 12px"}}>Cancelar</button><button onClick={bulkDelete} style={{padding:"4px 14px",borderRadius:8,border:"none",background:"#ef4444",color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Excluir</button></>:<button onClick={()=>{setBulkConfirm(true);setBulkEditOpen(false);}} disabled={bulkSel.size===0} style={{padding:"6px 14px",borderRadius:8,border:"1px solid rgba(239,68,68,0.4)",background:"rgba(239,68,68,0.1)",color:"#ef4444",fontSize:12.5,fontWeight:600,cursor:"pointer",opacity:bulkSel.size===0?0.4:1,display:"inline-flex",alignItems:"center",gap:6}}><Trash2 size={13}/>Excluir selecionadas</button>)}
+          </div>
+          {bulkEditOpen&&bulkSel.size>0&&(<div style={{marginTop:12,paddingTop:12,borderTop:"1px solid rgba(99,102,241,0.2)",display:"grid",gridTemplateColumns:"1fr 1.5fr auto auto",gap:10,alignItems:"end"}}>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Campo</div><select value={bulkF} onChange={ev=>{setBulkF(ev.target.value);setBulkV("");}} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"6px 10px"}}><option value="">Selecione...</option>{BULK_FIELDS.map(f=><option key={f.key} value={f.key}>{f.label}</option>)}</select></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Valor</div>{bulkValueInput}</div>
+            <button onClick={()=>{setBulkEditOpen(false);setBulkF("");setBulkV("");}} style={{...mkB(null,true,T),padding:"6px 12px",fontSize:11.5}}>Cancelar</button>
+            <button onClick={bulkEdit} disabled={!bulkF||((bulkF==="esteira"||bulkF==="gerente")&&!bulkV)} style={{...mkB("#10b981",false,T),padding:"6px 14px",fontSize:11.5,opacity:(!bulkF||((bulkF==="esteira"||bulkF==="gerente")&&!bulkV))?0.4:1}}>Aplicar</button>
+          </div>)}
+        </div>)}
+
+        {showFilters&&(<div style={{marginBottom:16,padding:16,borderRadius:10,border:`1px solid ${T.panelB}`,background:T.panelBg}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:10}}>
+            {[{key:"status",label:"Status",opts:[["all","Todos"],["pendente","Pendente"],["concluida","Concluida"]]},{key:"priority",label:"Prioridade",opts:[["all","Todas"],["alta","Alta"],["media","Media"],["baixa","Baixa"]]},{key:"responsible",label:"Analista",dyn:true},{key:"coordenador",label:"Coordenador",dyn:true},{key:"gerente",label:"Gerente",dyn:true},{key:"cliente",label:"Cliente",dyn:true},{key:"processo",label:"Processo",dyn:true},{key:"mes",label:"Mes",dyn:true,fmt:fmtMonth}].map(fc=>(
+              <div key={fc.key}><div style={{fontSize:10,fontWeight:600,color:filters[fc.key]!=="all"?activeE.color:T.textD,marginBottom:4,textTransform:"uppercase",letterSpacing:"0.07em"}}>{fc.label}{filters[fc.key]!=="all"&&" *"}</div><select value={filters[fc.key]} onChange={ev=>setF(fc.key,ev.target.value)} style={{...I,background:T.selBg,colorScheme:T.cs,padding:"6px 10px",fontSize:12,border:`1px solid ${filters[fc.key]!=="all"?activeE.color+"88":T.inpB}`}}><option value="all">Todos</option>{fc.dyn?(fc.key==="responsible"?respOpts:uVals(fc.key)).map(v=><option key={v} value={v}>{fc.fmt?fc.fmt(v):v}</option>):fc.opts?.slice(1).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
+            ))}
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}><span style={{fontSize:11,color:T.textM}}>Filtros salvos no seu usuario.</span><button onClick={clearFilters} style={{...mkB(null,true,T),fontSize:11,padding:"4px 12px",color:activeFC>0?"#ef4444":T.textM,borderColor:activeFC>0?"rgba(239,68,68,0.3)":T.border}}>Limpar filtros</button></div>
+        </div>)}
+
+        {showForm&&!isWS&&has("create_task")&&(<div style={{marginBottom:16,padding:18,borderRadius:12,border:`1px solid ${T.panelB}`,background:T.formBg,position:"relative",zIndex:5}}>
+          <div style={{display:"grid",gridTemplateColumns:"2fr 1.2fr 1fr 1fr",gap:10,marginBottom:10}}>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Tarefa *</div><AutoInput value={form.title} onChange={v=>setForm(f=>({...f,title:v}))} suggestions={fTitle} placeholder="Descricao" T={T} onEnter={addTask}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Analista responsavel</div><MultiAutoInput values={form.responsibles} onChange={v=>setForm(f=>({...f,responsibles:v}))} suggestions={memberNames} placeholder="Adicionar nome" T={T}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Coordenador</div><AutoInput value={form.coordenador} onChange={v=>setForm(f=>({...f,coordenador:v}))} suggestions={coordNames} placeholder="Nome" T={T}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Gerente / Lotacao</div>{scope==="all"?<AutoInput value={form.gerente} onChange={v=>setForm(f=>({...f,gerente:v}))} suggestions={gerenteNames} placeholder="Gerente" T={T}/>:<input disabled value={myGerenteName} style={{...I,opacity:0.6}}/>}</div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",gap:10,marginBottom:10}}>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Cliente</div><AutoInput value={form.cliente} onChange={v=>setForm(f=>({...f,cliente:v}))} suggestions={fCliente} placeholder="Empresa" T={T}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Processo</div><AutoInput value={form.processo} onChange={v=>setForm(f=>({...f,processo:v}))} suggestions={fProcesso} placeholder="..." T={T}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Mes</div><input type="month" value={form.mes} onChange={ev=>setForm(f=>({...f,mes:ev.target.value}))} style={{...I,colorScheme:T.cs}}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Prazo</div><input type="date" value={form.deadline} onChange={ev=>setForm(f=>({...f,deadline:ev.target.value}))} style={{...I,colorScheme:T.cs}}/></div>
+            <div><div style={{fontSize:11,color:T.textM,marginBottom:4}}>Prioridade</div><select value={form.priority} onChange={ev=>setForm(f=>({...f,priority:ev.target.value}))} style={{...I,background:T.selBg,colorScheme:T.cs}}><option value="alta">Alta</option><option value="media">Media</option><option value="baixa">Baixa</option></select></div>
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={cancelForm} style={mkB(null,true,T)}>Cancelar</button><button onClick={addTask} style={mkB(activeE.color,false,T)}>{editId?"Salvar":"Adicionar"}</button></div>
+        </div>)}
+
+        {filtered.length===0?(<div style={{textAlign:"center",padding:"48px 0",color:T.textD}}><div style={{display:"flex",justifyContent:"center",marginBottom:10,opacity:0.35}}><Inbox size={34}/></div><div style={{fontSize:13}}>{activeFC>0?"Nenhuma tarefa com esses filtros":isWS?"Sem tarefas atribuidas":"Nenhuma tarefa"}</div>{activeFC>0&&<button onClick={clearFilters} style={{marginTop:10,fontSize:12,color:activeE.color,background:"transparent",border:"none",cursor:"pointer",textDecoration:"underline"}}>Limpar filtros</button>}</div>):(
+          <div>
+            {Object.entries(STATUS_GROUPS).sort((a,b)=>a[1].order-b[1].order).map(([key,g])=>{
+              const list=grouped[key];if(!list||list.length===0)return null;
+              const isCollapsed=!!collapsedGroups[key];
+              return(<div key={key} style={{marginBottom:16}}>
+                <div onClick={()=>setCollapsedGroups(p=>({...p,[key]:!p[key]}))} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 4px",marginBottom:isCollapsed?0:8,borderBottom:`1px solid ${T.borderL}`,cursor:"pointer",userSelect:"none"}}>
+                  <span style={{fontSize:12,fontWeight:700,color:g.color,textTransform:"uppercase",letterSpacing:"0.08em"}}>{g.label}</span>
+                  <span style={{fontSize:11,color:T.textM,marginLeft:4}}>{list.length} tarefa{list.length!==1?"s":""}</span>
+                  <div style={{flex:1,height:1,background:g.color,opacity:0.15,marginLeft:6}}/>
+                  {isCollapsed?<ChevronDown size={14} color={T.textD}/>:<ChevronUp size={14} color={T.textD}/>}
+                </div>
+                {!isCollapsed&&<div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {list.map(task=>(
+                    <TaskCard key={task.id} task={task} esteiras={esteiras} activeColor={activeE.color} showEst={isWS} canDelete={has("delete_task")&&!bulkMode} canEdit={canTaskEdit(task)} canComplete={has("complete_task")} bulkMode={bulkMode} selected={bulkSel.has(task.id)} T={T} onToggle={toggle} onSelect={toggleSel} onEdit={startEdit} onDelete={softDelete}/>
+                  ))}
+                </div>}
+              </div>);
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
