@@ -10,8 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:'Inter',system-ui,sans-serif;}</style>
-  <script>
-// Lucide icons shim - generated from lucide SVG data
+  <script>// Lucide icons shim - generated from lucide SVG data
 var lucide = (function() {
   var icons = {};
   var e = React.createElement;
@@ -66,13 +65,11 @@ var lucide = (function() {
 
   return icons;
 })();
-
-  </script>
+</script>
 </head>
 <body>
 <div id="root"></div>
-<script>
-const SUPABASE_URL = "https://slmbgwpnegzvnxkllorh.supabase.co";
+<script>const SUPABASE_URL = "https://slmbgwpnegzvnxkllorh.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbWJnd3BuZWd6dm54a2xsb3JoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNTMxNDMsImV4cCI6MjA5NzcyOTE0M30.Fs_Th99bpkfAlHEgxPJiL26XGYtIb-R1H-XQ6Qx5tqU";
 
 async function sbFetch(method, table, body, qs) {
@@ -84,47 +81,71 @@ async function sbFetch(method, table, body, qs) {
     "Content-Type": "application/json"
   };
   if (method === "POST") headers["Prefer"] = "resolution=merge-duplicates,return=minimal";
+
+  console.log("[SB]", method, table, qs || "", body ? JSON.stringify(body).slice(0,80) : "");
+
   const res = await fetch(url, {
     method, headers,
     body: body != null ? JSON.stringify(body) : undefined
   });
-  if (!res.ok) {
-    const msg = await res.text();
-    throw new Error("Supabase " + method + " " + table + " (" + res.status + "): " + msg);
-  }
+
   const text = await res.text();
+  if (!res.ok) {
+    console.error("[SB ERROR]", method, table, res.status, text);
+    throw new Error("Supabase " + method + " " + table + " (" + res.status + "): " + text);
+  }
+
+  console.log("[SB OK]", method, table, res.status, text.slice(0,60));
   return text ? JSON.parse(text) : null;
 }
 
 window.storage = {
   async get(key, shared) {
-    if (key.startsWith("sinergy_est_")) {
-      const eid = key.replace("sinergy_est_", "");
-      const rows = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "data" });
+    console.log("[storage.get]", key);
+    try {
+      if (key.startsWith("sinergy_est_")) {
+        const eid = key.replace("sinergy_est_", "");
+        const rows = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "data" });
+        if (!rows || rows.length === 0) throw new Error("not found: " + key);
+        const val = JSON.stringify(rows.map(r => r.data));
+        console.log("[storage.get OK]", key, "->", rows.length, "tasks");
+        return { key, value: val, shared };
+      }
+      const rows = await sbFetch("GET", "kv", null, { id: "eq." + key, select: "value" });
       if (!rows || rows.length === 0) throw new Error("not found: " + key);
-      return { key, value: JSON.stringify(rows.map(r => r.data)), shared };
+      console.log("[storage.get OK]", key);
+      return { key, value: rows[0].value, shared };
+    } catch(e) {
+      console.warn("[storage.get MISS]", key, e.message);
+      throw e;
     }
-    const rows = await sbFetch("GET", "kv", null, { id: "eq." + key, select: "value" });
-    if (!rows || rows.length === 0) throw new Error("not found: " + key);
-    return { key, value: rows[0].value, shared };
   },
 
   async set(key, value, shared) {
-    if (key.startsWith("sinergy_est_")) {
-      const eid = key.replace("sinergy_est_", "");
-      let tasks = [];
-      try { tasks = JSON.parse(value); } catch(e) {}
-      if (!Array.isArray(tasks)) tasks = [];
+    console.log("[storage.set]", key, "len=", String(value).length);
+    try {
+      if (key.startsWith("sinergy_est_")) {
+        const eid = key.replace("sinergy_est_", "");
+        let tasks = [];
+        try { tasks = JSON.parse(value); } catch(e) {}
+        if (!Array.isArray(tasks)) tasks = [];
+        console.log("[storage.set tasks]", eid, tasks.length, "tarefas");
 
-      // Apaga TODAS as tarefas desta esteira e regrava as atuais (operação atômica simples)
-      await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
-      if (tasks.length > 0) {
-        await sbFetch("POST", "tasks", tasks.map(t => ({ task_id: t.id, eid, data: t })));
+        // Delete all then reinsert
+        await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
+        if (tasks.length > 0) {
+          await sbFetch("POST", "tasks", tasks.map(t => ({ task_id: t.id, eid, data: t })));
+        }
+        console.log("[storage.set OK]", key, tasks.length, "tarefas gravadas");
+        return { key, value, shared };
       }
+      await sbFetch("POST", "kv", { id: key, value: String(value) });
+      console.log("[storage.set OK]", key);
       return { key, value, shared };
+    } catch(e) {
+      console.error("[storage.set FAIL]", key, e.message);
+      throw e;
     }
-    await sbFetch("POST", "kv", { id: key, value: String(value) });
-    return { key, value, shared };
   },
 
   async delete(key, shared) {
@@ -138,19 +159,19 @@ window.storage = {
   },
 
   async list(prefix, shared) {
+    console.log("[storage.list]", prefix);
     if (prefix === "sinergy_est_") {
       const rows = await sbFetch("GET", "tasks", null, { select: "eid" });
       if (!rows) return { keys: [], prefix, shared };
       const eids = [...new Set(rows.map(r => r.eid))];
+      console.log("[storage.list OK] eids:", eids);
       return { keys: eids.map(e => "sinergy_est_" + e), prefix, shared };
     }
     return { keys: [], prefix, shared };
   }
 };
-
 </script>
-<script>
-var _excluded = ["eid", "deletedAt", "deletedBy"];
+<script>var _excluded = ["eid", "deletedAt", "deletedBy"];
 function _typeof(o) { "@babel/helpers - typeof"; return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function (o) { return typeof o; } : function (o) { return o && "function" == typeof Symbol && o.constructor === Symbol && o !== Symbol.prototype ? "symbol" : typeof o; }, _typeof(o); }
 function _objectWithoutProperties(e, t) { if (null == e) return {}; var o, r, i = _objectWithoutPropertiesLoose(e, t); if (Object.getOwnPropertySymbols) { var n = Object.getOwnPropertySymbols(e); for (r = 0; r < n.length; r++) o = n[r], -1 === t.indexOf(o) && {}.propertyIsEnumerable.call(e, o) && (i[o] = e[o]); } return i; }
 function _objectWithoutPropertiesLoose(r, e) { if (null == r) return {}; var t = {}; for (var n in r) if ({}.hasOwnProperty.call(r, n)) { if (-1 !== e.indexOf(n)) continue; t[n] = r[n]; } return t; }
@@ -7994,7 +8015,6 @@ function App() {
   }))));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
-
 </script>
 </body>
 </html>
