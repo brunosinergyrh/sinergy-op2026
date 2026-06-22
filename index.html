@@ -80,30 +80,66 @@ window.addEventListener('unhandledrejection', function(e) {
   console.error('[UNHANDLED REJECTION]', e.reason);
 });
 
-// Test connection immediately on load
+// Diagnóstico detalhado de conexão e permissões
 (async function testConnection() {
+  function showBanner(msg, color, persist) {
+    const old = document.getElementById('sb-status');
+    if (old) old.remove();
+    const div = document.createElement('div');
+    div.id = 'sb-status';
+    div.style.cssText = 'position:fixed;bottom:10px;right:10px;background:' + color + ';color:#fff;padding:8px 14px;border-radius:8px;font-size:12px;font-family:system-ui;z-index:9999;max-width:360px;word-break:break-all;cursor:pointer;line-height:1.4;';
+    div.textContent = msg;
+    div.onclick = () => div.remove();
+    document.body.appendChild(div);
+    if (!persist) setTimeout(() => div.remove(), 5000);
+  }
+
+  // 1. Teste GET (SELECT) na tabela kv
+  let getOk = false, getStatus = 0, getBody = '';
   try {
     const res = await fetch(SUPABASE_URL + "/rest/v1/kv?limit=1", {
       headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY }
     });
-    if (res.ok) {
-      console.log('[SUPABASE] Conexao OK - status', res.status);
-      // Show green banner
-      const div = document.createElement('div');
-      div.id = 'sb-status';
-      div.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#10b981;color:#fff;padding:6px 12px;border-radius:8px;font-size:12px;font-family:system-ui;z-index:9999;';
-      div.textContent = '✓ Supabase conectado';
-      document.body.appendChild(div);
-      setTimeout(() => div.remove(), 3000);
-    } else {
-      const txt = await res.text();
-      console.error('[SUPABASE] Conexao FALHOU', res.status, txt);
-      showError('Supabase: erro ' + res.status);
-    }
-  } catch(e) {
-    console.error('[SUPABASE] Conexao ERRO', e.message);
-    showError('Supabase: ' + e.message);
+    getStatus = res.status;
+    getBody = await res.text();
+    getOk = res.ok;
+  } catch(e) { getBody = 'FETCH ERROR: ' + e.message; }
+
+  if (!getOk) {
+    const msg = 'SUPABASE GET FALHOU [' + getStatus + ']: ' + getBody.slice(0, 200);
+    console.error('[SUPABASE DIAG]', msg);
+    showBanner('✗ ' + msg, '#ef4444', true);
+    return;
   }
+
+  // 2. Teste POST (UPSERT) na tabela kv
+  let postOk = false, postStatus = 0, postBody = '';
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/kv", {
+      method: 'POST',
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify({ id: '_diag_test_', value: 'ok_' + Date.now() })
+    });
+    postStatus = res.status;
+    postBody = await res.text();
+    postOk = res.ok;
+  } catch(e) { postBody = 'FETCH ERROR: ' + e.message; }
+
+  if (!postOk) {
+    const msg = 'SUPABASE POST FALHOU [' + postStatus + ']: ' + postBody.slice(0, 200);
+    console.error('[SUPABASE DIAG]', msg);
+    showBanner('✗ ' + msg, '#ef4444', true);
+    return;
+  }
+
+  // 3. Tudo OK
+  console.log('[SUPABASE] GET OK (' + getStatus + ') | POST OK (' + postStatus + ')');
+  showBanner('✓ Supabase OK (GET+POST funcionando)', '#10b981', false);
 })();
 
 function showError(msg) {
