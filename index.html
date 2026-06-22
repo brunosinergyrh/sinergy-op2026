@@ -72,102 +72,87 @@ var lucide = (function() {
 <script>const SUPABASE_URL = "https://slmbgwpnegzvnxkllorh.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbWJnd3BuZWd6dm54a2xsb3JoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNTMxNDMsImV4cCI6MjA5NzcyOTE0M30.Fs_Th99bpkfAlHEgxPJiL26XGYtIb-R1H-XQ6Qx5tqU";
 
-async function sbFetch(method, table, body, qs) {
-  let url = SUPABASE_URL + "/rest/v1/" + table;
-  if (qs) url += "?" + new URLSearchParams(qs).toString();
-  const headers = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": "Bearer " + SUPABASE_KEY,
-    "Content-Type": "application/json"
-  };
-  if (method === "POST") headers["Prefer"] = "resolution=merge-duplicates,return=minimal";
+// Store everything in the kv table as key=value text pairs
+// This is the simplest possible approach - no schema complexity
 
-  console.log("[SB]", method, table, qs || "", body ? JSON.stringify(body).slice(0,80) : "");
-
+async function sbGet(id) {
+  const url = SUPABASE_URL + "/rest/v1/kv?id=eq." + encodeURIComponent(id) + "&select=value";
   const res = await fetch(url, {
-    method, headers,
-    body: body != null ? JSON.stringify(body) : undefined
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": "Bearer " + SUPABASE_KEY
+    }
   });
+  if (!res.ok) throw new Error("GET failed: " + await res.text());
+  const rows = await res.json();
+  if (!rows || rows.length === 0) throw new Error("not found: " + id);
+  return rows[0].value;
+}
 
-  const text = await res.text();
+async function sbSet(id, value) {
+  const url = SUPABASE_URL + "/rest/v1/kv";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": "Bearer " + SUPABASE_KEY,
+      "Content-Type": "application/json",
+      "Prefer": "resolution=merge-duplicates,return=minimal"
+    },
+    body: JSON.stringify({ id: id, value: String(value) })
+  });
   if (!res.ok) {
-    console.error("[SB ERROR]", method, table, res.status, text);
-    throw new Error("Supabase " + method + " " + table + " (" + res.status + "): " + text);
+    const err = await res.text();
+    console.error("[SB SET ERROR]", id, res.status, err);
+    throw new Error("SET failed (" + res.status + "): " + err);
   }
+  console.log("[SB SET OK]", id, "len=" + String(value).length);
+}
 
-  console.log("[SB OK]", method, table, res.status, text.slice(0,60));
-  return text ? JSON.parse(text) : null;
+async function sbListPrefix(prefix) {
+  const url = SUPABASE_URL + "/rest/v1/kv?id=like." + encodeURIComponent(prefix + "%") + "&select=id";
+  const res = await fetch(url, {
+    headers: {
+      "apikey": SUPABASE_KEY,
+      "Authorization": "Bearer " + SUPABASE_KEY
+    }
+  });
+  if (!res.ok) return [];
+  const rows = await res.json();
+  return (rows || []).map(r => r.id);
 }
 
 window.storage = {
   async get(key, shared) {
     console.log("[storage.get]", key);
-    try {
-      if (key.startsWith("sinergy_est_")) {
-        const eid = key.replace("sinergy_est_", "");
-        const rows = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "data" });
-        if (!rows || rows.length === 0) throw new Error("not found: " + key);
-        const val = JSON.stringify(rows.map(r => r.data));
-        console.log("[storage.get OK]", key, "->", rows.length, "tasks");
-        return { key, value: val, shared };
-      }
-      const rows = await sbFetch("GET", "kv", null, { id: "eq." + key, select: "value" });
-      if (!rows || rows.length === 0) throw new Error("not found: " + key);
-      console.log("[storage.get OK]", key);
-      return { key, value: rows[0].value, shared };
-    } catch(e) {
-      console.warn("[storage.get MISS]", key, e.message);
-      throw e;
-    }
+    const value = await sbGet(key);
+    console.log("[storage.get OK]", key, "len=" + value.length);
+    return { key, value, shared };
   },
 
   async set(key, value, shared) {
-    console.log("[storage.set]", key, "len=", String(value).length);
-    try {
-      if (key.startsWith("sinergy_est_")) {
-        const eid = key.replace("sinergy_est_", "");
-        let tasks = [];
-        try { tasks = JSON.parse(value); } catch(e) {}
-        if (!Array.isArray(tasks)) tasks = [];
-        console.log("[storage.set tasks]", eid, tasks.length, "tarefas");
-
-        // Delete all then reinsert
-        await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
-        if (tasks.length > 0) {
-          await sbFetch("POST", "tasks", tasks.map(t => ({ task_id: t.id, eid, data: t })));
-        }
-        console.log("[storage.set OK]", key, tasks.length, "tarefas gravadas");
-        return { key, value, shared };
-      }
-      await sbFetch("POST", "kv", { id: key, value: String(value) });
-      console.log("[storage.set OK]", key);
-      return { key, value, shared };
-    } catch(e) {
-      console.error("[storage.set FAIL]", key, e.message);
-      throw e;
-    }
+    console.log("[storage.set]", key, "len=" + String(value).length);
+    await sbSet(key, value);
+    return { key, value, shared };
   },
 
   async delete(key, shared) {
-    if (key.startsWith("sinergy_est_")) {
-      const eid = key.replace("sinergy_est_", "");
-      await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
-    } else {
-      await sbFetch("DELETE", "kv", null, { id: "eq." + key });
-    }
+    const url = SUPABASE_URL + "/rest/v1/kv?id=eq." + encodeURIComponent(key);
+    await fetch(url, {
+      method: "DELETE",
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY
+      }
+    });
     return { key, deleted: true, shared };
   },
 
   async list(prefix, shared) {
     console.log("[storage.list]", prefix);
-    if (prefix === "sinergy_est_") {
-      const rows = await sbFetch("GET", "tasks", null, { select: "eid" });
-      if (!rows) return { keys: [], prefix, shared };
-      const eids = [...new Set(rows.map(r => r.eid))];
-      console.log("[storage.list OK] eids:", eids);
-      return { keys: eids.map(e => "sinergy_est_" + e), prefix, shared };
-    }
-    return { keys: [], prefix, shared };
+    const keys = await sbListPrefix(prefix);
+    console.log("[storage.list OK]", keys);
+    return { keys, prefix, shared };
   }
 };
 </script>
