@@ -72,22 +72,8 @@ var lucide = (function() {
 <script>const SUPABASE_URL = "https://slmbgwpnegzvnxkllorh.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsbWJnd3BuZWd6dm54a2xsb3JoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNTMxNDMsImV4cCI6MjA5NzcyOTE0M30.Fs_Th99bpkfAlHEgxPJiL26XGYtIb-R1H-XQ6Qx5tqU";
 
-// Store everything in the kv table as key=value text pairs
-// This is the simplest possible approach - no schema complexity
-
-async function sbGet(id) {
-  const url = SUPABASE_URL + "/rest/v1/kv?id=eq." + encodeURIComponent(id) + "&select=value";
-  const res = await fetch(url, {
-    headers: {
-      "apikey": SUPABASE_KEY,
-      "Authorization": "Bearer " + SUPABASE_KEY
-    }
-  });
-  if (!res.ok) throw new Error("GET failed: " + await res.text());
-  const rows = await res.json();
-  if (!rows || rows.length === 0) throw new Error("not found: " + id);
-  return rows[0].value;
-}
+// Pending writes queue - saves happen immediately AND on unload
+var _pendingWrites = {};
 
 async function sbSet(id, value) {
   const url = SUPABASE_URL + "/rest/v1/kv";
@@ -103,40 +89,63 @@ async function sbSet(id, value) {
   });
   if (!res.ok) {
     const err = await res.text();
-    console.error("[SB SET ERROR]", id, res.status, err);
+    console.error("[SB ERROR] SET", id, res.status, err);
     throw new Error("SET failed (" + res.status + "): " + err);
   }
-  console.log("[SB SET OK]", id, "len=" + String(value).length);
+  console.log("[SB OK] SET", id);
+  delete _pendingWrites[id];
 }
 
-async function sbListPrefix(prefix) {
-  const url = SUPABASE_URL + "/rest/v1/kv?id=like." + encodeURIComponent(prefix + "%") + "&select=id";
+async function sbGet(id) {
+  const url = SUPABASE_URL + "/rest/v1/kv?id=eq." + encodeURIComponent(id) + "&select=value";
   const res = await fetch(url, {
     headers: {
       "apikey": SUPABASE_KEY,
       "Authorization": "Bearer " + SUPABASE_KEY
     }
   });
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error("GET failed: " + await res.text());
   const rows = await res.json();
-  return (rows || []).map(r => r.id);
+  if (!rows || rows.length === 0) throw new Error("not found: " + id);
+  return rows[0].value;
 }
+
+// Flush all pending writes using sendBeacon (works during page unload)
+window.addEventListener("beforeunload", function() {
+  const keys = Object.keys(_pendingWrites);
+  if (keys.length === 0) return;
+  console.log("[SB] Flushing", keys.length, "pending writes on unload");
+  for (const id of keys) {
+    const value = _pendingWrites[id];
+    const blob = new Blob([JSON.stringify({ id, value })], { type: "application/json" });
+    // Use sendBeacon as last-resort sync save
+    const url = SUPABASE_URL + "/rest/v1/kv";
+    try {
+      navigator.sendBeacon(url, blob);
+    } catch(e) {}
+  }
+});
 
 window.storage = {
   async get(key, shared) {
-    console.log("[storage.get]", key);
+    // Check pending writes first (in-memory cache)
+    if (_pendingWrites[key] !== undefined) {
+      return { key, value: _pendingWrites[key], shared };
+    }
     const value = await sbGet(key);
-    console.log("[storage.get OK]", key, "len=" + value.length);
     return { key, value, shared };
   },
 
   async set(key, value, shared) {
-    console.log("[storage.set]", key, "len=" + String(value).length);
-    await sbSet(key, value);
+    // Store in pending immediately
+    _pendingWrites[key] = String(value);
+    // Also save to Supabase immediately (don't wait for timer)
+    sbSet(key, value).catch(e => console.error("[SB] set failed:", e.message));
     return { key, value, shared };
   },
 
   async delete(key, shared) {
+    delete _pendingWrites[key];
     const url = SUPABASE_URL + "/rest/v1/kv?id=eq." + encodeURIComponent(key);
     await fetch(url, {
       method: "DELETE",
@@ -149,10 +158,20 @@ window.storage = {
   },
 
   async list(prefix, shared) {
-    console.log("[storage.list]", prefix);
-    const keys = await sbListPrefix(prefix);
-    console.log("[storage.list OK]", keys);
-    return { keys, prefix, shared };
+    const url = SUPABASE_URL + "/rest/v1/kv?id=like." + encodeURIComponent(prefix + "%") + "&select=id";
+    const res = await fetch(url, {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY
+      }
+    });
+    if (!res.ok) return { keys: [], prefix, shared };
+    const rows = await res.json();
+    const keys = (rows || []).map(r => r.id);
+    // Also include pending writes with this prefix
+    const pendingKeys = Object.keys(_pendingWrites).filter(k => k.startsWith(prefix));
+    const allKeys = [...new Set([...keys, ...pendingKeys])];
+    return { keys: allKeys, prefix, shared };
   }
 };
 </script>
