@@ -72,106 +72,102 @@ var lucide = (function() {
 <body>
 <div id="root"></div>
 <script>
-// ── SUPABASE STORAGE (substitui window.storage) ──
+// ── SUPABASE STORAGE ──
 const SUPABASE_URL = "https://slmbgwpnegzvnxkllorh.supabase.co";
 const SUPABASE_KEY = "sb_publishable_Vcjh6LVq01H6wrY-tM3tdQ_zHpn9N6A";
 
-const sb = {
-  async query(method, table, body, params) {
-    let url = `${SUPABASE_URL}/rest/v1/${table}`;
-    if (params) url += "?" + new URLSearchParams(params).toString();
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "apikey": SUPABASE_KEY,
-        "Authorization": "Bearer " + SUPABASE_KEY,
-        "Content-Type": "application/json",
-        "Prefer": method === "POST" ? "resolution=merge-duplicates,return=minimal" : "return=minimal"
-      },
-      body: body ? JSON.stringify(body) : undefined
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(err);
-    }
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
+async function sbFetch(method, table, body, qs) {
+  let url = SUPABASE_URL + "/rest/v1/" + table;
+  if (qs) url += "?" + new URLSearchParams(qs).toString();
+  const headers = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": "Bearer " + SUPABASE_KEY,
+    "Content-Type": "application/json"
+  };
+  if (method === "POST" || method === "PUT") {
+    headers["Prefer"] = "resolution=merge-duplicates,return=minimal";
   }
-};
-
-// Mapeamento de chaves do app para tabelas do Supabase
-function keyToTable(key) {
-  if (key.startsWith("sinergy_est_")) return { table: "tasks", id: key.replace("sinergy_est_", ""), field: "eid" };
-  if (key === "sinergy_auth_v1")      return { table: "users",    id: "__all__" };
-  if (key === "sinergy_groups_v1")    return { table: "groups",   id: "__all__" };
-  if (key === "sinergy_esteiras_v1")  return { table: "esteiras", id: "__all__" };
-  if (key === "sinergy_trash_v1")     return { table: "trash",    id: "__all__" };
-  if (key === "sinergy_log_v1")       return { table: "logs",     id: "__all__" };
-  if (key === "sinergy_prefs_v1")     return { table: "prefs",    id: "__all__" };
-  return null;
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body != null ? JSON.stringify(body) : undefined
+  });
+  if (!res.ok) {
+    const msg = await res.text();
+    throw new Error("Supabase " + method + " " + table + ": " + msg);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
-window.storage = {
-  async get(key, shared) {
-    const map = keyToTable(key);
-    if (!map) throw new Error("Key not found: " + key);
+// Cada "key" do app vira uma linha na tabela `kv` com id=key, value=texto
+// Tabela kv: id text primary key, value text not null
+// Tasks ficam na tabela `tasks`: task_id text pk, eid text, data jsonb
 
-    if (map.id === "__all__") {
-      // Busca todos os registros e retorna como array JSON
-      const rows = await sb.query("GET", map.table, null, { select: "id,data", order: "id" });
-      if (!rows || rows.length === 0) throw new Error("Key not found: " + key);
-      // Para tabelas de array único (users, groups etc), salvo tudo em id="__data__"
-      const row = rows.find(r => r.id === "__data__");
-      if (!row) throw new Error("Key not found: " + key);
-      return { key, value: row.data, shared };
-    } else {
-      // tasks: busca por eid
-      const rows = await sb.query("GET", map.table, null, { select: "id,data", "eid": "eq." + map.id });
-      if (!rows || rows.length === 0) throw new Error("Key not found: " + key);
+window.storage = {
+
+  async get(key, shared) {
+    // Tarefas por esteira
+    if (key.startsWith("sinergy_est_")) {
+      const eid = key.replace("sinergy_est_", "");
+      const rows = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "data" });
+      if (!rows || rows.length === 0) throw new Error("not found: " + key);
       const arr = rows.map(r => r.data);
       return { key, value: JSON.stringify(arr), shared };
     }
+    // Lixeira e demais: tabela kv
+    const rows = await sbFetch("GET", "kv", null, { id: "eq." + encodeURIComponent(key), select: "value" });
+    if (!rows || rows.length === 0) throw new Error("not found: " + key);
+    return { key, value: rows[0].value, shared };
   },
 
   async set(key, value, shared) {
-    const map = keyToTable(key);
-    if (!map) return null;
+    if (key.startsWith("sinergy_est_")) {
+      const eid = key.replace("sinergy_est_", "");
+      let tasks = [];
+      try { tasks = JSON.parse(value); } catch(e) {}
+      if (!Array.isArray(tasks)) tasks = [];
 
-    if (map.id === "__all__") {
-      await sb.query("POST", map.table, { id: "__data__", data: value });
-    } else {
-      // tasks: value é JSON array de tarefas
-      const tasks = JSON.parse(value);
-      const eid = map.id;
-      // Apaga registros antigos desta esteira e insere novos
-      await sb.query("DELETE", map.table, null, { "eid": "eq." + eid });
-      if (tasks.length > 0) {
-        const rows = tasks.map(t => ({ id: t.id, eid, data: t }));
-        await sb.query("POST", map.table, rows);
+      // Busca IDs existentes para esta esteira
+      const existing = await sbFetch("GET", "tasks", null, { eid: "eq." + eid, select: "task_id" });
+      const existingIds = new Set((existing || []).map(r => r.task_id));
+      const newIds = new Set(tasks.map(t => t.id));
+
+      // Deleta removidos
+      const toDelete = [...existingIds].filter(id => !newIds.has(id));
+      for (const tid of toDelete) {
+        await sbFetch("DELETE", "tasks", null, { task_id: "eq." + tid });
       }
+
+      // Upsert todos os presentes
+      if (tasks.length > 0) {
+        const rows = tasks.map(t => ({ task_id: t.id, eid, data: t }));
+        await sbFetch("POST", "tasks", rows);
+      }
+      return { key, value, shared };
     }
+
+    // Demais chaves: upsert na tabela kv
+    await sbFetch("POST", "kv", { id: key, value: String(value) });
     return { key, value, shared };
   },
 
   async delete(key, shared) {
-    const map = keyToTable(key);
-    if (!map) return null;
-    if (map.id === "__all__") {
-      await sb.query("DELETE", map.table, null, { id: "eq.__data__" });
+    if (key.startsWith("sinergy_est_")) {
+      const eid = key.replace("sinergy_est_", "");
+      await sbFetch("DELETE", "tasks", null, { eid: "eq." + eid });
     } else {
-      await sb.query("DELETE", map.table, null, { "eid": "eq." + map.id });
+      await sbFetch("DELETE", "kv", null, { id: "eq." + encodeURIComponent(key) });
     }
     return { key, deleted: true, shared };
   },
 
   async list(prefix, shared) {
-    // Usado para listar esteiras (sinergy_est_*)
     if (prefix === "sinergy_est_") {
-      const rows = await sb.query("GET", "tasks", null, { select: "eid", order: "eid" });
+      const rows = await sbFetch("GET", "tasks", null, { select: "eid" });
       if (!rows) return { keys: [], prefix, shared };
       const eids = [...new Set(rows.map(r => r.eid))];
-      const keys = eids.map(e => "sinergy_est_" + e);
-      return { keys, prefix, shared };
+      return { keys: eids.map(e => "sinergy_est_" + e), prefix, shared };
     }
     return { keys: [], prefix, shared };
   }
