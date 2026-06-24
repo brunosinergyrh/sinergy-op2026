@@ -3878,6 +3878,7 @@ function App() {
       coordenador: "",
       gerente: "",
       deadline: "",
+      dataCredito: "",
       priority: "alta",
       cliente: "",
       processo: "",
@@ -5562,6 +5563,7 @@ function App() {
                 gerente: gerName,
                 gerenteId: gerId,
                 deadline: form.deadline,
+                dataCredito: form.dataCredito,
                 priority: form.priority,
                 cliente: form.cliente,
                 processo: form.processo,
@@ -5585,6 +5587,7 @@ function App() {
               gerente: gerName,
               gerenteId: gerId,
               deadline: form.deadline,
+              dataCredito: form.dataCredito,
               priority: form.priority,
               cliente: form.cliente,
               processo: form.processo,
@@ -5604,6 +5607,7 @@ function App() {
               coordenador: "",
               gerente: "",
               deadline: "",
+              dataCredito: "",
               priority: "alta",
               cliente: "",
               processo: "",
@@ -5964,6 +5968,7 @@ function App() {
       coordenador: t.coordenador || "",
       gerente: t.gerente || "",
       deadline: t.deadline || "",
+      dataCredito: t.dataCredito || "",
       priority: t.priority,
       cliente: t.cliente || "",
       processo: t.processo || "",
@@ -5982,6 +5987,7 @@ function App() {
       coordenador: "",
       gerente: "",
       deadline: "",
+      dataCredito: "",
       priority: "alta",
       cliente: "",
       processo: "",
@@ -7887,6 +7893,25 @@ function App() {
       return setForm(function (f) {
         return _objectSpread(_objectSpread({}, f), {}, {
           deadline: ev.target.value
+        });
+      });
+    },
+    style: _objectSpread(_objectSpread({}, I), {}, {
+      colorScheme: T.cs
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: T.textM,
+      marginBottom: 4
+    }
+  }, "Data de cr\xE9dito"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    value: form.dataCredito,
+    onChange: function onChange(ev) {
+      return setForm(function (f) {
+        return _objectSpread(_objectSpread({}, f), {}, {
+          dataCredito: ev.target.value
         });
       });
     },
