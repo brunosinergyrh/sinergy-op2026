@@ -3882,6 +3882,8 @@ function App() {
       priority: "alta",
       cliente: "",
       processo: "",
+      situacao: "",
+      solicitacaoWorkflow: "",
       mes: ""
     }),
     _useState90 = _slicedToArray(_useState89, 2),
@@ -4035,6 +4037,9 @@ function App() {
   var histProcesso = distinct(baseTasks.map(function (t) {
     return t.processo;
   }));
+  var histSituacao = distinct(baseTasks.map(function (t) {
+    return t.situacao;
+  }));
   var formGer = gerenteUsers.find(function (u) {
     return norm(u.name) === norm(form.gerente);
   });
@@ -4062,6 +4067,9 @@ function App() {
   }));
   var fProcesso = distinct(formTasks.map(function (t) {
     return t.processo;
+  }));
+  var fSituacao = distinct(formTasks.map(function (t) {
+    return t.situacao;
   }));
   var fTitle = distinct(formTasks.map(function (t) {
     return t.title;
@@ -5567,6 +5575,8 @@ function App() {
                 priority: form.priority,
                 cliente: form.cliente,
                 processo: form.processo,
+                situacao: form.situacao,
+                solicitacaoWorkflow: form.solicitacaoWorkflow,
                 mes: form.mes
               }) : t;
             })));
@@ -5591,6 +5601,8 @@ function App() {
               priority: form.priority,
               cliente: form.cliente,
               processo: form.processo,
+              situacao: form.situacao,
+              solicitacaoWorkflow: form.solicitacaoWorkflow,
               mes: form.mes,
               status: "pendente",
               createdAt: new Date().toISOString(),
@@ -5611,6 +5623,8 @@ function App() {
               priority: "alta",
               cliente: "",
               processo: "",
+              situacao: "",
+              solicitacaoWorkflow: "",
               mes: ""
             });
             setShowForm(false);
@@ -5972,6 +5986,8 @@ function App() {
       priority: t.priority,
       cliente: t.cliente || "",
       processo: t.processo || "",
+      situacao: t.situacao || "",
+      solicitacaoWorkflow: t.solicitacaoWorkflow || "",
       mes: t.mes || ""
     });
     setEditId(t.id);
@@ -5991,6 +6007,8 @@ function App() {
       priority: "alta",
       cliente: "",
       processo: "",
+      situacao: "",
+      solicitacaoWorkflow: "",
       mes: ""
     });
   };
@@ -7861,6 +7879,42 @@ function App() {
     suggestions: fProcesso,
     placeholder: "...",
     T: T
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: T.textM,
+      marginBottom: 4
+    }
+  }, "Situa\xE7\xE3o"), /*#__PURE__*/React.createElement(AutoInput, {
+    value: form.situacao,
+    onChange: function onChange(v) {
+      return setForm(function (f) {
+        return _objectSpread(_objectSpread({}, f), {}, {
+          situacao: v
+        });
+      });
+    },
+    suggestions: fSituacao,
+    placeholder: "...",
+    T: T
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: T.textM,
+      marginBottom: 4
+    }
+  }, "Solicita\xE7\xE3o Workflow"), /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    value: form.solicitacaoWorkflow,
+    onChange: function onChange(ev) {
+      return setForm(function (f) {
+        return _objectSpread(_objectSpread({}, f), {}, {
+          solicitacaoWorkflow: ev.target.value
+        });
+      });
+    },
+    placeholder: "...",
+    style: I
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
