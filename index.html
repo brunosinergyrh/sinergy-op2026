@@ -3701,7 +3701,13 @@ var TaskCard = memo(function TaskCard(_ref15) {
       fontWeight: overdue ? 600 : 400,
       color: overdue ? "#ef4444" : T.textM
     }
-  }, "prazo: ", fmtDate(task.deadline), overdue ? " - Atrasada" : "")), isDone && task.completedBy && /*#__PURE__*/React.createElement("div", {
+  }, "prazo: ", fmtDate(task.deadline), overdue ? " - Atrasada" : ""), task.dataCredito && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      fontWeight: 400,
+      color: T.textM
+    }
+  }, "cr\xE9dito: ", fmtDate(task.dataCredito))), isDone && task.completedBy && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#22c55e",
@@ -3740,7 +3746,25 @@ var TaskCard = memo(function TaskCard(_ref15) {
       background: "rgba(168,85,247,0.15)",
       color: "#c084fc"
     }
-  }, "mes: ", fmtMonth(task.mes)))), /*#__PURE__*/React.createElement("span", {
+  }, "mes: ", fmtMonth(task.mes)), task.situacao && /*#__PURE__*/React.createElement("span", {
+    style: {
+      padding: "3px 9px",
+      borderRadius: 20,
+      fontSize: 12,
+      fontWeight: 600,
+      background: "rgba(234,179,8,0.15)",
+      color: "#facc15"
+    }
+  }, "sit: ", task.situacao), task.solicitacaoWorkflow && /*#__PURE__*/React.createElement("span", {
+    style: {
+      padding: "3px 9px",
+      borderRadius: 20,
+      fontSize: 12,
+      fontWeight: 600,
+      background: "rgba(236,72,153,0.15)",
+      color: "#f472b6"
+    }
+  }, "wf: ", task.solicitacaoWorkflow))), /*#__PURE__*/React.createElement("span", {
     style: {
       padding: "3px 9px",
       borderRadius: 20,
