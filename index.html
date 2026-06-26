@@ -4542,20 +4542,6 @@ function App() {
           case 4:
             _context21.p = 4;
             _t12 = _context21.v;
-            // "not found" = chave ainda nao existe no banco (usuario novo / primeiro filtro)
-            // Nao e um erro real: cria as prefs do zero sem merge
-            if (_t12 && String(_t12.message || _t12).indexOf('not found') >= 0) {
-              try {
-                window.storage.set(PREFS_KEY, JSON.stringify(_defineProperty({}, uid, { filters: f, sortIdx: si })), true);
-              } catch(_ign) {}
-            } else {
-              // Erro real de conectividade — mostra feedback visual
-              console.error('[savePrefsFor FAIL]', _t12 && (_t12.message || _t12));
-              setSaveError('Falha ao salvar preferencias. Verifique sua conexao.');
-              setTimeout(function() {
-                setSaveError(function(s) { return s.startsWith('Falha ao salvar pref') ? '' : s; });
-              }, 4000);
-            }
           case 5:
             return _context21.a(2);
         }
