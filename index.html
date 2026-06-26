@@ -5296,6 +5296,13 @@ function App() {
             return loadPrefsFor(user.id);
           case 2:
             pr = _context34.v;
+            // Fallback: se Supabase nao retornou prefs, tenta localStorage
+            if (!pr) {
+              try {
+                var _lsPrefs = localStorage.getItem('sinergy_prefs_' + user.id);
+                if (_lsPrefs) pr = JSON.parse(_lsPrefs);
+              } catch(_e) {}
+            }
             setFilters(pr !== null && pr !== void 0 && pr.filters ? _objectSpread(_objectSpread({}, INIT_F), pr.filters) : INIT_F);
             setSortIdx(typeof (pr === null || pr === void 0 ? void 0 : pr.sortIdx) === "number" ? pr.sortIdx : 0);
             // Carregar tema do usuario (localStorage por ID)
@@ -5603,17 +5610,26 @@ function App() {
   var setF = function setF(k, v) {
     return setFilters(function (prev) {
       var nf = _objectSpread(_objectSpread({}, prev), {}, _defineProperty({}, k, v));
-      if (sessionRef.current) savePrefsFor(sessionRef.current.id, nf, sortIdx);
+      if (sessionRef.current) {
+        savePrefsFor(sessionRef.current.id, nf, sortIdx);
+        try { localStorage.setItem('sinergy_prefs_' + sessionRef.current.id, JSON.stringify({ filters: nf, sortIdx: sortIdx })); } catch(_e) {}
+      }
       return nf;
     });
   };
   var clearFilters = function clearFilters() {
     setFilters(INIT_F);
-    if (sessionRef.current) savePrefsFor(sessionRef.current.id, INIT_F, sortIdx);
+    if (sessionRef.current) {
+      savePrefsFor(sessionRef.current.id, INIT_F, sortIdx);
+      try { localStorage.setItem('sinergy_prefs_' + sessionRef.current.id, JSON.stringify({ filters: INIT_F, sortIdx: sortIdx })); } catch(_e) {}
+    }
   };
   var changeSort = function changeSort(v) {
     setSortIdx(v);
-    if (sessionRef.current) savePrefsFor(sessionRef.current.id, filters, v);
+    if (sessionRef.current) {
+      savePrefsFor(sessionRef.current.id, filters, v);
+      try { localStorage.setItem('sinergy_prefs_' + sessionRef.current.id, JSON.stringify({ filters: filters, sortIdx: v })); } catch(_e) {}
+    }
   };
   var activeFC = Object.values(filters).filter(function (v) {
     return v !== "all";
