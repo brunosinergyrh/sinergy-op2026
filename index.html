@@ -33,6 +33,11 @@ var lucide = (function() {
         strokeLinecap: 'round',
         strokeLinejoin: 'round'
       };
+      // Repassar handlers e estilo customizados para o SVG
+      if (props.onClick)    svgProps.onClick    = props.onClick;
+      if (props.style)      svgProps.style      = props.style;
+      if (props.className)  svgProps.className  = props.className;
+      if (props.onMouseDown) svgProps.onMouseDown = props.onMouseDown;
       var children = paths.map(function(p, i) {
         return e(p[0], Object.assign({key: i}, p[1]));
       });
@@ -544,13 +549,13 @@ var ACTION_LABELS = {
   restored: "Restaurou tarefa",
   bulkDeleted: "Excluiu em lote",
   bulkEdited: "Editou em lote",
-  imported: "Importou tarefas",
+  imported: "Importou / Restaurou backup",
   exported: "Exportou tarefas",
   userAdded: "Cadastrou usuario",
   userRemoved: "Removeu usuario",
   userEdited: "Editou usuario",
   pinReset: "Resetou PIN",
-  login: "Login",
+  login: "Login / Logout",
   esteiraAdded: "Criou esteira",
   esteiraEdited: "Editou esteira",
   esteiraRemoved: "Removeu esteira",
@@ -3885,7 +3890,13 @@ function App() {
     _useState70 = _slicedToArray(_useState69, 2),
     showGrp = _useState70[0],
     setShowGrp = _useState70[1];
-  var _useState71 = useState(true),
+  var _useState71 = useState(function() {
+    // Tema padrão (antes do login): chave global
+    try {
+      var saved = localStorage.getItem('sinergy_theme_default');
+      return saved !== null ? saved === 'dark' : true;
+    } catch(e) { return true; }
+  }),
     _useState72 = _slicedToArray(_useState71, 2),
     darkMode = _useState72[0],
     setDarkMode = _useState72[1];
@@ -4206,6 +4217,7 @@ function App() {
           case 4:
             _context17.p = 4;
             _t3 = _context17.v;
+            console.error('[logAction FAIL] Nao foi possivel salvar log no Supabase:', _t3 && (_t3.message || _t3));
           case 5:
             return _context17.a(2);
         }
@@ -4572,6 +4584,67 @@ function App() {
       return _ref21.apply(this, arguments);
     };
   }(), []);
+
+  /**
+   * cascadeRename: quando um usuario e renomeado, atualiza em todas as tarefas
+   * os campos responsibles, responsible (legado), coordenador e gerente.
+   * Assim a associacao de analista nao se perde ao renomear.
+   */
+  var cascadeRename = useCallback(function(oldName, newName) {
+    if (!oldName || !newName || norm(oldName) === norm(newName)) return;
+    var anyChanged = false;
+    var nt = {};
+    Object.keys(tasksRef.current).forEach(function(eid) {
+      nt[eid] = (tasksRef.current[eid] || []).map(function(t) {
+
+        // --- responsibles (array) ---
+        var origResp = Array.isArray(t.responsibles) ? t.responsibles : (t.responsible ? [t.responsible] : []);
+        var newResp  = origResp.map(function(r) {
+          return norm(r) === norm(oldName) ? newName : r;
+        });
+        var respChanged = newResp.some(function(r, i) { return r !== origResp[i]; });
+
+        // --- coordenador (so atualiza se o campo ja tem valor e bate com oldName) ---
+        var coordChanged = t.coordenador && norm(t.coordenador) === norm(oldName);
+
+        // --- gerente display (gerenteId usa ID, nao muda) ---
+        var gerChanged   = t.gerente   && norm(t.gerente)   === norm(oldName);
+
+        if (!respChanged && !coordChanged && !gerChanged) return t; // nada a fazer, retorna original intacto
+
+        anyChanged = true;
+
+        // Monta apenas os campos que realmente mudaram — preserva todos os outros
+        var updates = {};
+        if (respChanged)  { updates.responsibles = newResp; updates.responsible = newResp.join(', '); }
+        if (coordChanged) { updates.coordenador   = newName; }
+        if (gerChanged)   { updates.gerente        = newName; }
+
+        return _objectSpread(_objectSpread({}, t), updates);
+      });
+    });
+    if (anyChanged) {
+      mutate(nt);
+      logAction('userEdited', 'Renomeacao em cascata: ' + oldName + ' \u2192 ' + newName);
+    }
+  }, []);
+
+  /**
+   * saveUsersWithCascade: substitui saveUsers no AdminPanel.
+   * Detecta automaticamente renomeacoes comparando a lista nova com a atual,
+   * e dispara o cascadeRename antes de salvar.
+   */
+  var saveUsersWithCascade = useCallback(function(newUsers) {
+    var currentUsers = usersRef.current || [];
+    newUsers.forEach(function(nu) {
+      var old = currentUsers.find(function(u) { return u.id === nu.id; });
+      if (old && norm(old.name) !== norm(nu.name)) {
+        cascadeRename(old.name, nu.name);
+      }
+    });
+    return saveUsers(newUsers);
+  }, []);
+
   var loadGroups = useCallback(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee23() {
     var r, ld, merged, custom, _t16, _t17;
     return _regenerator().w(function (_context24) {
@@ -5147,6 +5220,7 @@ function App() {
             _context33.n = 20;
             return load();
           case 20:
+            logAction("imported", "Backup restaurado: " + new Date((restoreConfirm && restoreConfirm.exportedAt) || Date.now()).toLocaleString("pt-BR"));
             setSession(null);
           case 21:
             return _context33.a(2);
@@ -5181,6 +5255,11 @@ function App() {
             pr = _context34.v;
             setFilters(pr !== null && pr !== void 0 && pr.filters ? _objectSpread(_objectSpread({}, INIT_F), pr.filters) : INIT_F);
             setSortIdx(typeof (pr === null || pr === void 0 ? void 0 : pr.sortIdx) === "number" ? pr.sortIdx : 0);
+            // Carregar tema do usuario (localStorage por ID)
+            try {
+              var _savedTheme = localStorage.getItem('sinergy_theme_' + user.id);
+              if (_savedTheme !== null) setDarkMode(_savedTheme === 'dark');
+            } catch(_e) {}
             setTab("workspace");
             setSession({
               id: user.id,
@@ -6311,8 +6390,10 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
-      return setDarkMode(function (d) {
-        return !d;
+      setDarkMode(function (d) {
+        var next = !d;
+        try { localStorage.setItem('sinergy_theme_default', next ? 'dark' : 'light'); } catch(_e) {}
+        return next;
       });
     },
     style: {
@@ -6349,7 +6430,7 @@ function App() {
     users: users,
     groups: groups,
     session: session,
-    onSaveUsers: saveUsers,
+    onSaveUsers: saveUsersWithCascade,
     onLog: logAction,
     onClose: closeAdmin,
     T: T
@@ -7244,8 +7325,14 @@ function App() {
     size: 14
   }), "Restaurar"), /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
-      return setDarkMode(function (d) {
-        return !d;
+      setDarkMode(function (d) {
+        var next = !d;
+        try {
+          var _uid = sessionRef.current ? sessionRef.current.id : null;
+          if (_uid) localStorage.setItem('sinergy_theme_' + _uid, next ? 'dark' : 'light');
+          localStorage.setItem('sinergy_theme_default', next ? 'dark' : 'light');
+        } catch(_e) {}
+        return next;
       });
     },
     style: {
@@ -7308,7 +7395,7 @@ function App() {
     }
   }, "\xB7 ", myGerenteName))), /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
-      return setSession(null);
+      logAction("login", "Sessao encerrada").finally(function() { setSession(null); });
     },
     style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
       fontSize: 11,
