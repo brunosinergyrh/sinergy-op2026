@@ -1218,6 +1218,10 @@ var MultiAutoInput = memo(function MultiAutoInput(_ref5) {
     _useState6 = _slicedToArray(_useState5, 2),
     open = _useState6[0],
     setOpen = _useState6[1];
+  var _useState7k = useState(null),
+    _useState8k = _slicedToArray(_useState7k, 2),
+    focusedTag = _useState8k[0],
+    setFocusedTag = _useState8k[1];
   var vals = values || [];
   var list = (suggestions || []).filter(function (s) {
     return s && !vals.some(function (v) {
@@ -1253,27 +1257,38 @@ var MultiAutoInput = memo(function MultiAutoInput(_ref5) {
       alignItems: "center"
     })
   }, vals.map(function (v, i) {
+    var isFocused = focusedTag === i;
     return /*#__PURE__*/React.createElement("span", {
       key: i,
+      tabIndex: 0,
+      onFocus: function onFocus() { return setFocusedTag(i); },
+      onBlur:  function onBlur()  { return setFocusedTag(null); },
+      onKeyDown: function onKeyDown(e) {
+        // Delete ou Backspace remove a tag focada
+        if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); remove(i); }
+        // Setas navegam entre tags
+        if (e.key === "ArrowLeft"  && i > 0)            { e.preventDefault(); e.currentTarget.parentNode.children[i - 1].focus(); }
+        if (e.key === "ArrowRight" && i < vals.length - 1) { e.preventDefault(); e.currentTarget.parentNode.children[i + 1].focus(); }
+      },
       style: {
         display: "inline-flex",
         alignItems: "center",
         gap: 4,
-        background: "rgba(99,102,241,0.15)",
+        background: isFocused ? "rgba(99,102,241,0.28)" : "rgba(99,102,241,0.15)",
         color: "#818cf8",
         borderRadius: 6,
         padding: "2px 7px",
         fontSize: 12,
-        fontWeight: 500
+        fontWeight: 500,
+        outline: isFocused ? "2px solid #818cf8" : "none",
+        outlineOffset: 1,
+        cursor: "default",
+        userSelect: "none"
       }
     }, v, /*#__PURE__*/React.createElement(X, {
       size: 11,
-      style: {
-        cursor: "pointer"
-      },
-      onClick: function onClick() {
-        return remove(i);
-      }
+      style: { cursor: "pointer", opacity: isFocused ? 1 : 0.7 },
+      onClick: function onClick(e) { e.stopPropagation(); remove(i); }
     }));
   }), /*#__PURE__*/React.createElement("input", {
     value: txt,
@@ -1282,6 +1297,7 @@ var MultiAutoInput = memo(function MultiAutoInput(_ref5) {
       setOpen(true);
     },
     onFocus: function onFocus() {
+      setFocusedTag(null);
       return setOpen(true);
     },
     onBlur: function onBlur() {
@@ -1294,7 +1310,12 @@ var MultiAutoInput = memo(function MultiAutoInput(_ref5) {
         e.preventDefault();
         add(txt);
       }
-      if (e.key === "Backspace" && !txt && vals.length) remove(vals.length - 1);
+      // Backspace sem texto: foca a ultima tag em vez de remover direto
+      if (e.key === "Backspace" && !txt && vals.length) {
+        e.preventDefault();
+        var tags = e.currentTarget.parentNode.querySelectorAll('span[tabindex]');
+        if (tags.length) tags[tags.length - 1].focus();
+      }
     },
     placeholder: vals.length ? "" : placeholder,
     style: {
@@ -3333,12 +3354,25 @@ var LogModal = memo(function LogModal(_ref12) {
     _useState46 = _slicedToArray(_useState45, 2),
     msg = _useState46[0],
     setMsg = _useState46[1];
+  var _useState45b = useState(""),
+    _useState46b = _slicedToArray(_useState45b, 2),
+    fSearch = _useState46b[0],
+    setFSearch = _useState46b[1];
   var I = mkI(T);
   var ulist = _toConsumableArray(new Set(log.map(function (l) {
     return l.user;
   }))).sort();
   var filtered = log.filter(function (l) {
-    return (fAct === "all" || l.action === fAct) && (fUser === "all" || l.user === fUser);
+    if (fAct !== "all" && l.action !== fAct) return false;
+    if (fUser !== "all" && l.user !== fUser) return false;
+    if (fSearch.trim()) {
+      var q = norm(fSearch);
+      var inUser   = norm(l.user   || '').includes(q);
+      var inTarget = norm(l.target || '').includes(q);
+      var inAction = norm(ACTION_LABELS[l.action] || l.action || '').includes(q);
+      if (!inUser && !inTarget && !inAction) return false;
+    }
+    return true;
   });
   var buildText = function buildText() {
     return "SinergyRH Log\n" + filtered.map(function (l) {
@@ -3441,7 +3475,12 @@ var LogModal = memo(function LogModal(_ref12) {
       gap: 8,
       flexWrap: "wrap"
     }
-  }, /*#__PURE__*/React.createElement("select", {
+  }, /*#__PURE__*/React.createElement("input", {
+    value: fSearch,
+    onChange: function onChange(ev) { return setFSearch(ev.target.value); },
+    placeholder: "Buscar...",
+    style: _objectSpread(_objectSpread({}, I), {}, { padding: "5px 10px", fontSize: 12, width: 180 })
+  }), /*#__PURE__*/React.createElement("select", {
     value: fUser,
     onChange: function onChange(ev) {
       return setFUser(ev.target.value);
@@ -4039,6 +4078,10 @@ function App() {
     _useState134 = _slicedToArray(_useState133, 2),
     restoreConfirm = _useState134[0],
     setRestoreConfirm = _useState134[1];
+  var _useState135 = useState(null),
+    _useState136 = _slicedToArray(_useState135, 2),
+    pendingDelete = _useState136[0],
+    setPendingDelete = _useState136[1];
   var fileRef = useRef();
   var tasksRef = useRef({});
   var trashRef = useRef([]);
@@ -4499,6 +4542,11 @@ function App() {
           case 4:
             _context21.p = 4;
             _t12 = _context21.v;
+            console.error('[savePrefsFor FAIL]', _t12 && (_t12.message || _t12));
+            setSaveError('Falha ao salvar preferencias. Verifique sua conexao.');
+            setTimeout(function() {
+              setSaveError(function(s) { return s.startsWith('Falha ao salvar pref') ? '' : s; });
+            }, 4000);
           case 5:
             return _context21.a(2);
         }
@@ -4844,8 +4892,8 @@ function App() {
     }
   }, [load, session]);
   useEffect(function () {
-    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm) window.scrollTo(0, 0);
-  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm]);
+    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
+  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
   var closeAdmin = useCallback(function () {
     return setShowAdmin(false);
   }, []);
@@ -5710,7 +5758,31 @@ function App() {
             })));
             mutate(nt);
             _context37.n = 3;
-            return logAction("edited", "".concat(old !== null && old !== void 0 && old.code ? old.code + " · " : "").concat((old === null || old === void 0 ? void 0 : old.title) || form.title));
+            // Construir diff detalhado dos campos alterados
+            var _PRI_L = { alta: 'Alta', media: 'Media', baixa: 'Baixa' };
+            var _diffs = [];
+            if ((old.title || '') !== form.title.trim())
+              _diffs.push('Titulo: "' + old.title + '" \u2192 "' + form.title.trim() + '"');
+            var _oldResp = respStr(old), _newResp = form.responsibles.join(', ');
+            if (_oldResp !== _newResp)
+              _diffs.push('Analistas: "' + (_oldResp || '-') + '" \u2192 "' + (_newResp || '-') + '"');
+            if ((old.coordenador || '') !== (form.coordenador || ''))
+              _diffs.push('Coord: "' + (old.coordenador || '-') + '" \u2192 "' + (form.coordenador || '-') + '"');
+            if ((old.deadline || '') !== (form.deadline || ''))
+              _diffs.push('Prazo: ' + (fmtDate(old.deadline) || '-') + ' \u2192 ' + (fmtDate(form.deadline) || '-'));
+            if ((old.priority || '') !== (form.priority || ''))
+              _diffs.push('Prior.: ' + (_PRI_L[old.priority] || '-') + ' \u2192 ' + (_PRI_L[form.priority] || form.priority));
+            if ((old.cliente || '') !== (form.cliente || ''))
+              _diffs.push('Cliente: "' + (old.cliente || '-') + '" \u2192 "' + (form.cliente || '-') + '"');
+            if ((old.mes || '') !== (form.mes || ''))
+              _diffs.push('Mes: ' + (fmtMonth(old.mes) || '-') + ' \u2192 ' + (fmtMonth(form.mes) || '-'));
+            if ((old.situacao || '') !== (form.situacao || ''))
+              _diffs.push('Sit.: "' + (old.situacao || '-') + '" \u2192 "' + (form.situacao || '-') + '"');
+            if ((old.dataCredito || '') !== (form.dataCredito || ''))
+              _diffs.push('Credito: ' + (fmtDate(old.dataCredito) || '-') + ' \u2192 ' + (fmtDate(form.dataCredito) || '-'));
+            var _editPrefix = (old.code ? old.code + ' \xB7 ' : '') + old.title;
+            var _editDetail = _diffs.length > 0 ? _editPrefix + ' | ' + _diffs.join(' | ') : _editPrefix + ' (sem alteracoes)';
+            return logAction("edited", _editDetail);
           case 3:
             setEditId(null);
             _context37.n = 5;
@@ -5828,8 +5900,8 @@ function App() {
     if (pendingToggle) doToggle(pendingToggle.eid, pendingToggle.id);
     setPendingToggle(null);
   };
-  var softDelete = /*#__PURE__*/function () {
-    var _softDelete = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee38(id) {
+  var doSoftDelete = /*#__PURE__*/function () {
+    var _doSoftDelete = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee38(id) {
       var _cur$find2;
       var eid, task, nt, trashed, nt2, _t35;
       return _regenerator().w(function (_context39) {
@@ -5888,11 +5960,25 @@ function App() {
         }
       }, _callee38, null, [[4, 6]]);
     }));
-    function softDelete(_x18) {
-      return _softDelete.apply(this, arguments);
+    function doSoftDelete(_x18) {
+      return _doSoftDelete.apply(this, arguments);
     }
-    return softDelete;
+    return doSoftDelete;
   }();
+  // softDelete: intercepta e exibe modal de confirmacao antes de excluir
+  var softDelete = function softDelete(id) {
+    if (!has("delete_task")) return;
+    var _found = cur.find(function(t) { return t.id === id; });
+    var eid = isWS ? (_found ? _found._eid : null) : tab;
+    if (!eid) return;
+    var task = (tasksRef.current[eid] || []).find(function(t) { return t.id === id; });
+    if (!task) return;
+    setPendingDelete({ id: id, eid: eid, title: task.title, code: task.code });
+  };
+  var confirmDelete = function confirmDelete() {
+    if (pendingDelete) doSoftDelete(pendingDelete.id);
+    setPendingDelete(null);
+  };
   var bulkDelete = /*#__PURE__*/function () {
     var _bulkDelete = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee39() {
       var ids, now, nt, newTrashed, count, _i8, _Object$keys2, _eid5, kept, _iterator7, _step7, t, nt2, _t36;
@@ -6140,7 +6226,7 @@ function App() {
       mes: ""
     });
   };
-  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm;
+  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
   var myGroup = groups.find(function (g) {
     return g.id === (session === null || session === void 0 ? void 0 : session.groupId);
   });
@@ -6529,7 +6615,38 @@ function App() {
     style: mkB("#22c55e", false, T)
   }, /*#__PURE__*/React.createElement(Check, {
     size: 14
-  }), "Concluir")))), restoreConfirm && /*#__PURE__*/React.createElement(OVL, {
+  }), "Concluir")))), pendingDelete && /*#__PURE__*/React.createElement(OVL, {
+    zi: 72,
+    ov: T.ov
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: "100%",
+      maxWidth: 400,
+      background: T.surface,
+      borderRadius: 16,
+      border: "1px solid ".concat(T.border),
+      padding: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }
+  }, /*#__PURE__*/React.createElement(Trash2, {
+    size: 18,
+    color: "#ef4444"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 15, fontWeight: 700, color: T.text }
+  }, "Confirmar exclusao")), /*#__PURE__*/React.createElement("div", {
+    style: { fontSize: 13, color: T.textM, marginBottom: 16 }
+  }, "Deseja mover esta tarefa para a lixeira?", /*#__PURE__*/React.createElement("div", {
+    style: { marginTop: 8, color: T.textS, fontWeight: 500, fontStyle: "italic" }
+  }, pendingDelete.code ? pendingDelete.code + " \xB7 " : "", pendingDelete.title)), /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", gap: 8, justifyContent: "flex-end" }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() { return setPendingDelete(null); },
+    style: mkB(null, true, T)
+  }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
+    onClick: confirmDelete,
+    style: mkB("#ef4444", false, T)
+  }, /*#__PURE__*/React.createElement(Trash2, { size: 13 }), "Excluir")))), restoreConfirm && /*#__PURE__*/React.createElement(OVL, {
     zi: 71,
     ov: T.ov
   }, /*#__PURE__*/React.createElement("div", {
