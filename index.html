@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação 2026</title>
+  <title>SinergyRH – Operação 2026 (v9)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -174,41 +174,198 @@ async function sbFetch(method, path, body) {
   return text ? JSON.parse(text) : null;
 }
 
-window.storage = {
-  async get(key, shared) {
-    console.log('[storage.get]', key);
+/* ===== Camada de armazenamento (KV + tabela de tarefas) ===== */
+
+// Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
+var _kv = {
+  async get(key) {
     const rows = await sbFetch("GET", "kv?id=eq." + encodeURIComponent(key) + "&select=value");
     if (!rows || rows.length === 0) throw new Error("not found: " + key);
-    console.log('[storage.get OK]', key);
-    return { key, value: rows[0].value, shared };
+    return { key: key, value: rows[0].value };
   },
-
-  async set(key, value, shared) {
-    console.log('[storage.set START]', key, 'len=' + String(value).length);
-    try {
-      await sbFetch("POST", "kv", { id: key, value: String(value) });
-      console.log('[storage.set OK]', key);
-    } catch(e) {
-      console.error('[storage.set FAIL]', key, e.message);
-      showError('Erro ao salvar: ' + e.message.slice(0, 80));
-      throw e;
-    }
-    return { key, value, shared };
+  async set(key, value) {
+    await sbFetch("POST", "kv", { id: key, value: String(value) });
+    return { key: key, value: value };
   },
-
-  async delete(key, shared) {
+  async delete(key) {
     await sbFetch("DELETE", "kv?id=eq." + encodeURIComponent(key));
-    return { key, deleted: true, shared };
+    return { key: key, deleted: true };
   },
-
-  async list(prefix, shared) {
-    console.log('[storage.list]', prefix);
+  async list(prefix) {
     const rows = await sbFetch("GET", "kv?id=like." + encodeURIComponent(prefix + "%") + "&select=id");
-    const keys = (rows || []).map(r => r.id);
-    console.log('[storage.list OK]', keys.length, 'keys');
-    return { keys, prefix, shared };
+    return { keys: (rows || []).map(function (r) { return r.id; }), prefix: prefix };
   }
 };
+
+// Prefixo das esteiras de tarefas (mesmo usado pelo app).
+var TASKS_PREFIX_SB = "sinergy_est_";
+// Cache por esteira: { eid: { taskId: jsonString } }. Base para (1) gravar somente o que mudou
+// e (2) nunca apagar tarefa criada por outro usuario — so apaga ids que ESTE navegador conhecia.
+var _taskCache = {};
+
+function _chunk(a, n) { var o = []; for (var i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; }
+function _newId() { return "T-AUTO-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase(); }
+
+async function _tasksGet(eid) {
+  try {
+    const rows = await sbFetch("GET", "tasks?esteira=eq." + encodeURIComponent(eid) + "&select=data");
+    const arr = (rows || []).map(function (r) { return r.data; }).filter(Boolean);
+    const cache = {};
+    arr.forEach(function (t) { if (t && t.id != null) cache[String(t.id)] = JSON.stringify(t); });
+    _taskCache[eid] = cache;
+    return arr;
+  } catch (e) {
+    console.error("[tasks.get] falha em " + eid + ":", e && (e.message || e));
+    _maybeWarnTasksTable(e);
+    return [];
+  }
+}
+
+async function _tasksListEsteiras() {
+  try {
+    const rows = await sbFetch("GET", "tasks?select=esteira");
+    const seen = {}; (rows || []).forEach(function (r) { if (r.esteira != null) seen[r.esteira] = 1; });
+    return Object.keys(seen);
+  } catch (e) {
+    console.error("[tasks.list] falha:", e && (e.message || e));
+    _maybeWarnTasksTable(e);
+    return [];
+  }
+}
+
+async function _tasksSet(eid, arr) {
+  arr = Array.isArray(arr) ? arr : [];
+  const incoming = {}, rows = [];
+  arr.forEach(function (t) {
+    if (!t) return;
+    const id = (t.id != null && t.id !== "") ? String(t.id) : _newId();
+    const data = (t.id !== id) ? Object.assign({}, t, { id: id }) : t;
+    const json = JSON.stringify(data);
+    incoming[id] = json;
+    rows.push({ id: id, esteira: eid, data: data, json: json });
+  });
+  const prev = _taskCache[eid] || {};
+  // grava apenas linhas novas ou alteradas
+  const changed = rows.filter(function (x) { return prev[x.id] !== x.json; })
+                      .map(function (x) { return { id: x.id, esteira: x.esteira, data: x.data, updated_at: new Date().toISOString() }; });
+  // apaga apenas ids que este navegador ja conhecia e que sumiram (protege contra apagar tarefa de outro usuario)
+  const toDelete = Object.keys(prev).filter(function (id) { return !(id in incoming); });
+
+  const upChunks = _chunk(changed, 200);
+  for (var i = 0; i < upChunks.length; i++) { await sbFetch("POST", "tasks", upChunks[i]); }
+  const delChunks = _chunk(toDelete, 100);
+  for (var j = 0; j < delChunks.length; j++) {
+    await sbFetch("DELETE", "tasks?id=in.(" + delChunks[j].map(encodeURIComponent).join(",") + ")");
+  }
+  _taskCache[eid] = incoming;
+}
+
+// window.storage: mesma interface de sempre. Tarefas vao para a tabela; o resto continua no KV.
+window.storage = {
+  async get(key, shared) {
+    if (key && key.indexOf(TASKS_PREFIX_SB) === 0) {
+      const eid = key.slice(TASKS_PREFIX_SB.length);
+      const arr = await _tasksGet(eid);
+      return { key: key, value: JSON.stringify(arr), shared: shared };
+    }
+    return _kv.get(key, shared);
+  },
+  async set(key, value, shared) {
+    if (key && key.indexOf(TASKS_PREFIX_SB) === 0) {
+      const eid = key.slice(TASKS_PREFIX_SB.length);
+      var arr; try { arr = JSON.parse(value); } catch (_) { arr = []; }
+      try { await _tasksSet(eid, arr); }
+      catch (e) { showError('Erro ao salvar tarefas: ' + String(e && (e.message || e)).slice(0, 80)); throw e; }
+      return { key: key, value: value, shared: shared };
+    }
+    return _kv.set(key, value, shared);
+  },
+  async delete(key, shared) {
+    if (key && key.indexOf(TASKS_PREFIX_SB) === 0) {
+      const eid = key.slice(TASKS_PREFIX_SB.length);
+      await sbFetch("DELETE", "tasks?esteira=eq." + encodeURIComponent(eid));
+      delete _taskCache[eid];
+      return { key: key, deleted: true, shared: shared };
+    }
+    return _kv.delete(key, shared);
+  },
+  async list(prefix, shared) {
+    if (prefix && (prefix === TASKS_PREFIX_SB || prefix.indexOf(TASKS_PREFIX_SB) === 0)) {
+      const eids = await _tasksListEsteiras();
+      return { keys: eids.map(function (e) { return TASKS_PREFIX_SB + e; }), prefix: prefix, shared: shared };
+    }
+    return _kv.list(prefix, shared);
+  }
+};
+
+/* ===== Migracao unica: blobs antigos (kv: sinergy_est_*) -> tabela tasks =====
+   NAO altera nem apaga os blobs antigos => rollback seguro. Idempotente (upsert por id).
+   Rode UMA vez no console do navegador:  await window.migrarTarefas()                  */
+window.migrarTarefas = async function () {
+  console.log("[migracao] iniciando…");
+  const listing = await _kv.list("sinergy_est_");
+  const keys = (listing && listing.keys) || [];
+  var totalTasks = 0, esteiras = 0; const detalhe = [];
+  for (var k = 0; k < keys.length; k++) {
+    const key = keys[k]; var got;
+    try { got = await _kv.get(key); } catch (_) { continue; }
+    var arr; try { arr = JSON.parse(got.value); } catch (_) { arr = []; }
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    const eid = key.slice("sinergy_est_".length);
+    const rows = arr.map(function (t) {
+      const id = (t && t.id != null && t.id !== "") ? String(t.id) : _newId();
+      const data = (t.id !== id) ? Object.assign({}, t, { id: id }) : t;
+      return { id: id, esteira: eid, data: data, updated_at: new Date().toISOString() };
+    });
+    const chunks = _chunk(rows, 200);
+    for (var c = 0; c < chunks.length; c++) { await sbFetch("POST", "tasks", chunks[c]); }
+    totalTasks += rows.length; esteiras++;
+    detalhe.push(eid + ": " + rows.length);
+    console.log("[migracao] " + eid + " -> " + rows.length + " tarefas");
+  }
+  _taskCache = {};
+  const resumo = { esteiras: esteiras, tarefas: totalTasks, detalhe: detalhe };
+  console.log("[migracao] CONCLUIDA", resumo);
+  try {
+    const d = document.createElement('div');
+    d.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#10b981;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-family:system-ui;z-index:99999;max-width:380px;cursor:pointer;line-height:1.4;';
+    d.textContent = '✓ Migracao concluida: ' + totalTasks + ' tarefas em ' + esteiras + ' esteiras. Recarregue a pagina (F5).';
+    d.onclick = function () { d.remove(); };
+    document.body.appendChild(d);
+  } catch (_) {}
+  return resumo;
+};
+
+// Avisos nao-bloqueantes (banners) sobre estado da migracao.
+function _maybeWarnTasksTable(err) {
+  const msg = String((err && (err.message || err)) || "");
+  if (msg.indexOf("relation") >= 0 || msg.indexOf("does not exist") >= 0 || msg.indexOf("42P01") >= 0 || msg.indexOf("[404]") >= 0) {
+    _banner("⚠ Tabela 'tasks' nao encontrada. Rode o SQL de criacao no Supabase.", '#ef4444');
+  }
+}
+function _banner(text, color) {
+  if (document.getElementById('sb-migra')) return;
+  const go = function () {
+    const d = document.createElement('div');
+    d.id = 'sb-migra';
+    d.style.cssText = 'position:fixed;bottom:48px;right:10px;background:' + color + ';color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-family:system-ui;z-index:99999;max-width:400px;cursor:pointer;line-height:1.4;';
+    d.textContent = text;
+    d.onclick = function () { d.remove(); };
+    (document.body || document.documentElement).appendChild(d);
+  };
+  if (document.body) go(); else window.addEventListener('DOMContentLoaded', go);
+}
+(async function _checkMigracao() {
+  try {
+    const t = await sbFetch("GET", "tasks?select=id&limit=1");
+    if (Array.isArray(t) && t.length === 0) {
+      const old = await _kv.list("sinergy_est_");
+      if (old && old.keys && old.keys.length > 0) {
+        _banner("ⓘ Tarefas ainda nao migradas. Abra o console (F12) e rode:  await window.migrarTarefas()", '#f59e0b');
+      }
+    }
+  } catch (e) { _maybeWarnTasksTable(e); }
+})();
 </script>
 <script>var _excluded = ["eid", "deletedAt", "deletedBy"];
 function _typeof(o) { "@babel/helpers - typeof"; return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function (o) { return typeof o; } : function (o) { return o && "function" == typeof Symbol && o.constructor === Symbol && o !== Symbol.prototype ? "symbol" : typeof o; }, _typeof(o); }
@@ -429,11 +586,10 @@ var TASKS_PREFIX = "sinergy_est_";
 var TRASH_KEY = "sinergy_trash_v1";
 var LEGACY_TASKS_KEY = "sinergy_op2026_v2";
 var USERS_KEY = "sinergy_auth_v1",
-  LOG_KEY = "sinergy_log_v1",
   EST_KEY = "sinergy_esteiras_v1",
   GROUPS_KEY = "sinergy_groups_v1",
   PREFS_KEY = "sinergy_prefs_v1";
-var PERM_KEYS = ["create_task", "edit_task", "edit_own", "complete_task", "delete_task", "bulk_ops", "import", "export", "view_log", "export_log", "manage_users", "manage_groups", "manage_esteiras", "view_trash", "restore_trash", "view_workspace"];
+var PERM_KEYS = ["create_task", "edit_task", "edit_own", "complete_task", "delete_task", "bulk_ops", "import", "export", "view_log", "export_log", "manage_users", "manage_groups", "manage_esteiras", "view_trash", "restore_trash", "view_workspace", "view_dashboard"];
 var ALL_P = Object.fromEntries(PERM_KEYS.map(function (k) {
   return [k, true];
 }));
@@ -465,7 +621,8 @@ var DEFAULT_GROUPS = [{
     export_log: true,
     view_trash: true,
     restore_trash: true,
-    view_workspace: true
+    view_workspace: true,
+    view_dashboard: true
   }),
   esteiras: "all"
 }, {
@@ -482,7 +639,8 @@ var DEFAULT_GROUPS = [{
     export: true,
     view_log: true,
     export_log: true,
-    view_workspace: true
+    view_workspace: true,
+    view_dashboard: true
   }),
   esteiras: "all"
 }, {
@@ -516,7 +674,7 @@ var PERM_SECTIONS = [{
   items: [["manage_users", "Gerenciar usuarios"], ["manage_groups", "Gerenciar grupos"], ["manage_esteiras", "Gerenciar esteiras"], ["view_trash", "Ver lixeira"], ["restore_trash", "Restaurar lixeira"]]
 }, {
   s: "Geral",
-  items: [["view_workspace", "Minha Area"]]
+  items: [["view_workspace", "Minha Area"], ["view_dashboard", "Painel gerencial"]]
 }];
 var STATUS_GROUPS = {
   atraso: {
@@ -3338,291 +3496,499 @@ var TrashModal = memo(function TrashModal(_ref11) {
 
 /* ── LogModal ── */
 var LogModal = memo(function LogModal(_ref12) {
-  var log = _ref12.log,
-    canExport = _ref12.canExport,
+  var canExport = _ref12.canExport,
     onClose = _ref12.onClose,
+    users = _ref12.users,
     T = _ref12.T;
-  var _useState41 = useState("all"),
-    _useState42 = _slicedToArray(_useState41, 2),
-    fAct = _useState42[0],
-    setFAct = _useState42[1];
-  var _useState43 = useState("all"),
-    _useState44 = _slicedToArray(_useState43, 2),
-    fUser = _useState44[0],
-    setFUser = _useState44[1];
-  var _useState45 = useState(""),
-    _useState46 = _slicedToArray(_useState45, 2),
-    msg = _useState46[0],
-    setMsg = _useState46[1];
-  var _useState45b = useState(""),
-    _useState46b = _slicedToArray(_useState45b, 2),
-    fSearch = _useState46b[0],
-    setFSearch = _useState46b[1];
+
+  var PAGE_SIZE = 50;
+
+  var _useState41 = useState("all"), _useState42 = _slicedToArray(_useState41, 2),
+    fAct = _useState42[0], setFAct = _useState42[1];
+  var _useState43 = useState(""), _useState44 = _slicedToArray(_useState43, 2),
+    fUser = _useState44[0], setFUser = _useState44[1];
+  var _useState45 = useState(""), _useState46 = _slicedToArray(_useState45, 2),
+    fSearch = _useState46[0], setFSearch = _useState46[1];
+  var _useStateQ = useState(""), _useStateQ2 = _slicedToArray(_useStateQ, 2),
+    qSearch = _useStateQ2[0], setQSearch = _useStateQ2[1];
+  var _useState47 = useState(""), _useState48 = _slicedToArray(_useState47, 2),
+    fDateFrom = _useState48[0], setFDateFrom = _useState48[1];
+  var _useState49 = useState(""), _useState50 = _slicedToArray(_useState49, 2),
+    fDateTo = _useState50[0], setFDateTo = _useState50[1];
+  var _useState51 = useState([]), _useState52 = _slicedToArray(_useState51, 2),
+    rows = _useState52[0], setRows = _useState52[1];
+  var _useState53 = useState(0), _useState54 = _slicedToArray(_useState53, 2),
+    page = _useState54[0], setPage = _useState54[1];
+  var _useState55 = useState(0), _useState56 = _slicedToArray(_useState55, 2),
+    total = _useState56[0], setTotal = _useState56[1];
+  var _useState57 = useState(true), _useState58 = _slicedToArray(_useState57, 2),
+    loading = _useState58[0], setLoading = _useState58[1];
+  var _useState59 = useState(""), _useState60 = _slicedToArray(_useState59, 2),
+    msg = _useState60[0], setMsg = _useState60[1];
+
   var I = mkI(T);
-  var ulist = _toConsumableArray(new Set(log.map(function (l) {
-    return l.user;
-  }))).sort();
-  var filtered = log.filter(function (l) {
-    if (fAct !== "all" && l.action !== fAct) return false;
-    if (fUser !== "all" && l.user !== fUser) return false;
-    if (fSearch.trim()) {
-      var q = norm(fSearch);
-      var inUser   = norm(l.user   || '').includes(q);
-      var inTarget = norm(l.target || '').includes(q);
-      var inAction = norm(ACTION_LABELS[l.action] || l.action || '').includes(q);
-      if (!inUser && !inTarget && !inAction) return false;
+
+  // Filtro de usuarios vem do cadastro ativo (nao varre a tabela de logs).
+  // Usuarios ja removidos ainda sao localizaveis digitando o nome na busca.
+  var userNames = _toConsumableArray(new Set((users || []).map(function (u) { return u.name; }).filter(Boolean))).sort();
+
+  function buildQuery(forExport) {
+    var q = "logs?order=ts.desc";
+    if (fAct !== "all") q += "&action=eq." + encodeURIComponent(fAct);
+    if (fUser) q += "&user_name=eq." + encodeURIComponent(fUser);
+    if (fDateFrom) q += "&ts=gte." + encodeURIComponent(fDateFrom + "T00:00:00.000Z");
+    if (fDateTo) q += "&ts=lte." + encodeURIComponent(fDateTo + "T23:59:59.999Z");
+    var term = (qSearch || "").trim();
+    if (term) {
+      var safe = term.replace(/[(),]/g, " ").replace(/[%_]/g, "\\$&");
+      q += "&or=(target.ilike.*" + encodeURIComponent(safe) + "*,user_name.ilike.*" + encodeURIComponent(safe) + "*)";
     }
-    return true;
-  });
-  var buildText = function buildText() {
-    return "SinergyRH Log\n" + filtered.map(function (l) {
-      return "[".concat(fmtDT(l.ts), "] ").concat(l.user, " - ").concat(ACTION_LABELS[l.action] || l.action, ": ").concat(l.target);
-    }).join("\n");
-  };
+    if (!forExport) {
+      q += "&limit=" + PAGE_SIZE + "&offset=" + (page * PAGE_SIZE);
+    }
+    return q;
+  }
+
+  // Uma unica requisicao traz a pagina E o total (header Content-Range + count=estimated).
+  // Nada de baixar todos os IDs so para contar: a tela permanece rapida mesmo com milhoes de registros.
+  var fetchPage = useCallback(function () {
+    setLoading(true);
+    return fetch(SUPABASE_URL + "/rest/v1/" + buildQuery(false), {
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: "Bearer " + SUPABASE_KEY,
+        Prefer: "count=estimated"
+      }
+    }).then(function (res) {
+      var cr = res.headers.get("content-range") || "";
+      return res.json().then(function (data) {
+        var list = Array.isArray(data) ? data : [];
+        var tot = list.length;
+        var slash = cr.indexOf("/");
+        if (slash >= 0) {
+          var after = cr.slice(slash + 1);
+          if (after !== "*") tot = parseInt(after, 10) || 0;
+        }
+        setRows(list);
+        setTotal(tot);
+        setLoading(false);
+      });
+    }).catch(function (e) {
+      console.error("[LogModal] fetch error:", e);
+      setRows([]);
+      setTotal(0);
+      setLoading(false);
+    });
+  }, [fAct, fUser, qSearch, fDateFrom, fDateTo, page]);
+
+  useEffect(function () { fetchPage(); }, [fetchPage]);
+
+  function applyFilters() { setQSearch(fSearch); setPage(0); }
+
   var flash = function flash(m) {
     setMsg(m);
-    setTimeout(function () {
-      return setMsg("");
-    }, 2600);
+    setTimeout(function () { return setMsg(""); }, 2600);
   };
-  var download = function download() {
-    try {
-      var blob = new Blob([buildText()], {
-        type: "text/plain;charset=utf-8"
-      });
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement("a");
-      a.href = url;
-      a.download = "Log_".concat(new Date().toISOString().slice(0, 10), ".txt");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function () {
-        return URL.revokeObjectURL(url);
-      }, 300);
-      flash("Download iniciado");
-    } catch (_) {
-      flash("Bloqueado - use Copiar");
-    }
+
+  var handleExport = function () {
+    flash("Preparando exportacao...");
+    return sbFetch("GET", buildQuery(true) + "&limit=100000").then(function (allData) {
+      var list = Array.isArray(allData) ? allData : [];
+      var text = "SinergyRH Log\n" + list.map(function (l) {
+        return "[" + fmtDT(l.ts) + "] " + l.user_name + " - " + (ACTION_LABELS[l.action] || l.action) + ": " + l.target;
+      }).join("\n");
+      try {
+        var blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = "Log_" + new Date().toISOString().slice(0, 10) + ".txt";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 300);
+        flash("Download iniciado (" + list.length + " registros)");
+      } catch (_) { flash("Bloqueado - tente novamente"); }
+    }).catch(function () { flash("Erro ao exportar"); });
   };
-  var copy = /*#__PURE__*/function () {
-    var _copy = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee15() {
-      var _t;
-      return _regenerator().w(function (_context15) {
-        while (1) switch (_context15.p = _context15.n) {
-          case 0:
-            _context15.p = 0;
-            _context15.n = 1;
-            return navigator.clipboard.writeText(buildText());
-          case 1:
-            flash("Log copiado!");
-            _context15.n = 3;
-            break;
-          case 2:
-            _context15.p = 2;
-            _t = _context15.v;
-            flash("Falha ao copiar");
-          case 3:
-            return _context15.a(2);
-        }
-      }, _callee15, null, [[0, 2]]);
-    }));
-    function copy() {
-      return _copy.apply(this, arguments);
-    }
-    return copy;
-  }();
-  return /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: "100%",
-      maxWidth: 860,
-      background: T.surface,
-      borderRadius: 16,
-      border: "1px solid ".concat(T.border),
-      overflow: "hidden"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      padding: "18px 24px",
-      borderBottom: "1px solid ".concat(T.borderL),
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
-      flexWrap: "wrap"
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 15,
-      fontWeight: 700,
-      color: T.text
-    }
-  }, "Log de Atividades"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: T.textM,
-      marginTop: 2
-    }
-  }, filtered.length, "/", log.length, " registros", msg && /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#10b981",
-      marginLeft: 8
-    }
-  }, msg))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      flexWrap: "wrap"
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    value: fSearch,
-    onChange: function onChange(ev) { return setFSearch(ev.target.value); },
-    placeholder: "Buscar...",
-    style: _objectSpread(_objectSpread({}, I), {}, { padding: "5px 10px", fontSize: 12, width: 180 })
-  }), /*#__PURE__*/React.createElement("select", {
-    value: fUser,
-    onChange: function onChange(ev) {
-      return setFUser(ev.target.value);
+
+  var totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  var canPrev = !loading && page > 0;
+  // "proximo" habilitado se o total indica mais paginas OU se a pagina veio cheia
+  // (rede de seguranca caso o header de contagem nao esteja disponivel no ambiente).
+  var canNext = !loading && (page < totalPages - 1 || rows.length === PAGE_SIZE);
+
+  return React.createElement("div", {
+    style: { width: "100%", maxWidth: 860, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden" }
+  },
+    // Header
+    React.createElement("div", {
+      style: { padding: "18px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }
     },
-    style: _objectSpread(_objectSpread({}, I), {}, {
-      width: "auto",
-      padding: "5px 10px",
-      fontSize: 12,
-      background: T.selBg,
-      colorScheme: T.cs
-    })
-  }, /*#__PURE__*/React.createElement("option", {
-    value: "all"
-  }, "Todos usuarios"), ulist.map(function (u) {
-    return /*#__PURE__*/React.createElement("option", {
-      key: u,
-      value: u
-    }, u);
-  })), /*#__PURE__*/React.createElement("select", {
-    value: fAct,
-    onChange: function onChange(ev) {
-      return setFAct(ev.target.value);
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Log de Atividades"),
+        React.createElement("div", { style: { fontSize: 11, color: T.textM, marginTop: 2 } },
+          loading ? "Carregando..." : (total + " registro" + (total !== 1 ? "s" : "") + " com esses filtros"),
+          msg && React.createElement("span", { style: { color: "#10b981", marginLeft: 8 } }, msg)
+        )
+      ),
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        React.createElement("input", {
+          value: fSearch,
+          onChange: function(ev){ setFSearch(ev.target.value); },
+          onKeyDown: function(ev){ if(ev.key==="Enter") applyFilters(); },
+          placeholder: "Buscar nome/detalhe (Enter)",
+          style: _objectSpread(_objectSpread({}, I), {}, { padding: "5px 10px", fontSize: 12, width: 160 })
+        }),
+        React.createElement("select", {
+          value: fUser,
+          onChange: function(ev){ setFUser(ev.target.value); setPage(0); },
+          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
+        },
+          React.createElement("option", { value: "" }, "Todos usuarios"),
+          userNames.map(function(u){ return React.createElement("option", { key: u, value: u }, u); })
+        ),
+        React.createElement("select", {
+          value: fAct,
+          onChange: function(ev){ setFAct(ev.target.value); setPage(0); },
+          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
+        },
+          React.createElement("option", { value: "all" }, "Todas acoes"),
+          Object.entries(ACTION_LABELS).map(function(_ref13){
+            var _ref14 = _slicedToArray(_ref13, 2), k = _ref14[0], v = _ref14[1];
+            return React.createElement("option", { key: k, value: k }, v);
+          })
+        ),
+        React.createElement("input", {
+          type: "date", value: fDateFrom,
+          onChange: function(ev){ setFDateFrom(ev.target.value); setPage(0); },
+          title: "De",
+          style: _objectSpread(_objectSpread({}, I), {}, { padding: "5px 8px", fontSize: 12, width: 130, colorScheme: T.cs })
+        }),
+        React.createElement("input", {
+          type: "date", value: fDateTo,
+          onChange: function(ev){ setFDateTo(ev.target.value); setPage(0); },
+          title: "Ate",
+          style: _objectSpread(_objectSpread({}, I), {}, { padding: "5px 8px", fontSize: 12, width: 130, colorScheme: T.cs })
+        }),
+        canExport && React.createElement("button", {
+          onClick: handleExport,
+          disabled: total === 0,
+          style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "5px 12px", fontSize: 11, opacity: total === 0 ? 0.4 : 1 })
+        }, React.createElement(Download, { size: 13 }), " Baixar .txt"),
+        React.createElement(CloseBtn, { onClick: onClose, T: T })
+      )
+    ),
+    // Table
+    React.createElement("div", { style: { maxHeight: 480, overflowY: "auto" } },
+      loading
+        ? React.createElement("div", { style: { textAlign: "center", padding: "48px 0", color: T.textD, fontSize: 13 } }, "Carregando...")
+        : rows.length === 0
+          ? React.createElement("div", { style: { textAlign: "center", padding: "48px 0", color: T.textD, fontSize: 13 } }, "Nenhum registro")
+          : React.createElement("table", { style: { width: "100%", borderCollapse: "collapse" } },
+              React.createElement("thead", null,
+                React.createElement("tr", { style: { background: T.panelBg, borderBottom: "1px solid " + T.borderL } },
+                  ["Data/Hora", "Usuario", "Acao", "Detalhe"].map(function(h){
+                    return React.createElement("th", { key: h, style: { padding: "9px 14px", color: T.textM, fontWeight: 600, textAlign: "left", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", whiteSpace: "nowrap" } }, h);
+                  })
+                )
+              ),
+              React.createElement("tbody", null,
+                rows.map(function(l, i){
+                  return React.createElement("tr", { key: l.id || i, style: { borderBottom: "1px solid " + T.borderL, background: i % 2 === 0 ? "transparent" : T.panelBg } },
+                    React.createElement("td", { style: { padding: "9px 14px", color: T.textM, fontSize: 12, whiteSpace: "nowrap" } }, fmtDT(l.ts)),
+                    React.createElement("td", { style: { padding: "9px 14px", color: T.textS, fontSize: 13, fontWeight: 500 } }, l.user_name),
+                    React.createElement("td", { style: { padding: "9px 14px", fontSize: 12 } },
+                      React.createElement("span", { style: { color: T.text, fontWeight: 500 } }, ACTION_LABELS[l.action] || l.action)
+                    ),
+                    React.createElement("td", { style: { padding: "9px 14px", color: T.text, fontSize: 13, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.target)
+                  );
+                })
+              )
+            )
+    ),
+    // Pagination
+    React.createElement("div", {
+      style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 18px", borderTop: "1px solid " + T.borderL }
     },
-    style: _objectSpread(_objectSpread({}, I), {}, {
-      width: "auto",
-      padding: "5px 10px",
-      fontSize: 12,
-      background: T.selBg,
-      colorScheme: T.cs
-    })
-  }, /*#__PURE__*/React.createElement("option", {
-    value: "all"
-  }, "Todas acoes"), Object.entries(ACTION_LABELS).map(function (_ref13) {
-    var _ref14 = _slicedToArray(_ref13, 2),
-      k = _ref14[0],
-      v = _ref14[1];
-    return /*#__PURE__*/React.createElement("option", {
-      key: k,
-      value: k
-    }, v);
-  })), canExport && /*#__PURE__*/React.createElement("button", {
-    onClick: copy,
-    disabled: filtered.length === 0,
-    style: _objectSpread(_objectSpread({}, mkB("#6366f1", false, T)), {}, {
-      padding: "5px 12px",
-      fontSize: 11,
-      opacity: filtered.length === 0 ? 0.4 : 1
-    })
-  }, /*#__PURE__*/React.createElement(Copy, {
-    size: 13
-  }), "Copiar"), canExport && /*#__PURE__*/React.createElement("button", {
-    onClick: download,
-    disabled: filtered.length === 0,
-    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
-      padding: "5px 12px",
-      fontSize: 11,
-      opacity: filtered.length === 0 ? 0.4 : 1
-    })
-  }, /*#__PURE__*/React.createElement(Download, {
-    size: 13
-  }), "Baixar .txt"), /*#__PURE__*/React.createElement(CloseBtn, {
-    onClick: onClose,
-    T: T
-  }))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      maxHeight: 520,
-      overflowY: "auto"
+      React.createElement("span", { style: { fontSize: 12, color: T.textM } },
+        "Pagina " + (page + 1) + " de " + totalPages + " · " + total + " registro" + (total !== 1 ? "s" : "")
+      ),
+      React.createElement("div", { style: { display: "flex", gap: 6 } },
+        React.createElement("button", {
+          onClick: function(){ setPage(0); },
+          disabled: !canPrev,
+          style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "4px 10px", fontSize: 11, opacity: !canPrev ? 0.4 : 1 })
+        }, "«"),
+        React.createElement("button", {
+          onClick: function(){ setPage(function(p){ return Math.max(0, p - 1); }); },
+          disabled: !canPrev,
+          style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "4px 10px", fontSize: 11, opacity: !canPrev ? 0.4 : 1 })
+        }, "‹ Anterior"),
+        React.createElement("button", {
+          onClick: function(){ setPage(function(p){ return p + 1; }); },
+          disabled: !canNext,
+          style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "4px 10px", fontSize: 11, opacity: !canNext ? 0.4 : 1 })
+        }, "Proximo ›"),
+        React.createElement("button", {
+          onClick: function(){ setPage(Math.max(0, totalPages - 1)); },
+          disabled: !canNext,
+          style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "4px 10px", fontSize: 11, opacity: !canNext ? 0.4 : 1 })
+        }, "»")
+      )
+    )
+  );
+});
+
+/* ── DashboardModal (Painel Gerencial) ── */
+var DashboardModal = memo(function DashboardModal(_refDash) {
+  var tasks = _refDash.tasks,
+    scope = _refDash.scope,
+    session = _refDash.session,
+    T = _refDash.T,
+    onClose = _refDash.onClose;
+  var e = React.createElement;
+  var I = mkI(T);
+
+  var canSeeAll = scope === "all";
+  var myName = (session && session.name) || "";
+
+  var _fc = useState("__all__"), fCoord = _fc[0], setFCoord = _fc[1];
+  var _fcl = useState("__all__"), fCli = _fcl[0], setFCli = _fcl[1];
+  var _act = useState([]), activity = _act[0], setActivity = _act[1];
+  var _actL = useState(true), actLoading = _actL[0], setActLoading = _actL[1];
+
+  // ---- conjunto de tarefas conforme o papel ----
+  var allTasks = Object.values(tasks || {}).reduce(function (acc, arr) { return acc.concat(arr || []); }, []);
+  // gerente/admin = tudo; coordenadora = somente tarefas onde ela e a coordenadora
+  var scoped = canSeeAll ? allTasks : allTasks.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
+
+  var coordOpts = distinct(scoped.map(function (t) { return t.coordenador; }).filter(Boolean)).sort();
+  var cliOpts = distinct(scoped.map(function (t) { return t.cliente; }).filter(Boolean)).sort();
+
+  // drill-down do gerente
+  var view = scoped;
+  if (canSeeAll && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
+  if (fCli !== "__all__") view = view.filter(function (t) { return (t.cliente || "") === fCli; });
+
+  // datas de referencia (local)
+  var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+  var now = new Date();
+  var todayStr = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  var wk = new Date(now.getTime() + 7 * 864e5);
+  var weekStr = wk.getFullYear() + "-" + pad(wk.getMonth() + 1) + "-" + pad(wk.getDate());
+  var done_ = function (t) { return t.status === "concluida"; };
+  var respsOf = function (t) { return Array.isArray(t.responsibles) ? t.responsibles : (t.responsible ? [t.responsible] : []); };
+
+  // KPIs
+  var total = view.length, done = 0, overdue = 0, dueWeek = 0;
+  view.forEach(function (t) {
+    if (done_(t)) { done++; return; }
+    if (t.deadline) { if (t.deadline < todayStr) overdue++; else if (t.deadline <= weekStr) dueWeek++; }
+  });
+  var pending = total - done;
+  var pct = total ? Math.round(done / total * 100) : 0;
+
+  // por cliente (ordenado por pendencias)
+  var cliMap = {};
+  view.forEach(function (t) {
+    var c = t.cliente || "(sem cliente)";
+    if (!cliMap[c]) cliMap[c] = { cliente: c, total: 0, pending: 0, done: 0 };
+    cliMap[c].total++; if (done_(t)) cliMap[c].done++; else cliMap[c].pending++;
+  });
+  var byCliente = Object.keys(cliMap).map(function (k) { return cliMap[k]; })
+    .sort(function (a, b) { return b.pending - a.pending || b.total - a.total; }).slice(0, 12);
+  var maxCliPend = byCliente.reduce(function (m, r) { return Math.max(m, r.pending); }, 0);
+
+  // por analista (carga e conclusao)
+  var anMap = {};
+  view.forEach(function (t) {
+    respsOf(t).forEach(function (name) {
+      if (!name) return;
+      if (!anMap[name]) anMap[name] = { name: name, total: 0, pending: 0, done: 0 };
+      anMap[name].total++; if (done_(t)) anMap[name].done++; else anMap[name].pending++;
+    });
+  });
+  var byAnalista = Object.keys(anMap).map(function (k) { return anMap[k]; })
+    .sort(function (a, b) { return b.total - a.total; }).slice(0, 15);
+  var maxAnTot = byAnalista.reduce(function (m, r) { return Math.max(m, r.total); }, 0);
+
+  // prazos
+  var late = [], soon = [];
+  view.forEach(function (t) {
+    if (done_(t) || !t.deadline) return;
+    if (t.deadline < todayStr) late.push(t); else if (t.deadline <= weekStr) soon.push(t);
+  });
+  var byD = function (a, b) { return (a.deadline || "").localeCompare(b.deadline || ""); };
+  late.sort(byD); soon.sort(byD);
+
+  // nomes do "time" para escopar a atividade
+  var teamSet = {};
+  view.forEach(function (t) { respsOf(t).forEach(function (n) { if (n) teamSet[n] = 1; }); if (t.coordenador) teamSet[t.coordenador] = 1; });
+  if (!canSeeAll && myName) teamSet[myName] = 1;
+  var teamNames = Object.keys(teamSet);
+  var teamKey = teamNames.slice().sort().join("|");
+
+  // atividade recente (logs)
+  useEffect(function () {
+    var alive = true;
+    setActLoading(true);
+    var q = "logs?order=ts.desc&limit=30";
+    var scopeAct = !canSeeAll || fCoord !== "__all__";
+    if (scopeAct) {
+      if (!teamNames.length) { setActivity([]); setActLoading(false); return function () {}; }
+      var inList = teamNames.slice(0, 60).map(function (n) {
+        return '"' + encodeURIComponent(String(n).replace(/[()"]/g, "")) + '"';
+      }).join(",");
+      q += "&user_name=in.(" + inList + ")";
     }
-  }, filtered.length === 0 ? /*#__PURE__*/React.createElement("div", {
-    style: {
-      textAlign: "center",
-      padding: "48px 0",
-      color: T.textD,
-      fontSize: 13
-    }
-  }, "Nenhum registro") : /*#__PURE__*/React.createElement("table", {
-    style: {
-      width: "100%",
-      borderCollapse: "collapse"
-    }
-  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
-    style: {
-      background: T.panelBg,
-      borderBottom: "1px solid ".concat(T.borderL)
-    }
-  }, ["Data/Hora", "Usuario", "Acao", "Detalhe"].map(function (h) {
-    return /*#__PURE__*/React.createElement("th", {
-      key: h,
-      style: {
-        padding: "9px 14px",
-        color: T.textM,
-        fontWeight: 600,
-        textAlign: "left",
-        fontSize: 11,
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        whiteSpace: "nowrap"
-      }
-    }, h);
-  }))), /*#__PURE__*/React.createElement("tbody", null, filtered.map(function (l, i) {
-    return /*#__PURE__*/React.createElement("tr", {
-      key: l.id,
-      style: {
-        borderBottom: "1px solid ".concat(T.borderL),
-        background: i % 2 === 0 ? "transparent" : T.panelBg
-      }
-    }, /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 14px",
-        color: T.textM,
-        fontSize: 12,
-        whiteSpace: "nowrap"
-      }
-    }, fmtDT(l.ts)), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 14px",
-        color: T.textS,
-        fontSize: 13,
-        fontWeight: 500
-      }
-    }, l.user), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 14px",
-        fontSize: 12
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: T.text,
-        fontWeight: 500
-      }
-    }, ACTION_LABELS[l.action] || l.action)), /*#__PURE__*/React.createElement("td", {
-      style: {
-        padding: "9px 14px",
-        color: T.text,
-        fontSize: 13,
-        maxWidth: 300,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap"
-      }
-    }, l.target));
-  })))));
+    sbFetch("GET", q).then(function (rows) {
+      if (!alive) return;
+      setActivity(Array.isArray(rows) ? rows : []);
+      setActLoading(false);
+    }).catch(function () { if (alive) { setActivity([]); setActLoading(false); } });
+    return function () { alive = false; };
+  }, [canSeeAll, fCoord, teamKey]);
+
+  // ---- helpers de render ----
+  function kpi(label, value, color) {
+    return e("div", { style: { flex: "1 1 120px", background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: "14px 16px" } },
+      e("div", { style: { fontSize: 26, fontWeight: 800, color: color || T.text, lineHeight: 1 } }, String(value)),
+      e("div", { style: { fontSize: 10.5, color: T.textM, marginTop: 5, textTransform: "uppercase", letterSpacing: "0.05em" } }, label)
+    );
+  }
+  function section(title, icon, body, note) {
+    return e("div", { style: { background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: 16, minWidth: 0, display: "flex", flexDirection: "column" } },
+      e("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12 } },
+        icon ? e(icon, { size: 15, color: T.textM }) : null,
+        e("div", { style: { fontSize: 13, fontWeight: 700, color: T.text } }, title),
+        note ? e("div", { style: { fontSize: 11, color: T.textD, marginLeft: "auto" } }, note) : null
+      ),
+      body
+    );
+  }
+  var emptyMsg = function (txt) { return e("div", { style: { fontSize: 12, color: T.textD, padding: "12px 0" } }, txt); };
+
+  function clienteRow(r) {
+    var w = maxCliPend ? Math.round(r.pending / maxCliPend * 100) : 0;
+    return e("div", { key: r.cliente, style: { marginBottom: 9 } },
+      e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3, gap: 8 } },
+        e("span", { style: { color: T.textS, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.cliente),
+        e("span", { style: { color: T.textM, flexShrink: 0 } }, r.pending + " pend. · " + r.total + " total")
+      ),
+      e("div", { style: { height: 6, background: T.border, borderRadius: 4, overflow: "hidden" } },
+        e("div", { style: { width: w + "%", height: "100%", background: "#f59e0b" } })
+      )
+    );
+  }
+  function analistaRow(r) {
+    var tw = maxAnTot ? Math.max(8, Math.round(r.total / maxAnTot * 100)) : 0;
+    var dp = r.total ? Math.round(r.done / r.total * 100) : 0;
+    return e("div", { key: r.name, style: { marginBottom: 9 } },
+      e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3, gap: 8 } },
+        e("span", { style: { color: T.textS, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.name),
+        e("span", { style: { color: T.textM, flexShrink: 0 } }, r.done + "✓ · " + r.pending + " pend.")
+      ),
+      e("div", { style: { height: 6, background: T.border, borderRadius: 4, overflow: "hidden", width: tw + "%", minWidth: 30 } },
+        e("div", { style: { width: dp + "%", height: "100%", background: "#10b981" } })
+      )
+    );
+  }
+  function prazoItem(t, color) {
+    var resp = (respsOf(t)[0]) || "";
+    return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 } }),
+      e("div", { style: { minWidth: 0, flex: 1 } },
+        e("div", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, (t.code ? t.code + " · " : "") + (t.title || "(sem titulo)")),
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, [t.cliente, t.coordenador, resp].filter(Boolean).join(" · "))
+      ),
+      e("span", { style: { fontSize: 11, color: color, fontWeight: 600, flexShrink: 0 } }, fmtDate(t.deadline))
+    );
+  }
+  function actItem(l, i) {
+    return e("div", { key: l.id || i, style: { display: "flex", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("span", { style: { fontSize: 11, color: T.textD, whiteSpace: "nowrap", flexShrink: 0 } }, fmtDT(l.ts)),
+      e("div", { style: { minWidth: 0 } },
+        e("div", { style: { fontSize: 12 } },
+          e("span", { style: { color: T.textS, fontWeight: 600 } }, l.user_name),
+          e("span", { style: { color: T.textM } }, " · " + (ACTION_LABELS[l.action] || l.action))
+        ),
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.target)
+      )
+    );
+  }
+
+  var subtitle = canSeeAll
+    ? ("Visão geral · " + total + " tarefa" + (total !== 1 ? "s" : ""))
+    : ("Coordenação: " + (myName || "—") + " · " + total + " tarefa" + (total !== 1 ? "s" : ""));
+
+  var scrollBox = { maxHeight: 260, overflowY: "auto", paddingRight: 4 };
+
+  return e("div", {
+    style: { width: "100%", maxWidth: 1080, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden" }
+  },
+    // Header
+    e("div", { style: { padding: "18px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+      e("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+        e(Briefcase, { size: 18, color: T.textM }),
+        e("div", null,
+          e("div", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Painel Gerencial"),
+          e("div", { style: { fontSize: 11, color: T.textM, marginTop: 2 } }, subtitle)
+        )
+      ),
+      e("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        canSeeAll && e("select", {
+          value: fCoord, onChange: function (ev) { setFCoord(ev.target.value); },
+          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
+        }, e("option", { value: "__all__" }, "Todas as coordenações"),
+          coordOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
+        ),
+        e("select", {
+          value: fCli, onChange: function (ev) { setFCli(ev.target.value); },
+          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
+        }, e("option", { value: "__all__" }, "Todos os clientes"),
+          cliOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
+        ),
+        e(CloseBtn, { onClick: onClose, T: T })
+      )
+    ),
+    // Body
+    e("div", { style: { padding: 20 } },
+      // KPIs
+      e("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 } },
+        kpi("Total", total, T.text),
+        kpi("Pendentes", pending, "#6366f1"),
+        kpi("Concluídas", done + " (" + pct + "%)", "#10b981"),
+        kpi("Atrasadas", overdue, "#ef4444"),
+        kpi("Vencendo 7d", dueWeek, "#f59e0b")
+      ),
+      total === 0
+        ? emptyMsg("Nenhuma tarefa no escopo atual.")
+        : e("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 } },
+            // Cliente
+            section("Pendências por cliente", Layers,
+              byCliente.length ? e("div", { style: scrollBox }, byCliente.map(clienteRow)) : emptyMsg("Sem dados de cliente."),
+              "top " + byCliente.length),
+            // Prazos
+            section("Prazos", Clock,
+              e("div", { style: scrollBox },
+                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + late.length + ")"),
+                late.length ? late.map(function (t) { return prazoItem(t, "#ef4444"); }) : emptyMsg("Nenhuma atrasada."),
+                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soon.length + ")"),
+                soon.length ? soon.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
+              )),
+            // Analista
+            section("Carga por analista", Users,
+              byAnalista.length ? e("div", { style: scrollBox }, byAnalista.map(analistaRow)) : emptyMsg("Sem analistas atribuídos."),
+              byAnalista.length + " pessoa(s)"),
+            // Atividade
+            section("Atividade recente", ScrollText,
+              actLoading ? emptyMsg("Carregando…")
+                : (activity.length ? e("div", { style: scrollBox }, activity.map(actItem)) : emptyMsg("Sem atividade registrada.")),
+              canSeeAll && fCoord === "__all__" ? "geral" : "equipe")
+          )
+    )
+  );
 });
 
 /* ── TaskCard ── */
@@ -3917,6 +4283,9 @@ function App() {
     _useState64 = _slicedToArray(_useState63, 2),
     showLog = _useState64[0],
     setShowLog = _useState64[1];
+  var _dashSt = useState(false),
+    showDash = _dashSt[0],
+    setShowDash = _dashSt[1];
   var _useState65 = useState(false),
     _useState66 = _slicedToArray(_useState65, 2),
     showTrash = _useState66[0],
@@ -3951,14 +4320,10 @@ function App() {
     _useState78 = _slicedToArray(_useState77, 2),
     trash = _useState78[0],
     setTrash = _useState78[1];
-  var _useState79 = useState([]),
+  var _useState79 = useState(INIT_F),
     _useState80 = _slicedToArray(_useState79, 2),
-    log = _useState80[0],
-    setLog = _useState80[1];
-  var _useState81 = useState(INIT_F),
-    _useState82 = _slicedToArray(_useState81, 2),
-    filters = _useState82[0],
-    setFilters = _useState82[1];
+    filters = _useState80[0],
+    setFilters = _useState80[1];
   var _useState83 = useState(false),
     _useState84 = _slicedToArray(_useState83, 2),
     showFilters = _useState84[0],
@@ -4086,10 +4451,6 @@ function App() {
   var tasksRef = useRef({});
   var trashRef = useRef([]);
   var lastWriteRef = useRef(0);
-  var logRef = useRef([]);
-  useEffect(function () {
-    logRef.current = log;
-  }, [log]);
   var sessionRef = useRef(session);
   useEffect(function () {
     sessionRef.current = session;
@@ -4228,48 +4589,25 @@ function App() {
       _iterator4.f();
     }
   }, [saveEsteira]);
-  var logAction = useCallback(/*#__PURE__*/function () {
-    var _ref17 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee17(action, target, asUser) {
-      var _sessionRef$current;
-      var u, entry, nl, _t3;
-      return _regenerator().w(function (_context17) {
-        while (1) switch (_context17.p = _context17.n) {
-          case 0:
-            u = asUser || ((_sessionRef$current = sessionRef.current) === null || _sessionRef$current === void 0 ? void 0 : _sessionRef$current.name);
-            if (u) {
-              _context17.n = 1;
-              break;
-            }
-            return _context17.a(2);
-          case 1:
-            entry = {
-              id: Date.now().toString(36) + Math.random().toString(36).slice(2),
-              ts: new Date().toISOString(),
-              user: u,
-              action: action,
-              target: target
-            };
-            nl = [entry].concat(_toConsumableArray(logRef.current)).slice(0, 10000);
-            setLog(nl);
-            _context17.p = 2;
-            _context17.n = 3;
-            return window.storage.set(LOG_KEY, JSON.stringify(nl), true);
-          case 3:
-            _context17.n = 5;
-            break;
-          case 4:
-            _context17.p = 4;
-            _t3 = _context17.v;
-            console.error('[logAction FAIL] Nao foi possivel salvar log no Supabase:', _t3 && (_t3.message || _t3));
-          case 5:
-            return _context17.a(2);
-        }
-      }, _callee17, null, [[2, 4]]);
-    }));
-    return function (_x6, _x7, _x8) {
-      return _ref17.apply(this, arguments);
+  var logAction = useCallback(function (action, target, asUser) {
+    var _sr = sessionRef.current;
+    var u = asUser || (_sr && _sr.name);
+    if (!u) return Promise.resolve();
+    var entry = {
+      ts: new Date().toISOString(),
+      user_name: u,
+      action: action,
+      target: target || ""
     };
-  }(), []);
+    // Gravacao append-only no Supabase, com 1 retry para nao perder eventos em falha de rede.
+    return sbFetch("POST", "logs", entry).catch(function () {
+      return new Promise(function (r) { setTimeout(r, 800); }).then(function () {
+        return sbFetch("POST", "logs", entry);
+      });
+    }).catch(function (e) {
+      console.error('[logAction FAIL] Nao foi possivel salvar log no Supabase:', e && (e.message || e));
+    });
+  }, []);
   var resolveGerente = function resolveGerente(name) {
     return usersRef.current.find(function (u) {
       return isGerenteUser(u, groupsRef.current) && norm(u.name) === norm(name);
@@ -4711,7 +5049,7 @@ function App() {
               locked: dg.locked,
               fullAccess: dg.fullAccess,
               isGerente: dg.isGerente,
-              perms: _objectSpread(_objectSpread({}, NO_P), c.perms || {})
+              perms: _objectSpread(_objectSpread(_objectSpread({}, NO_P), dg.perms || {}), c.perms || {})
             }) : dg;
           });
           custom = ld.filter(function (g) {
@@ -4843,29 +5181,6 @@ function App() {
     loadEsteiras();
   }, []);
   useEffect(function () {
-    _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee27() {
-      var r, _t22;
-      return _regenerator().w(function (_context28) {
-        while (1) switch (_context28.p = _context28.n) {
-          case 0:
-            _context28.p = 0;
-            _context28.n = 1;
-            return window.storage.get(LOG_KEY, true);
-          case 1:
-            r = _context28.v;
-            if (r) setLog(JSON.parse(r.value));
-            _context28.n = 3;
-            break;
-          case 2:
-            _context28.p = 2;
-            _t22 = _context28.v;
-          case 3:
-            return _context28.a(2);
-        }
-      }, _callee27, null, [[0, 2]]);
-    }))();
-  }, []);
-  useEffect(function () {
     if (window.XLSX) {
       setXlsxReady(true);
       return;
@@ -4887,13 +5202,16 @@ function App() {
     }
   }, [load, session]);
   useEffect(function () {
-    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
-  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
+    if (showAdmin || showLog || showDash || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
+  }, [showAdmin, showLog, showDash, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
   var closeAdmin = useCallback(function () {
     return setShowAdmin(false);
   }, []);
   var closeLog = useCallback(function () {
     return setShowLog(false);
+  }, []);
+  var closeDash = useCallback(function () {
+    return setShowDash(false);
   }, []);
   var closeTrash = useCallback(function () {
     return setShowTrash(false);
@@ -5071,7 +5389,7 @@ function App() {
               app: "SinergyRH Operacao 2026"
             };
             bk.tasks = _objectSpread({}, tasksRef.current);
-            _i4 = 0, _arr = [[USERS_KEY, "users"], [GROUPS_KEY, "groups"], [EST_KEY, "esteiras"], [LOG_KEY, "log"], [TRASH_KEY, "trash"], [PREFS_KEY, "prefs"]];
+            _i4 = 0, _arr = [[USERS_KEY, "users"], [GROUPS_KEY, "groups"], [EST_KEY, "esteiras"], [TRASH_KEY, "trash"], [PREFS_KEY, "prefs"]];
           case 1:
             if (!(_i4 < _arr.length)) {
               _context32.n = 6;
@@ -5214,7 +5532,7 @@ function App() {
             _context33.n = 2;
             break;
           case 7:
-            _i6 = 0, _arr2 = [[USERS_KEY, "users"], [GROUPS_KEY, "groups"], [EST_KEY, "esteiras"], [LOG_KEY, "log"], [TRASH_KEY, "trash"], [PREFS_KEY, "prefs"]];
+            _i6 = 0, _arr2 = [[USERS_KEY, "users"], [GROUPS_KEY, "groups"], [EST_KEY, "esteiras"], [TRASH_KEY, "trash"], [PREFS_KEY, "prefs"]];
           case 8:
             if (!(_i6 < _arr2.length)) {
               _context33.n = 13;
@@ -5248,27 +5566,15 @@ function App() {
             _context33.n = 16;
             return loadEsteiras();
           case 16:
-            _context33.p = 16;
             _context33.n = 17;
-            return window.storage.get(LOG_KEY, true);
-          case 17:
-            r = _context33.v;
-            if (r) setLog(JSON.parse(r.value));
-            _context33.n = 19;
-            break;
-          case 18:
-            _context33.p = 18;
-            _t33 = _context33.v;
-          case 19:
-            _context33.n = 20;
             return load();
-          case 20:
+          case 17:
             logAction("imported", "Backup restaurado: " + new Date((restoreConfirm && restoreConfirm.exportedAt) || Date.now()).toLocaleString("pt-BR"));
             setSession(null);
-          case 21:
+          case 18:
             return _context33.a(2);
         }
-      }, _callee32, null, [[16, 18], [9, 11], [3, 5]]);
+      }, _callee32, null, [[9, 11], [3, 5]]);
     }));
     function doRestore() {
       return _doRestore.apply(this, arguments);
@@ -6237,7 +6543,7 @@ function App() {
       mes: ""
     });
   };
-  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
+  var anyModal = showAdmin || showLog || showDash || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
   var myGroup = groups.find(function (g) {
     return g.id === (session === null || session === void 0 ? void 0 : session.groupId);
   });
@@ -6555,9 +6861,18 @@ function App() {
     zi: 58,
     ov: T.ov
   }, /*#__PURE__*/React.createElement(LogModal, {
-    log: log,
     canExport: has("export_log"),
+    users: users,
     onClose: closeLog,
+    T: T
+  })), showDash && has("view_dashboard") && /*#__PURE__*/React.createElement(OVL, {
+    zi: 59,
+    ov: T.ov
+  }, /*#__PURE__*/React.createElement(DashboardModal, {
+    tasks: tasks,
+    scope: scope,
+    session: session,
+    onClose: closeDash,
     T: T
   })), showTrash && has("view_trash") && /*#__PURE__*/React.createElement(OVL, {
     zi: 57,
@@ -6748,11 +7063,7 @@ function App() {
     style: {
       color: T.textS
     }
-  }, (restoreConfirm.users || []).length), " \xB7 Log: ", /*#__PURE__*/React.createElement("strong", {
-    style: {
-      color: T.textS
-    }
-  }, (restoreConfirm.log || []).length), " registros")), /*#__PURE__*/React.createElement("div", {
+  }, (restoreConfirm.users || []).length), " registros")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 12,
       color: "#f59e0b",
@@ -7578,6 +7889,32 @@ function App() {
       borderBottom: "2px solid ".concat(isWS ? "#818cf8" : "transparent")
     }
   }, "Minha Area"), has("view_workspace") && /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 1,
+      background: T.borderL,
+      alignSelf: "stretch",
+      margin: "0 6px"
+    }
+  }), has("view_dashboard") && /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() {
+      return setShowDash(true);
+    },
+    style: {
+      padding: "9px 15px",
+      borderRadius: "8px 8px 0 0",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12.5,
+      fontWeight: 500,
+      whiteSpace: "nowrap",
+      background: "transparent",
+      color: T.textM,
+      borderBottom: "2px solid transparent",
+      display: "flex",
+      alignItems: "center",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Briefcase, { size: 13 }), "Gerencial"), has("view_dashboard") && /*#__PURE__*/React.createElement("div", {
     style: {
       width: 1,
       background: T.borderL,
