@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação 2026 (v9)</title>
+  <title>SinergyRH – Operação - 2026 (v9)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -178,7 +178,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.20-log-falha-usuarios-2026-06-30";
+window.OP2026_BUILD = "v9.21-titulo-2026-06-30";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -396,7 +396,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.20-log-falha-usuarios-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v9.21-titulo-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -5784,7 +5784,7 @@ function App() {
             bk = {
               version: 2,
               exportedAt: new Date().toISOString(),
-              app: "SinergyRH Operacao 2026"
+              app: "SinergyRH Operação - 2026"
             };
             bk.tasks = _objectSpread({}, tasksRef.current);
             _i4 = 0, _arr = [[USERS_KEY, "users"], [GROUPS_KEY, "groups"], [EST_KEY, "esteiras"], [TRASH_KEY, "trash"], [PREFS_KEY, "prefs"]];
@@ -6291,7 +6291,7 @@ function App() {
             });
             ws = window.XLSX.utils.json_to_sheet(data);
             wb = window.XLSX.utils.book_new();
-            window.XLSX.utils.book_append_sheet(wb, ws, "Operacao 2026");
+            window.XLSX.utils.book_append_sheet(wb, ws, "Operação - 2026");
             window.XLSX.writeFile(wb, "SinergyRH_".concat(new Date().toISOString().slice(0, 10), ".xlsx"));
             _context36.n = 2;
             return logAction("exported", "".concat(data.length, " tarefas"));
@@ -7141,7 +7141,7 @@ function App() {
       fontWeight: 700,
       color: T.text
     }
-  }, "Operacao 2026"), /*#__PURE__*/React.createElement("p", {
+  }, "Operação - 2026"), /*#__PURE__*/React.createElement("p", {
     style: {
       margin: "6px 0 0",
       fontSize: 13,
@@ -8023,7 +8023,7 @@ function App() {
       fontWeight: 700,
       color: T.text
     }
-  }, "Operacao 2026")), /*#__PURE__*/React.createElement("div", {
+  }, "Operação - 2026")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
