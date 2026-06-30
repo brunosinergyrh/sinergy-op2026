@@ -178,7 +178,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.18-criado-pos-2026-06-30";
+window.OP2026_BUILD = "v9.20-log-falha-usuarios-2026-06-30";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -396,7 +396,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.18-criado-pos-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v9.20-log-falha-usuarios-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -5319,7 +5319,13 @@ function App() {
         case 6:
           _context22.p = 6;
           _t14 = _context22.v;
-          setUsers(DEFAULT_USERS);
+          // Nao aplicar DEFAULT_USERS em caso de erro — manter o estado atual em memoria
+          // para nao sobrescrever dados reais se houver uma falha de rede temporaria.
+          console.warn('[loadUsers] Falha ao carregar usuarios do Supabase. Estado em memoria preservado.', _t14 && (_t14.message || _t14));
+          // Tenta registrar no log apos 10s (quando a conexao provavelmente voltou)
+          setTimeout(function () {
+            logAction("login", "[AVISO] Falha ao carregar lista de usuarios: " + String(_t14 && (_t14.message || _t14)).slice(0, 120));
+          }, 10000);
         case 7:
           return _context22.a(2);
       }
@@ -5331,21 +5337,30 @@ function App() {
       return _regenerator().w(function (_context23) {
         while (1) switch (_context23.p = _context23.n) {
           case 0:
-            _context23.p = 0;
-            _context23.n = 1;
-            return window.storage.set(USERS_KEY, JSON.stringify(u), true);
+            // Guarda de seguranca: nao salvar se a nova lista tiver muito menos usuarios que a atual.
+            // Isso previne sobrescrita acidental causada por estado corrompido em memoria.
+            if (!(u.length < (usersRef.current || []).length - 1 && (usersRef.current || []).length > 2)) {
+              _context23.n = 1;
+              break;
+            }
+            console.error('[saveUsers] Bloqueado: tentativa de salvar lista com ' + u.length + ' usuarios quando havia ' + (usersRef.current || []).length + '. Possivel estado corrompido em memoria.');
+            return _context23.a(2);
           case 1:
-            _context23.n = 3;
-            break;
+            _context23.p = 1;
+            _context23.n = 2;
+            return window.storage.set(USERS_KEY, JSON.stringify(u), true);
           case 2:
-            _context23.p = 2;
-            _t15 = _context23.v;
+            _context23.n = 4;
+            break;
           case 3:
-            setUsers(u);
+            _context23.p = 3;
+            _t15 = _context23.v;
           case 4:
+            setUsers(u);
+          case 5:
             return _context23.a(2);
         }
-      }, _callee22, null, [[0, 2]]);
+      }, _callee22, null, [[1, 3]]);
     }));
     return function (_x11) {
       return _ref21.apply(this, arguments);
