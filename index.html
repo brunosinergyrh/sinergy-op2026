@@ -178,7 +178,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.7-fix-semanalista-2026-06-30";
+window.OP2026_BUILD = "v9.10-bulk-multianalista-2026-06-30";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -396,7 +396,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.7-fix-semanalista-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v9.10-bulk-multianalista-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -3978,6 +3978,36 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     return function () { alive = false; };
   }, [canSeeAll, fCoord, teamKey]);
 
+  // ultimo acesso por usuario (login mais recente de cada membro do time)
+  var _lastAcc = useState([]), lastAccess = _lastAcc[0], setLastAccess = _lastAcc[1];
+  var _lastAccL = useState(true), lastAccLoading = _lastAccL[0], setLastAccLoading = _lastAccL[1];
+  useEffect(function () {
+    var alive = true;
+    setLastAccLoading(true);
+    // Busca os ultimos 200 registros de login para calcular o mais recente de cada usuario no escopo
+    var q = "logs?action=eq.login&order=ts.desc&limit=200";
+    var scopeNames = teamNames.slice(0, 60);
+    if (!canSeeAll && scopeNames.length) {
+      var inList2 = scopeNames.map(function (n) {
+        return '"' + encodeURIComponent(String(n).replace(/[()"]/g, "")) + '"';
+      }).join(",");
+      q += "&user_name=in.(" + inList2 + ")";
+    }
+    sbFetch("GET", q).then(function (rows) {
+      if (!alive) return;
+      // Pega so o primeiro (mais recente) registro de cada usuario
+      var seen = {}, result = [];
+      (Array.isArray(rows) ? rows : []).forEach(function (r) {
+        if (r.user_name && !seen[r.user_name]) { seen[r.user_name] = 1; result.push(r); }
+      });
+      // Ordena por ts desc (mais recente primeiro)
+      result.sort(function (a, b) { return (b.ts || "").localeCompare(a.ts || ""); });
+      setLastAccess(result);
+      setLastAccLoading(false);
+    }).catch(function () { if (alive) { setLastAccess([]); setLastAccLoading(false); } });
+    return function () { alive = false; };
+  }, [canSeeAll, fCoord, teamKey]);
+
   // ---- helpers de render ----
   function kpi(label, value, color) {
     return e("div", { style: { flex: "1 1 120px", background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: "14px 16px" } },
@@ -4034,6 +4064,28 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         e("div", { style: { width: w + "%", height: "100%", background: r.overdue > 0 ? "#ef4444" : "#6366f1" } })
       )
     );
+  }
+  function exportUnassigned() {
+    if (!window.XLSX || !unassigned.length) return;
+    var rows = unassigned.map(function (t) {
+      var es = estMap[t._eid];
+      return {
+        "Esteira":       (es && es.label) || t._eid || "",
+        "Código":        t.code || "",
+        "Tarefa":        t.title || "",
+        "Cliente":       t.cliente || "",
+        "Processo":      t.processo || "",
+        "Coordenador":   t.coordenador || "",
+        "Gerente":       t.gerente || "",
+        "Prazo":         t.deadline ? fmtDate(t.deadline) : "",
+        "Mês":           t.mes ? fmtMonth(t.mes) : "",
+        "Prioridade":    t.priority || ""
+      };
+    });
+    var ws = window.XLSX.utils.json_to_sheet(rows);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Sem Analista");
+    window.XLSX.writeFile(wb, "Sem_Analista_" + new Date().toISOString().slice(0, 10) + ".xlsx");
   }
   function unassignedItem(t) {
     var es = estMap[t._eid];
@@ -4092,6 +4144,25 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         ),
         e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.target)
       )
+    );
+  }
+  function lastAccessItem(l, i) {
+    var now2 = Date.now();
+    var tsMs = l.ts ? new Date(l.ts).getTime() : 0;
+    var diffH = Math.floor((now2 - tsMs) / 3600000);
+    var diffLabel, diffColor;
+    if (diffH < 1) { diffLabel = "< 1h"; diffColor = "#10b981"; }
+    else if (diffH < 24) { diffLabel = diffH + "h atrás"; diffColor = "#10b981"; }
+    else if (diffH < 48) { diffLabel = "ontem"; diffColor = "#f59e0b"; }
+    else if (diffH < 168) { diffLabel = Math.floor(diffH / 24) + "d atrás"; diffColor = "#f59e0b"; }
+    else { diffLabel = Math.floor(diffH / 24) + "d atrás"; diffColor = "#ef4444"; }
+    return e("div", { key: l.user_name + i, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("div", { style: { width: 8, height: 8, borderRadius: "50%", background: diffColor, flexShrink: 0 } }),
+      e("div", { style: { flex: 1, minWidth: 0 } },
+        e("div", { style: { fontSize: 12, fontWeight: 500, color: T.textS, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, l.user_name),
+        e("div", { style: { fontSize: 11, color: T.textD } }, fmtDT(l.ts))
+      ),
+      e("span", { style: { fontSize: 11, fontWeight: 700, color: diffColor, flexShrink: 0 } }, diffLabel)
     );
   }
 
@@ -4167,7 +4238,13 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
             // Sem dono (analista/coordenador/gerente, conforme o nivel)
             section("Sem analista", AlertTriangle,
               unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
-              unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
+              e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                e("span", { style: { fontSize: 11, color: T.textD } }, unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
+                unassigned.length > 0 && e("button", {
+                  onClick: exportUnassigned,
+                  style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                }, e(Download, { size: 11 }), "xlsx")
+              )),
             // SLA - cumprimento de prazo por analista
             section("SLA · Entrega no prazo", Clock,
               bySla.length ? e("div", { style: scrollBox }, bySla.map(slaRow)) : emptyMsg("Sem conclusões com prazo neste período."),
@@ -4185,7 +4262,12 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
             section("Atividade recente", ScrollText,
               actLoading ? emptyMsg("Carregando…")
                 : (activity.length ? e("div", { style: scrollBox }, activity.map(actItem)) : emptyMsg("Sem atividade registrada.")),
-              canSeeAll && fCoord === "__all__" ? "geral" : "equipe")
+              canSeeAll && fCoord === "__all__" ? "geral" : "equipe"),
+            // Ultimo acesso por usuario
+            section("Último Acesso", Clock,
+              lastAccLoading ? emptyMsg("Carregando…")
+                : (lastAccess.length ? e("div", { style: scrollBox }, lastAccess.map(lastAccessItem)) : emptyMsg("Sem registros de acesso.")),
+              lastAccess.length + " usuário" + (lastAccess.length !== 1 ? "s" : ""))
           )
     )
   );
@@ -4580,6 +4662,10 @@ function App() {
     _useState104 = _slicedToArray(_useState103, 2),
     bulkConfirm = _useState104[0],
     setBulkConfirm = _useState104[1];
+  var _useState103b = useState(false),
+    _useState104b = _slicedToArray(_useState103b, 2),
+    bulkCompleteConfirm = _useState104b[0],
+    setBulkCompleteConfirm = _useState104b[1];
   var _useState105 = useState(false),
     _useState106 = _slicedToArray(_useState105, 2),
     bulkEditOpen = _useState106[0],
@@ -6107,6 +6193,7 @@ function App() {
     setBulkMode(false);
     setBulkSel(new Set());
     setBulkEditOpen(false);
+    setBulkCompleteConfirm(false);
   };
   var setF = function setF(k, v) {
     return setFilters(function (prev) {
@@ -6193,7 +6280,8 @@ function App() {
         k = _ref38[0],
         v = _ref38[1];
       if (v === "all") return true;
-      if (k === "responsible") return t._resp.includes(v);
+      if (k === "responsible") return v === "__none__" ? t._resp.length === 0 : t._resp.includes(v);
+      if (k === "status" && v === "atrasado") return t.status !== "concluida" && !!t.deadline && t.deadline < new Date().toISOString().slice(0, 10);
       return t[k] === v;
     });
   });
@@ -6491,6 +6579,40 @@ function App() {
     if (pendingDelete) doSoftDelete(pendingDelete.id);
     setPendingDelete(null);
   };
+  var bulkComplete = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee_bc() {
+    var ids, count, _Object$keys_bc, _i_bc, eid, nt, now_bc;
+    return _regenerator().w(function (_ctx_bc) {
+      while (1) switch (_ctx_bc.n) {
+        case 0:
+          if (!(!has("bulk_ops") || !has("complete_task") || bulkSel.size === 0)) { _ctx_bc.n = 1; break; }
+          return _ctx_bc.a(2);
+        case 1:
+          ids = new Set(bulkSel);
+          now_bc = new Date().toISOString();
+          count = 0;
+          nt = _objectSpread({}, tasksRef.current);
+          _Object$keys_bc = Object.keys(nt);
+          for (_i_bc = 0; _i_bc < _Object$keys_bc.length; _i_bc++) {
+            eid = _Object$keys_bc[_i_bc];
+            nt[eid] = nt[eid].map(function (t) {
+              if (ids.has(t.id) && t.status !== "concluida") {
+                count++;
+                return _objectSpread(_objectSpread({}, t), {}, { status: "concluida", completedBy: session.name, completedAt: now_bc });
+              }
+              return t;
+            });
+          }
+          mutate(nt);
+          _ctx_bc.n = 2;
+          return logAction("bulkEdited", count + " tarefas concluidas em lote");
+        case 2:
+          setBulkSel(new Set());
+          setBulkMode(false);
+          setBulkCompleteConfirm(false);
+          return _ctx_bc.a(2);
+      }
+    }, _callee_bc);
+  }));
   var bulkDelete = /*#__PURE__*/function () {
     var _bulkDelete = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee39() {
       var ids, now, nt, newTrashed, count, _i8, _Object$keys2, _eid5, kept, _iterator7, _step7, t, nt2, _t36;
@@ -6648,14 +6770,15 @@ function App() {
             break;
           case 9:
             if (bulkF === "responsible") {
+              var bulkResps = Array.isArray(bulkV) ? bulkV : (bulkV ? [bulkV] : []);
               for (_i1 = 0, _Object$keys5 = Object.keys(nt); _i1 < _Object$keys5.length; _i1++) {
                 _eid8 = _Object$keys5[_i1];
                 nt[_eid8] = nt[_eid8].map(function (t) {
                   if (ids.has(t.id)) {
                     count++;
                     return _objectSpread(_objectSpread({}, t), {}, {
-                      responsibles: bulkV ? [bulkV] : [],
-                      responsible: bulkV
+                      responsibles: bulkResps,
+                      responsible: bulkResps.join(", ")
                     });
                   }
                   return t;
@@ -6832,13 +6955,21 @@ function App() {
       }).map(function (u) {
         return u.name;
       })) : bulkF === "cliente" ? histCliente : bulkF === "processo" ? histProcesso : [];
-      bulkValueInput = /*#__PURE__*/React.createElement(AutoInput, {
-        value: bulkV,
-        onChange: setBulkV,
-        suggestions: sug,
-        placeholder: "Valor",
-        T: T
-      });
+      bulkValueInput = bulkF === "responsible"
+        ? /*#__PURE__*/React.createElement(MultiAutoInput, {
+            values: Array.isArray(bulkV) ? bulkV : [],
+            onChange: setBulkV,
+            suggestions: sug,
+            placeholder: "Adicionar analista",
+            T: T
+          })
+        : /*#__PURE__*/React.createElement(AutoInput, {
+            value: bulkV,
+            onChange: setBulkV,
+            suggestions: sug,
+            placeholder: "Valor",
+            T: T
+          });
     }
   }
   if (!session) return /*#__PURE__*/React.createElement("div", {
@@ -8323,7 +8454,26 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement(Pencil, {
     size: 13
-  }), "Editar em lote"), has("delete_task") && (bulkConfirm ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+  }), "Editar em lote"), has("complete_task") && (bulkCompleteConfirm ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 12, color: "#10b981", fontWeight: 500 }
+  }, "Confirmar conclusao?"), /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() { return setBulkCompleteConfirm(false); },
+    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { fontSize: 11, padding: "4px 12px" })
+  }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
+    onClick: bulkComplete,
+    style: { padding: "4px 14px", borderRadius: 8, border: "none", background: "#10b981", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }
+  }, "Concluir")) : /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() { setBulkCompleteConfirm(true); setBulkConfirm(false); setBulkEditOpen(false); },
+    disabled: bulkSel.size === 0,
+    style: {
+      padding: "6px 14px", borderRadius: 8,
+      border: "1px solid rgba(16,185,129,0.4)",
+      background: "rgba(16,185,129,0.1)",
+      color: "#10b981", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+      opacity: bulkSel.size === 0 ? 0.4 : 1,
+      display: "inline-flex", alignItems: "center", gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Check, { size: 13 }), "Concluir selecionadas")), has("delete_task") && (bulkConfirm ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: "#ef4444",
@@ -8391,7 +8541,7 @@ function App() {
     value: bulkF,
     onChange: function onChange(ev) {
       setBulkF(ev.target.value);
-      setBulkV("");
+      setBulkV(ev.target.value === "responsible" ? [] : "");
     },
     style: _objectSpread(_objectSpread({}, I), {}, {
       background: T.selBg,
@@ -8423,11 +8573,11 @@ function App() {
     })
   }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
     onClick: bulkEdit,
-    disabled: !bulkF || (bulkF === "esteira" || bulkF === "gerente") && !bulkV,
+    disabled: !bulkF || (bulkF === "esteira" || bulkF === "gerente") && !bulkV || (bulkF === "responsible") && (!bulkV || !Array.isArray(bulkV) || bulkV.length === 0),
     style: _objectSpread(_objectSpread({}, mkB("#10b981", false, T)), {}, {
       padding: "6px 14px",
       fontSize: 11.5,
-      opacity: !bulkF || (bulkF === "esteira" || bulkF === "gerente") && !bulkV ? 0.4 : 1
+      opacity: !bulkF || (bulkF === "esteira" || bulkF === "gerente") && !bulkV || (bulkF === "responsible") && (!bulkV || !Array.isArray(bulkV) || bulkV.length === 0) ? 0.4 : 1
     })
   }, "Aplicar"))), showFilters && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -8447,7 +8597,7 @@ function App() {
   }, [{
     key: "status",
     label: "Status",
-    opts: [["all", "Todos"], ["pendente", "Pendente"], ["concluida", "Concluida"]]
+    opts: [["all", "Todos"], ["pendente", "Pendente"], ["concluida", "Concluida"], ["atrasado", "Em atraso"]]
   }, {
     key: "priority",
     label: "Prioridade",
@@ -8504,7 +8654,9 @@ function App() {
       })
     }, /*#__PURE__*/React.createElement("option", {
       value: "all"
-    }, "Todos"), fc.dyn ? (fc.key === "responsible" ? respOpts : uVals(fc.key)).map(function (v) {
+    }, "Todos"), fc.key === "responsible" && /*#__PURE__*/React.createElement("option", {
+      value: "__none__"
+    }, "Sem analista"), fc.dyn ? (fc.key === "responsible" ? respOpts : uVals(fc.key)).map(function (v) {
       return /*#__PURE__*/React.createElement("option", {
         key: v,
         value: v
