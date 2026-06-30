@@ -178,7 +178,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.10-bulk-multianalista-2026-06-30";
+window.OP2026_BUILD = "v9.15-reorder-sla-2026-06-30";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -396,7 +396,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.10-bulk-multianalista-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v9.15-reorder-sla-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -3830,6 +3830,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var myName = (session && session.name) || "";
 
   var _fc = useState("__all__"), fCoord = _fc[0], setFCoord = _fc[1];
+  var _fger = useState("__all__"), fGerente = _fger[0], setFGerente = _fger[1];
   var _fcl = useState("__all__"), fCli = _fcl[0], setFCli = _fcl[1];
   var _act = useState([]), activity = _act[0], setActivity = _act[1];
   var _actL = useState(true), actLoading = _actL[0], setActLoading = _actL[1];
@@ -3843,11 +3844,14 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   else if (isGerente) scoped = allTasks.filter(function (t) { return t.gerenteId === scope; });
   else scoped = allTasks.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
 
+  // opções para os selects (calculadas sobre o scoped, antes dos filtros de drill-down)
+  var gerenteOpts = canSeeAll ? distinct(scoped.map(function (t) { return t.gerente; }).filter(Boolean)).sort() : [];
   var coordOpts = distinct(scoped.map(function (t) { return t.coordenador; }).filter(Boolean)).sort();
   var cliOpts = distinct(scoped.map(function (t) { return t.cliente; }).filter(Boolean)).sort();
 
-  // drill-down por coordenadora (admin e gerente)
+  // drill-down: gerente (admin only) → coordenadora → cliente
   var view = scoped;
+  if (canSeeAll && fGerente !== "__all__") view = view.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
   if (isManager && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fCli !== "__all__") view = view.filter(function (t) { return (t.cliente || "") === fCli; });
 
@@ -3872,11 +3876,30 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   } else {
     unassigned = scoped.filter(function (t) { return !done_(t) && noAnalista(t); });
   }
+  if (canSeeAll && fGerente !== "__all__") unassigned = unassigned.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
+  if (isManager && fCoord !== "__all__") unassigned = unassigned.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fCli !== "__all__") unassigned = unassigned.filter(function (t) { return (t.cliente || "") === fCli; });
+
+  // Sem coordenador: gerente ve seu time sem coord; admin ve tudo sem coord (com filtros ativos)
+  var unassignedCoord = null;
+  if (isGerente || canSeeAll) {
+    var _ucBase = canSeeAll ? allTasks : allTasks.filter(function (t) { return t.gerenteId === scope; });
+    unassignedCoord = _ucBase.filter(function (t) { return !done_(t) && noCoord(t); });
+    if (canSeeAll && fGerente !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
+    if (fCli !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return (t.cliente || "") === fCli; });
+  }
+
+  // Sem gerente: admin apenas
+  var unassignedGerente = null;
+  if (canSeeAll) {
+    unassignedGerente = allTasks.filter(function (t) { return !done_(t) && !t.gerenteId; });
+    if (fCli !== "__all__") unassignedGerente = unassignedGerente.filter(function (t) { return (t.cliente || "") === fCli; });
+  }
 
   // ---- SLA: cumprimento de prazo por analista ----
   // "No prazo" = concluida com completedAt <= deadline (mesmo dia ou antes). "Antecipada" = completedAt < deadline.
   var slaPool = fCli !== "__all__" ? scoped.filter(function (t) { return (t.cliente || "") === fCli; }) : scoped;
+  if (canSeeAll && fGerente !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
   if (isManager && fCoord !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   var slaCutoffStr = null;
   if (slaPeriod !== "all") {
@@ -3976,7 +3999,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       setActLoading(false);
     }).catch(function () { if (alive) { setActivity([]); setActLoading(false); } });
     return function () { alive = false; };
-  }, [canSeeAll, fCoord, teamKey]);
+  }, [canSeeAll, fCoord, fGerente, teamKey]);
 
   // ultimo acesso por usuario (login mais recente de cada membro do time)
   var _lastAcc = useState([]), lastAccess = _lastAcc[0], setLastAccess = _lastAcc[1];
@@ -4006,7 +4029,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       setLastAccLoading(false);
     }).catch(function () { if (alive) { setLastAccess([]); setLastAccLoading(false); } });
     return function () { alive = false; };
-  }, [canSeeAll, fCoord, teamKey]);
+  }, [canSeeAll, fCoord, fGerente, teamKey]);
 
   // ---- helpers de render ----
   function kpi(label, value, color) {
@@ -4086,6 +4109,50 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     var wb = window.XLSX.utils.book_new();
     window.XLSX.utils.book_append_sheet(wb, ws, "Sem Analista");
     window.XLSX.writeFile(wb, "Sem_Analista_" + new Date().toISOString().slice(0, 10) + ".xlsx");
+  }
+  function exportUnassignedCoord() {
+    if (!window.XLSX || !unassignedCoord || !unassignedCoord.length) return;
+    var rows = unassignedCoord.map(function (t) {
+      var es = estMap[t._eid];
+      return {
+        "Esteira":    (es && es.label) || t._eid || "",
+        "Código":     t.code || "",
+        "Tarefa":     t.title || "",
+        "Cliente":    t.cliente || "",
+        "Processo":   t.processo || "",
+        "Analista":   Array.isArray(t.responsibles) ? t.responsibles.join(", ") : (t.responsible || ""),
+        "Gerente":    t.gerente || "",
+        "Prazo":      t.deadline ? fmtDate(t.deadline) : "",
+        "Mês":        t.mes ? fmtMonth(t.mes) : "",
+        "Prioridade": t.priority || ""
+      };
+    });
+    var ws = window.XLSX.utils.json_to_sheet(rows);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Sem Coordenador");
+    window.XLSX.writeFile(wb, "Sem_Coordenador_" + new Date().toISOString().slice(0, 10) + ".xlsx");
+  }
+  function exportUnassignedGerente() {
+    if (!window.XLSX || !unassignedGerente || !unassignedGerente.length) return;
+    var rows = unassignedGerente.map(function (t) {
+      var es = estMap[t._eid];
+      return {
+        "Esteira":       (es && es.label) || t._eid || "",
+        "Código":        t.code || "",
+        "Tarefa":        t.title || "",
+        "Cliente":       t.cliente || "",
+        "Processo":      t.processo || "",
+        "Analista":      Array.isArray(t.responsibles) ? t.responsibles.join(", ") : (t.responsible || ""),
+        "Coordenador":   t.coordenador || "",
+        "Prazo":         t.deadline ? fmtDate(t.deadline) : "",
+        "Mês":           t.mes ? fmtMonth(t.mes) : "",
+        "Prioridade":    t.priority || ""
+      };
+    });
+    var ws = window.XLSX.utils.json_to_sheet(rows);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Sem Gerente");
+    window.XLSX.writeFile(wb, "Sem_Gerente_" + new Date().toISOString().slice(0, 10) + ".xlsx");
   }
   function unassignedItem(t) {
     var es = estMap[t._eid];
@@ -4167,7 +4234,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   }
 
   var subtitle = canSeeAll
-    ? ("Visão geral · " + total + " tarefa" + (total !== 1 ? "s" : ""))
+    ? ((fGerente !== "__all__" ? "Gerente: " + fGerente + " · " : "Visão geral · ") + total + " tarefa" + (total !== 1 ? "s" : ""))
     : isGerente
       ? ("Equipe: " + (myName || "—") + " · " + total + " tarefa" + (total !== 1 ? "s" : ""))
       : ("Coordenação: " + (myName || "—") + " · " + total + " tarefa" + (total !== 1 ? "s" : ""));
@@ -4187,6 +4254,12 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         )
       ),
       e("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        canSeeAll && gerenteOpts.length > 0 && e("select", {
+          value: fGerente, onChange: function (ev) { setFGerente(ev.target.value); setFCoord("__all__"); },
+          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
+        }, e("option", { value: "__all__" }, "Todos os gerentes"),
+          gerenteOpts.map(function (g) { return e("option", { key: g, value: g }, g); })
+        ),
         isManager && e("select", {
           value: fCoord, onChange: function (ev) { setFCoord(ev.target.value); },
           style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
@@ -4235,17 +4308,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
             section("Pendências por analista", AlertTriangle,
               byPendAnalista.length ? e("div", { style: scrollBox }, byPendAnalista.map(pendAnalistaRow)) : emptyMsg("Sem pendências por analista."),
               byPendAnalista.length + " pessoa(s)"),
-            // Sem dono (analista/coordenador/gerente, conforme o nivel)
-            section("Sem analista", AlertTriangle,
-              unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
-              e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                e("span", { style: { fontSize: 11, color: T.textD } }, unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
-                unassigned.length > 0 && e("button", {
-                  onClick: exportUnassigned,
-                  style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
-                }, e(Download, { size: 11 }), "xlsx")
-              )),
-            // SLA - cumprimento de prazo por analista
+            // SLA - cumprimento de prazo por analista (logo apos pendencias)
             section("SLA · Entrega no prazo", Clock,
               bySla.length ? e("div", { style: scrollBox }, bySla.map(slaRow)) : emptyMsg("Sem conclusões com prazo neste período."),
               e("select", {
@@ -4257,6 +4320,36 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 e("option", { value: "30" }, "30 dias"),
                 e("option", { value: "90" }, "90 dias"),
                 e("option", { value: "all" }, "Tudo")
+              )),
+            // Sem dono (analista/coordenador/gerente, conforme o nivel)
+            section("Sem analista", AlertTriangle,
+              unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
+              e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                e("span", { style: { fontSize: 11, color: T.textD } }, unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
+                unassigned.length > 0 && e("button", {
+                  onClick: exportUnassigned,
+                  style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                }, e(Download, { size: 11 }), "xlsx")
+              )),
+            // Sem coordenador: gerente e admin
+            unassignedCoord !== null && section("Sem coordenador", AlertTriangle,
+              unassignedCoord.length ? e("div", { style: scrollBox }, unassignedCoord.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem coordenador."),
+              e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                e("span", { style: { fontSize: 11, color: T.textD } }, unassignedCoord.length + " tarefa" + (unassignedCoord.length !== 1 ? "s" : "")),
+                unassignedCoord.length > 0 && e("button", {
+                  onClick: exportUnassignedCoord,
+                  style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                }, e(Download, { size: 11 }), "xlsx")
+              )),
+            // Sem gerente: admin apenas
+            unassignedGerente !== null && section("Sem gerente", AlertTriangle,
+              unassignedGerente.length ? e("div", { style: scrollBox }, unassignedGerente.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem gerente."),
+              e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                e("span", { style: { fontSize: 11, color: T.textD } }, unassignedGerente.length + " tarefa" + (unassignedGerente.length !== 1 ? "s" : "")),
+                unassignedGerente.length > 0 && e("button", {
+                  onClick: exportUnassignedGerente,
+                  style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                }, e(Download, { size: 11 }), "xlsx")
               )),
             // Atividade
             section("Atividade recente", ScrollText,
@@ -6282,6 +6375,7 @@ function App() {
       if (v === "all") return true;
       if (k === "responsible") return v === "__none__" ? t._resp.length === 0 : t._resp.includes(v);
       if (k === "status" && v === "atrasado") return t.status !== "concluida" && !!t.deadline && t.deadline < new Date().toISOString().slice(0, 10);
+      if ((k === "coordenador" || k === "gerente") && v === "__none__") return !((t[k] || "").trim());
       return t[k] === v;
     });
   });
@@ -8656,7 +8750,11 @@ function App() {
       value: "all"
     }, "Todos"), fc.key === "responsible" && /*#__PURE__*/React.createElement("option", {
       value: "__none__"
-    }, "Sem analista"), fc.dyn ? (fc.key === "responsible" ? respOpts : uVals(fc.key)).map(function (v) {
+    }, "Sem analista"), fc.key === "coordenador" && /*#__PURE__*/React.createElement("option", {
+      value: "__none__"
+    }, "Sem coordenador"), fc.key === "gerente" && /*#__PURE__*/React.createElement("option", {
+      value: "__none__"
+    }, "Sem gerente"), fc.dyn ? (fc.key === "responsible" ? respOpts : uVals(fc.key)).map(function (v) {
       return /*#__PURE__*/React.createElement("option", {
         key: v,
         value: v
