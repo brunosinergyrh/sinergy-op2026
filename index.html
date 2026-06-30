@@ -178,7 +178,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.2-pagination-2026-06-29";
+window.OP2026_BUILD = "v9.6-sla-2026-06-30";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -396,7 +396,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.2-pagination-2026-06-29", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v9.6-sla-2026-06-30", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -1027,6 +1027,22 @@ var userScope = function userScope(u, groups) {
   if (g !== null && g !== void 0 && g.fullAccess) return "all";
   if (g !== null && g !== void 0 && g.isGerente) return u.id;
   return u.gerenteId || "__none__";
+};
+// Ordena usuarios por hierarquia de grupo (Admin > Gerente > Coordenador > Analista/outros) e, dentro de cada grupo, alfabeticamente pelo nome.
+var groupRank = function groupRank(u, groups) {
+  var g = groupOf(u, groups);
+  if (!g) return 9;
+  if (g.fullAccess) return 0;
+  if (g.isGerente) return 1;
+  if (isCoordUser(u, groups)) return 2;
+  return 3;
+};
+var sortUsersByHierarchy = function sortUsersByHierarchy(list, groups) {
+  return _toConsumableArray(list).sort(function (a, b) {
+    var ra = groupRank(a, groups), rb = groupRank(b, groups);
+    if (ra !== rb) return ra - rb;
+    return (a.name || "").localeCompare(b.name || "", "pt-BR", { sensitivity: "base" });
+  });
 };
 var mapEsteira = function mapEsteira(val, ests) {
   var n = norm(val);
@@ -1851,7 +1867,7 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
     style: {
       marginBottom: 20
     }
-  }, users.map(function (u) {
+  }, sortUsersByHierarchy(users, groups).map(function (u) {
     var g = groups.find(function (x) {
       return x.id === u.groupId;
     });
@@ -3669,11 +3685,15 @@ var LogModal = memo(function LogModal(_ref12) {
   var canNext = !loading && (page < totalPages - 1 || rows.length === PAGE_SIZE);
 
   return React.createElement("div", {
-    style: { width: "100%", maxWidth: 860, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden" }
+    style: { width: "100%", maxWidth: 860, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden", position: "relative" }
   },
+    // Close button - canto superior direito absoluto
+    React.createElement("div", { style: { position: "absolute", top: 14, right: 14, zIndex: 10 } },
+      React.createElement(CloseBtn, { onClick: onClose, T: T })
+    ),
     // Header
     React.createElement("div", {
-      style: { padding: "18px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }
+      style: { padding: "18px 56px 18px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }
     },
       React.createElement("div", null,
         React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Log de Atividades"),
@@ -3725,8 +3745,7 @@ var LogModal = memo(function LogModal(_ref12) {
           onClick: handleExport,
           disabled: total === 0,
           style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "5px 12px", fontSize: 11, opacity: total === 0 ? 0.4 : 1 })
-        }, React.createElement(Download, { size: 13 }), " Baixar .txt"),
-        React.createElement(CloseBtn, { onClick: onClose, T: T })
+        }, React.createElement(Download, { size: 13 }), " Baixar .txt")
       )
     ),
     // Table
@@ -3796,29 +3815,40 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     scope = _refDash.scope,
     session = _refDash.session,
     T = _refDash.T,
-    onClose = _refDash.onClose;
+    onClose = _refDash.onClose,
+    esteiras = _refDash.esteiras,
+    isGerente = _refDash.isGerente,
+    inline = _refDash.inline;
   var e = React.createElement;
   var I = mkI(T);
+  var estMap = {};
+  (esteiras || []).forEach(function (es) { estMap[es.id] = es; });
 
   var canSeeAll = scope === "all";
+  // Gerente: pode ver tudo do time (filtra por gerenteId) e ainda escolher coordenadora.
+  var isManager = canSeeAll || isGerente;
   var myName = (session && session.name) || "";
 
   var _fc = useState("__all__"), fCoord = _fc[0], setFCoord = _fc[1];
   var _fcl = useState("__all__"), fCli = _fcl[0], setFCli = _fcl[1];
   var _act = useState([]), activity = _act[0], setActivity = _act[1];
   var _actL = useState(true), actLoading = _actL[0], setActLoading = _actL[1];
+  var _slaP = useState(7), slaPeriod = _slaP[0], setSlaPeriod = _slaP[1]; // dias; "all" = historico completo
 
   // ---- conjunto de tarefas conforme o papel ----
-  var allTasks = Object.values(tasks || {}).reduce(function (acc, arr) { return acc.concat(arr || []); }, []);
-  // gerente/admin = tudo; coordenadora = somente tarefas onde ela e a coordenadora
-  var scoped = canSeeAll ? allTasks : allTasks.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
+  var allTasks = Object.entries(tasks || {}).reduce(function (acc, _kv) { var eid = _kv[0], arr = _kv[1]; return acc.concat((arr || []).map(function (t) { return t._eid ? t : Object.assign({}, t, { _eid: eid }); })); }, []);
+  // admin = tudo; gerente = tarefas do seu time (gerenteId === scope); coordenadora = tarefas onde ela e a coordenadora
+  var scoped;
+  if (canSeeAll) scoped = allTasks;
+  else if (isGerente) scoped = allTasks.filter(function (t) { return t.gerenteId === scope; });
+  else scoped = allTasks.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
 
   var coordOpts = distinct(scoped.map(function (t) { return t.coordenador; }).filter(Boolean)).sort();
   var cliOpts = distinct(scoped.map(function (t) { return t.cliente; }).filter(Boolean)).sort();
 
-  // drill-down do gerente
+  // drill-down por coordenadora (admin e gerente)
   var view = scoped;
-  if (canSeeAll && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
+  if (isManager && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fCli !== "__all__") view = view.filter(function (t) { return (t.cliente || "") === fCli; });
 
   // datas de referencia (local)
@@ -3829,6 +3859,50 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var weekStr = wk.getFullYear() + "-" + pad(wk.getMonth() + 1) + "-" + pad(wk.getDate());
   var done_ = function (t) { return t.status === "concluida"; };
   var respsOf = function (t) { return Array.isArray(t.responsibles) ? t.responsibles : (t.responsible ? [t.responsible] : []); };
+  var noAnalista = function (t) { return respsOf(t).length === 0; };
+  var noCoord = function (t) { return !((t.coordenador || "").trim()); };
+
+  // Tarefas "sem dono" no nivel deste usuario: o que ele consegue/deve reclamar.
+  // Coordenadora: dentro das tarefas dela (scoped), sem analista.
+  // Gerente: dentro do time (gerenteId===scope), sem analista E sem coordenadora (orfas que nenhuma coord assumiu).
+  // Admin: em todo o sistema, sem analista, sem coordenadora E sem gerente (de ninguem).
+  var unassigned;
+  if (canSeeAll) {
+    unassigned = allTasks.filter(function (t) { return !done_(t) && noAnalista(t) && noCoord(t) && !t.gerenteId; });
+  } else if (isGerente) {
+    unassigned = allTasks.filter(function (t) { return !done_(t) && t.gerenteId === scope && noAnalista(t) && noCoord(t); });
+  } else {
+    unassigned = scoped.filter(function (t) { return !done_(t) && noAnalista(t); });
+  }
+  if (fCli !== "__all__") unassigned = unassigned.filter(function (t) { return (t.cliente || "") === fCli; });
+
+  // ---- SLA: cumprimento de prazo por analista ----
+  // "No prazo" = concluida com completedAt <= deadline (mesmo dia ou antes). "Antecipada" = completedAt < deadline.
+  var slaPool = fCli !== "__all__" ? scoped.filter(function (t) { return (t.cliente || "") === fCli; }) : scoped;
+  if (isManager && fCoord !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
+  var slaCutoffStr = null;
+  if (slaPeriod !== "all") {
+    var slaCutoffDate = new Date(now.getTime() - Number(slaPeriod) * 86400000);
+    slaCutoffStr = slaCutoffDate.toISOString().slice(0, 10);
+  }
+  var slaMap = {};
+  slaPool.forEach(function (t) {
+    if (!done_(t) || !t.completedAt || !t.deadline) return;
+    var compDateStr = t.completedAt.slice(0, 10);
+    if (slaCutoffStr && compDateStr < slaCutoffStr) return;
+    var onTime = compDateStr <= t.deadline;
+    var early = compDateStr < t.deadline;
+    respsOf(t).forEach(function (name) {
+      if (!name) return;
+      if (!slaMap[name]) slaMap[name] = { name: name, total: 0, onTime: 0, early: 0, late: 0 };
+      slaMap[name].total++;
+      if (onTime) slaMap[name].onTime++; else slaMap[name].late++;
+      if (early) slaMap[name].early++;
+    });
+  });
+  var bySla = Object.keys(slaMap).map(function (k) { return slaMap[k]; })
+    .map(function (r) { return Object.assign({}, r, { pct: Math.round(r.onTime / r.total * 100) }); })
+    .sort(function (a, b) { return b.pct - a.pct || b.total - a.total; });
 
   // KPIs
   var total = view.length, done = 0, overdue = 0, dueWeek = 0;
@@ -3855,13 +3929,19 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   view.forEach(function (t) {
     respsOf(t).forEach(function (name) {
       if (!name) return;
-      if (!anMap[name]) anMap[name] = { name: name, total: 0, pending: 0, done: 0 };
-      anMap[name].total++; if (done_(t)) anMap[name].done++; else anMap[name].pending++;
+      if (!anMap[name]) anMap[name] = { name: name, total: 0, pending: 0, done: 0, overdue: 0 };
+      anMap[name].total++;
+      if (done_(t)) anMap[name].done++;
+      else { anMap[name].pending++; if (t.deadline && t.deadline < todayStr) anMap[name].overdue++; }
     });
   });
   var byAnalista = Object.keys(anMap).map(function (k) { return anMap[k]; })
     .sort(function (a, b) { return b.total - a.total; }).slice(0, 15);
   var maxAnTot = byAnalista.reduce(function (m, r) { return Math.max(m, r.total); }, 0);
+  var byPendAnalista = Object.keys(anMap).map(function (k) { return anMap[k]; })
+    .filter(function (r) { return r.pending > 0; })
+    .sort(function (a, b) { return b.pending - a.pending; }).slice(0, 15);
+  var maxPendAn = byPendAnalista.reduce(function (m, r) { return Math.max(m, r.pending); }, 0);
 
   // prazos
   var late = [], soon = [];
@@ -3944,13 +4024,62 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       )
     );
   }
+  function pendAnalistaRow(r) {
+    var w = maxPendAn ? Math.max(8, Math.round(r.pending / maxPendAn * 100)) : 0;
+    return e("div", { key: r.name, style: { marginBottom: 9 } },
+      e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3, gap: 8 } },
+        e("span", { style: { color: T.textS, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.name),
+        e("span", { style: { color: r.overdue > 0 ? "#ef4444" : T.textM, flexShrink: 0, fontWeight: r.overdue > 0 ? 600 : 400 } },
+          r.pending + " pend." + (r.overdue > 0 ? " · " + r.overdue + " atrasada" + (r.overdue !== 1 ? "s" : "") : ""))
+      ),
+      e("div", { style: { height: 6, background: T.border, borderRadius: 4, overflow: "hidden" } },
+        e("div", { style: { width: w + "%", height: "100%", background: r.overdue > 0 ? "#ef4444" : "#6366f1" } })
+      )
+    );
+  }
+  function unassignedItem(t) {
+    var es = estMap[t._eid];
+    var missing = [];
+    if (noAnalista(t)) missing.push("sem analista");
+    if (canSeeAll && noCoord(t)) missing.push("sem coordenador");
+    if (canSeeAll && !t.gerenteId) missing.push("sem gerente");
+    else if (isGerente && noCoord(t)) missing.push("sem coordenador");
+    return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: "#f59e0b", flexShrink: 0 } }),
+      e("div", { style: { minWidth: 0, flex: 1 } },
+        e("div", { style: { display: "flex", alignItems: "center", gap: 5, marginBottom: 1 } },
+          es && e("span", { style: { fontSize: 9.5, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, es.label),
+          e("span", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title || "(sem titulo)")
+        ),
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, [t.cliente, t.processo].filter(Boolean).join(" · "))
+      ),
+      e("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#f59e0b", flexShrink: 0, whiteSpace: "nowrap" } }, missing.join(" · "))
+    );
+  }
+  function slaRow(r) {
+    var color = r.pct >= 90 ? "#10b981" : r.pct >= 70 ? "#f59e0b" : "#ef4444";
+    return e("div", { key: r.name, style: { marginBottom: 9 } },
+      e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3, gap: 8 } },
+        e("span", { style: { color: T.textS, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.name),
+        e("span", { style: { color: color, fontWeight: 700, flexShrink: 0 } },
+          r.pct + "% · " + r.onTime + "/" + r.total + (r.early > 0 ? " (" + r.early + " antecip.)" : ""))
+      ),
+      e("div", { style: { height: 6, background: T.border, borderRadius: 4, overflow: "hidden" } },
+        e("div", { style: { width: r.pct + "%", height: "100%", background: color } })
+      )
+    );
+  }
   function prazoItem(t, color) {
     var resp = (respsOf(t)[0]) || "";
+    var es = estMap[t._eid];
     return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
       e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 } }),
       e("div", { style: { minWidth: 0, flex: 1 } },
-        e("div", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, (t.code ? t.code + " · " : "") + (t.title || "(sem titulo)")),
-        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, [t.cliente, t.coordenador, resp].filter(Boolean).join(" · "))
+        e("div", { style: { display: "flex", alignItems: "center", gap: 5, marginBottom: 1 } },
+          es && e("span", { style: { fontSize: 9.5, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, es.label),
+          e("span", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title || "(sem titulo)")
+        ),
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, [t.cliente, t.processo, t.coordenador, resp].filter(Boolean).join(" · "))
       ),
       e("span", { style: { fontSize: 11, color: color, fontWeight: 600, flexShrink: 0 } }, fmtDate(t.deadline))
     );
@@ -3970,15 +4099,17 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
 
   var subtitle = canSeeAll
     ? ("Visão geral · " + total + " tarefa" + (total !== 1 ? "s" : ""))
-    : ("Coordenação: " + (myName || "—") + " · " + total + " tarefa" + (total !== 1 ? "s" : ""));
+    : isGerente
+      ? ("Equipe: " + (myName || "—") + " · " + total + " tarefa" + (total !== 1 ? "s" : ""))
+      : ("Coordenação: " + (myName || "—") + " · " + total + " tarefa" + (total !== 1 ? "s" : ""));
 
   var scrollBox = { maxHeight: 260, overflowY: "auto", paddingRight: 4 };
 
   return e("div", {
-    style: { width: "100%", maxWidth: 1080, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden" }
+    style: inline ? { width: "100%" } : { width: "100%", maxWidth: 1080, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden" }
   },
     // Header
-    e("div", { style: { padding: "18px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+    e("div", { style: inline ? { paddingBottom: 16, marginBottom: 4, borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } : { padding: "18px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
       e("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
         e(Briefcase, { size: 18, color: T.textM }),
         e("div", null,
@@ -3987,7 +4118,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         )
       ),
       e("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
-        canSeeAll && e("select", {
+        isManager && e("select", {
           value: fCoord, onChange: function (ev) { setFCoord(ev.target.value); },
           style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
         }, e("option", { value: "__all__" }, "Todas as coordenações"),
@@ -3999,11 +4130,11 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         }, e("option", { value: "__all__" }, "Todos os clientes"),
           cliOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
         ),
-        e(CloseBtn, { onClick: onClose, T: T })
+        !inline && e(CloseBtn, { onClick: onClose, T: T })
       )
     ),
     // Body
-    e("div", { style: { padding: 20 } },
+    e("div", { style: inline ? { paddingTop: 20 } : { padding: 20 } },
       // KPIs
       e("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 } },
         kpi("Total", total, T.text),
@@ -4031,6 +4162,27 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
             section("Carga por analista", Users,
               byAnalista.length ? e("div", { style: scrollBox }, byAnalista.map(analistaRow)) : emptyMsg("Sem analistas atribuídos."),
               byAnalista.length + " pessoa(s)"),
+            // Pendencias por analista
+            section("Pendências por analista", AlertTriangle,
+              byPendAnalista.length ? e("div", { style: scrollBox }, byPendAnalista.map(pendAnalistaRow)) : emptyMsg("Sem pendências por analista."),
+              byPendAnalista.length + " pessoa(s)"),
+            // Sem dono (analista/coordenador/gerente, conforme o nivel)
+            section(canSeeAll ? "Sem analista/coord./gerente" : isGerente ? "Sem analista/coordenador" : "Sem analista", AlertTriangle,
+              unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
+              unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
+            // SLA - cumprimento de prazo por analista
+            section("SLA · Entrega no prazo", Clock,
+              bySla.length ? e("div", { style: scrollBox }, bySla.map(slaRow)) : emptyMsg("Sem conclusões com prazo neste período."),
+              e("select", {
+                value: slaPeriod, onChange: function (ev) { setSlaPeriod(ev.target.value === "all" ? "all" : Number(ev.target.value)); },
+                style: { fontSize: 11, color: T.textM, background: "transparent", border: "1px solid " + T.borderL, borderRadius: 6, padding: "2px 6px" }
+              },
+                e("option", { value: "7" }, "7 dias"),
+                e("option", { value: "15" }, "15 dias"),
+                e("option", { value: "30" }, "30 dias"),
+                e("option", { value: "90" }, "90 dias"),
+                e("option", { value: "all" }, "Tudo")
+              )),
             // Atividade
             section("Atividade recente", ScrollText,
               actLoading ? emptyMsg("Carregando…")
@@ -4333,9 +4485,6 @@ function App() {
     _useState64 = _slicedToArray(_useState63, 2),
     showLog = _useState64[0],
     setShowLog = _useState64[1];
-  var _dashSt = useState(false),
-    showDash = _dashSt[0],
-    setShowDash = _dashSt[1];
   var _useState65 = useState(false),
     _useState66 = _slicedToArray(_useState65, 2),
     showTrash = _useState66[0],
@@ -4527,6 +4676,7 @@ function App() {
   var visEsts = visibleEsts(session, groups, esteiras);
   var isAdmin = (session === null || session === void 0 ? void 0 : session.role) === "admin";
   var scope = userScope(session, groups);
+  var isGerente = isGerenteUser(session, groups);
   var visTask = function visTask(t) {
     return scope === "all" || t.gerenteId === scope;
   };
@@ -5252,16 +5402,13 @@ function App() {
     }
   }, [load, session]);
   useEffect(function () {
-    if (showAdmin || showLog || showDash || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
-  }, [showAdmin, showLog, showDash, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
+    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
+  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
   var closeAdmin = useCallback(function () {
     return setShowAdmin(false);
   }, []);
   var closeLog = useCallback(function () {
     return setShowLog(false);
-  }, []);
-  var closeDash = useCallback(function () {
-    return setShowDash(false);
   }, []);
   var closeTrash = useCallback(function () {
     return setShowTrash(false);
@@ -6593,7 +6740,7 @@ function App() {
       mes: ""
     });
   };
-  var anyModal = showAdmin || showLog || showDash || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
+  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
   var myGroup = groups.find(function (g) {
     return g.id === (session === null || session === void 0 ? void 0 : session.groupId);
   });
@@ -6788,7 +6935,7 @@ function App() {
     })
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "Selecione..."), users.map(function (u) {
+  }, "Selecione..."), sortUsersByHierarchy(users, groups).map(function (u) {
     return /*#__PURE__*/React.createElement("option", {
       key: u.id,
       value: u.name
@@ -6914,15 +7061,6 @@ function App() {
     canExport: has("export_log"),
     users: users,
     onClose: closeLog,
-    T: T
-  })), showDash && has("view_dashboard") && /*#__PURE__*/React.createElement(OVL, {
-    zi: 59,
-    ov: T.ov
-  }, /*#__PURE__*/React.createElement(DashboardModal, {
-    tasks: tasks,
-    scope: scope,
-    session: session,
-    onClose: closeDash,
     T: T
   })), showTrash && has("view_trash") && /*#__PURE__*/React.createElement(OVL, {
     zi: 57,
@@ -7947,7 +8085,7 @@ function App() {
     }
   }), has("view_dashboard") && /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
-      return setShowDash(true);
+      return switchTab("dashboard");
     },
     style: {
       padding: "9px 15px",
@@ -7955,11 +8093,11 @@ function App() {
       border: "none",
       cursor: "pointer",
       fontSize: 12.5,
-      fontWeight: 500,
+      fontWeight: tab === "dashboard" ? 600 : 500,
       whiteSpace: "nowrap",
-      background: "transparent",
-      color: T.textM,
-      borderBottom: "2px solid transparent",
+      background: tab === "dashboard" ? "rgba(99,102,241,0.12)" : "transparent",
+      color: tab === "dashboard" ? "#6366f1" : T.textM,
+      borderBottom: "2px solid ".concat(tab === "dashboard" ? "#6366f1" : "transparent"),
       display: "flex",
       alignItems: "center",
       gap: 6
@@ -8006,9 +8144,20 @@ function App() {
         fontWeight: 700
       }
     }, pending));
-  }))), /*#__PURE__*/React.createElement("div", {
+  }))), tab === "dashboard" && /*#__PURE__*/React.createElement("div", {
+    style: { padding: "20px 28px" }
+  }, /*#__PURE__*/React.createElement(DashboardModal, {
+    tasks: tasks,
+    scope: scope,
+    isGerente: isGerente,
+    session: session,
+    esteiras: esteiras,
+    inline: true,
+    T: T
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
-      padding: "20px 28px"
+      padding: "20px 28px",
+      display: tab === "dashboard" ? "none" : "block"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
