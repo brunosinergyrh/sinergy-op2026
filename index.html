@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v9)</title>
+  <title>SinergyRH – Operação - 2026 (v10)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.32-busca-filtro-data-2026-07-01";
+window.OP2026_BUILD = "v10.1-sync-incremental-compat-2026-07-01";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -205,8 +205,9 @@ var _kv = {
 
 // Prefixo das esteiras de tarefas (mesmo usado pelo app).
 var TASKS_PREFIX_SB = "sinergy_est_";
-// Cache por esteira: { eid: { taskId: jsonString } }. Base para (1) gravar somente o que mudou
-// e (2) nunca apagar tarefa criada por outro usuario — so apaga ids que ESTE navegador conhecia.
+// Cache por esteira: { eid: { taskId: jsonString } }. Fonte de leitura do app apos o sync.
+// Continua sendo a base para (1) gravar somente o que mudou e (2) nunca apagar tarefa
+// criada por outro usuario — so apaga ids que ESTE navegador conhecia.
 var _taskCache = {};
 
 function _chunk(a, n) { var o = []; for (var i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; }
@@ -214,12 +215,14 @@ function _newId() { return "T-AUTO-" + Date.now().toString(36).toUpperCase() + M
 
 // O Supabase/PostgREST limita a 1000 linhas por requisicao por padrao.
 // Esta funcao pagina automaticamente em blocos de 1000 ate trazer tudo.
-async function _sbFetchAll(basePath) {
+// v10: ordenacao explicita e obrigatoria para paginacao por offset ser estavel.
+async function _sbFetchAll(basePath, orderCol) {
   const PAGE = 1000;
+  const ord = orderCol || "id";
   var all = [], offset = 0;
   while (true) {
     const sep = basePath.indexOf("?") >= 0 ? "&" : "?";
-    const page = await sbFetch("GET", basePath + sep + "limit=" + PAGE + "&offset=" + offset);
+    const page = await sbFetch("GET", basePath + sep + "order=" + ord + ".asc&limit=" + PAGE + "&offset=" + offset);
     const arr = Array.isArray(page) ? page : [];
     all = all.concat(arr);
     if (arr.length < PAGE) break;
@@ -229,14 +232,153 @@ async function _sbFetchAll(basePath) {
   return all;
 }
 
+/* ===== v10: SYNC INCREMENTAL (updated_at) + SOFT-DELETE (deleted_at) =====
+   Em vez de baixar o banco inteiro a cada ciclo de 5s, o cliente:
+   1. Na primeira leitura da sessao, faz UMA carga completa (só linhas vivas) e guarda um cursor
+      = maior updated_at visto (relogio do SERVIDOR, gravado por trigger no banco).
+   2. Nos ciclos seguintes, pergunta apenas "o que mudou depois do cursor?" — resposta tipica: [].
+   3. Exclusoes viram soft-delete (deleted_at preenchido), entao tambem chegam pelo delta.
+   4. Redes de seguranca: overlap de 10s no cursor (aplicacao é idempotente, redundancia é
+      inofensiva) + full refresh silencioso a cada 10 min + fallback para full refresh se o
+      delta falhar.
+   REQUISITO: rodar migracao_v10.sql no Supabase ANTES de publicar este arquivo.            */
+
+var _sync = {
+  ready: false,          // ja fez a carga completa inicial?
+  cursor: null,          // maior updated_at (string ISO do servidor) ja aplicado
+  lastPull: 0,           // timestamp (ms) do ultimo sync — debounce dentro do mesmo ciclo
+  lastFull: 0,           // timestamp (ms) do ultimo full refresh
+  inflight: null,        // promise em andamento (single-flight)
+  compat: null,          // null = ainda nao detectado | true = banco SEM migracao v10 (opera como v9) | false = v10 pleno
+  DEBOUNCE_MS: 2000,     // list+N gets do mesmo ciclo de 5s custam 1 delta so
+  FULL_EVERY_MS: 600000, // full refresh de seguranca a cada 10 min
+  OVERLAP_MS: 10000      // recua o cursor 10s na consulta (protege contra commits tardios)
+};
+// Estatisticas para validacao no console:  window.OP2026_SYNC_STATS
+window.OP2026_SYNC_STATS = { compatMode: null, fullLoads: 0, deltaPulls: 0, deltaRows: 0, softDeletesSeen: 0, lastError: null };
+
+function _taskRowData(r) { return (r && r.task_data != null) ? r.task_data : (r ? r.data : null); }
+
+function _advanceCursor(updatedAt) {
+  if (!updatedAt) return;
+  if (!_sync.cursor || Date.parse(updatedAt) > Date.parse(_sync.cursor)) _sync.cursor = updatedAt;
+}
+
+// Detecta UMA vez por sessao se a migracao v10 ja foi aplicada no banco.
+// Sem a coluna deleted_at, o app opera em MODO COMPATIBILIDADE = comportamento identico a v9
+// (tudo funciona; sem a economia de egress) e avisa com banner amarelo.
+async function _detectCompat() {
+  if (_sync.compat !== null) return _sync.compat;
+  try {
+    await sbFetch("GET", "tasks?select=deleted_at&limit=1");
+    _sync.compat = false;
+  } catch (e) {
+    const msg = String((e && (e.message || e)) || "");
+    if (msg.indexOf("deleted_at") >= 0 || msg.indexOf("42703") >= 0) {
+      _sync.compat = true;
+      console.warn("[sync v10] Coluna deleted_at ausente — operando em modo compatibilidade (v9). Rode migracao_v10.sql para ativar o sync incremental.");
+      _banner("\u26a0 v10 em modo compatibilidade: rode migracao_v10.sql no Supabase para ativar a economia de dados. O sistema segue funcionando normalmente.", '#f59e0b');
+    } else {
+      throw e; // outro erro (ex.: tabela tasks realmente ausente) segue o fluxo normal
+    }
+  }
+  window.OP2026_SYNC_STATS.compatMode = _sync.compat;
+  return _sync.compat;
+}
+
+// Carga completa: reconstroi o cache inteiro a partir das linhas vivas (deleted_at nulo).
+// Em modo compatibilidade, busca tudo sem o filtro (a coluna nao existe) — igual a v9.
+async function _fullLoad() {
+  const rows = await _sbFetchAll(_sync.compat ? "tasks" : "tasks?deleted_at=is.null", "id");
+  const fresh = {};
+  (rows || []).forEach(function (r) {
+    const t = _taskRowData(r);
+    if (!t || t.id == null || r.esteira == null) return;
+    const eid = String(r.esteira);
+    if (!fresh[eid]) fresh[eid] = {};
+    fresh[eid][String(t.id)] = JSON.stringify(t);
+    _advanceCursor(r.updated_at);
+  });
+  _taskCache = fresh;
+  _sync.ready = true;
+  _sync.lastFull = Date.now();
+  window.OP2026_SYNC_STATS.fullLoads++;
+  return rows ? rows.length : 0;
+}
+
+// Delta: traz apenas linhas alteradas apos o cursor (inclui soft-deletadas) e aplica no cache.
+async function _deltaPull() {
+  const since = new Date(Date.parse(_sync.cursor) - _sync.OVERLAP_MS).toISOString();
+  const rows = await _sbFetchAll("tasks?updated_at=gt." + encodeURIComponent(since), "updated_at");
+  (rows || []).forEach(function (r) {
+    if (r == null || r.esteira == null) return;
+    const eid = String(r.esteira);
+    const id = String(r.id);
+    if (r.deleted_at) {
+      if (_taskCache[eid] && (id in _taskCache[eid])) {
+        delete _taskCache[eid][id];
+        window.OP2026_SYNC_STATS.softDeletesSeen++;
+      }
+    } else {
+      const t = _taskRowData(r);
+      if (!t) return;
+      if (!_taskCache[eid]) _taskCache[eid] = {};
+      _taskCache[eid][id] = JSON.stringify(t);
+    }
+    _advanceCursor(r.updated_at);
+  });
+  window.OP2026_SYNC_STATS.deltaPulls++;
+  window.OP2026_SYNC_STATS.deltaRows += (rows ? rows.length : 0);
+  return rows ? rows.length : 0;
+}
+
+// Ponto unico de sincronizacao. Single-flight + debounce: as varias chamadas de
+// storage.list/get dentro do MESMO ciclo de load() custam no maximo 1 requisicao.
+async function _ensureSynced(force) {
+  if (_sync.inflight) return _sync.inflight;
+  const now = Date.now();
+  if (_sync.ready && !force && now - _sync.lastPull < _sync.DEBOUNCE_MS) return;
+  _sync.inflight = (async function () {
+    try {
+      await _detectCompat();
+      if (_sync.compat) {
+        // Modo compatibilidade (migracao nao rodada): comportamento v9 — recarrega tudo a cada
+        // ciclo, exclusoes fisicas de outros usuarios propagam em ate 5s. Sem economia, sem risco.
+        await _fullLoad();
+      } else if (!_sync.ready || !_sync.cursor || (now - _sync.lastFull > _sync.FULL_EVERY_MS)) {
+        await _fullLoad();
+      } else {
+        try { await _deltaPull(); }
+        catch (eDelta) {
+          // Se o delta falhar (ex.: coluna deleted_at ausente = SQL nao rodado), cai para full.
+          console.warn("[sync v10] delta falhou, executando full refresh:", eDelta && (eDelta.message || eDelta));
+          window.OP2026_SYNC_STATS.lastError = String(eDelta && (eDelta.message || eDelta)).slice(0, 200);
+          _maybeWarnMigracaoV10(eDelta);
+          await _fullLoad();
+        }
+      }
+      _sync.lastPull = Date.now();
+    } finally {
+      _sync.inflight = null;
+    }
+  })();
+  return _sync.inflight;
+}
+
+function _maybeWarnMigracaoV10(err) {
+  const msg = String((err && (err.message || err)) || "");
+  if (msg.indexOf("deleted_at") >= 0 || msg.indexOf("42703") >= 0) {
+    _banner("⚠ v10: coluna 'deleted_at' nao encontrada. Rode migracao_v10.sql no Supabase.", '#ef4444');
+  }
+}
+
 async function _tasksGet(eid) {
   try {
-    const rows = await _sbFetchAll("tasks?esteira=eq." + encodeURIComponent(eid));
-    const arr = (rows || []).map(function (r) { return (r.task_data != null ? r.task_data : r.data); }).filter(Boolean);
-    const cache = {};
-    arr.forEach(function (t) { if (t && t.id != null) cache[String(t.id)] = JSON.stringify(t); });
-    _taskCache[eid] = cache;
-    return arr;
+    await _ensureSynced();
+    const cache = _taskCache[eid] || {};
+    return Object.keys(cache).map(function (id) {
+      try { return JSON.parse(cache[id]); } catch (_) { return null; }
+    }).filter(Boolean);
   } catch (e) {
     console.error("[tasks.get] falha em " + eid + ":", e && (e.message || e));
     _maybeWarnTasksTable(e);
@@ -246,9 +388,10 @@ async function _tasksGet(eid) {
 
 async function _tasksListEsteiras() {
   try {
-    const rows = await _sbFetchAll("tasks?select=esteira");
-    const seen = {}; (rows || []).forEach(function (r) { if (r.esteira != null) seen[r.esteira] = 1; });
-    return Object.keys(seen);
+    await _ensureSynced();
+    return Object.keys(_taskCache).filter(function (eid) {
+      return Object.keys(_taskCache[eid] || {}).length > 0;
+    });
   } catch (e) {
     console.error("[tasks.list] falha:", e && (e.message || e));
     _maybeWarnTasksTable(e);
@@ -268,17 +411,32 @@ async function _tasksSet(eid, arr) {
     rows.push({ id: id, esteira: eid, task_data: data, json: json });
   });
   const prev = _taskCache[eid] || {};
-  // grava apenas linhas novas ou alteradas
+  // grava apenas linhas novas ou alteradas.
+  // deleted_at:null explicito revive tarefas restauradas da lixeira (upsert merge-duplicates).
+  // updated_at NAO e mais enviado: o trigger do banco carimba com o relogio do servidor.
+  await _detectCompat();
+  const compat = !!_sync.compat;
   const changed = rows.filter(function (x) { return prev[x.id] !== x.json; })
-                      .map(function (x) { return { id: x.id, esteira: x.esteira, task_data: x.task_data, updated_at: new Date().toISOString() }; });
-  // apaga apenas ids que este navegador ja conhecia e que sumiram (protege contra apagar tarefa de outro usuario)
+                      .map(function (x) {
+                        return compat
+                          ? { id: x.id, esteira: x.esteira, task_data: x.task_data, updated_at: new Date().toISOString() }
+                          : { id: x.id, esteira: x.esteira, task_data: x.task_data, deleted_at: null };
+                      });
+  // v10: exclusao virou soft-delete — marca deleted_at em vez de DELETE fisico.
+  // Em modo compatibilidade (sem a coluna), mantem o DELETE fisico da v9.
+  // Continua apagando (marcando) apenas ids que ESTE navegador conhecia.
   const toDelete = Object.keys(prev).filter(function (id) { return !(id in incoming); });
 
   const upChunks = _chunk(changed, 200);
   for (var i = 0; i < upChunks.length; i++) { await sbFetch("POST", "tasks", upChunks[i]); }
   const delChunks = _chunk(toDelete, 100);
   for (var j = 0; j < delChunks.length; j++) {
-    await sbFetch("DELETE", "tasks?id=in.(" + delChunks[j].map(encodeURIComponent).join(",") + ")");
+    if (compat) {
+      await sbFetch("DELETE", "tasks?id=in.(" + delChunks[j].map(encodeURIComponent).join(",") + ")");
+    } else {
+      await sbFetch("PATCH", "tasks?id=in.(" + delChunks[j].map(encodeURIComponent).join(",") + ")",
+        { deleted_at: new Date().toISOString() });
+    }
   }
   _taskCache[eid] = incoming;
 }
@@ -306,7 +464,15 @@ window.storage = {
   async delete(key, shared) {
     if (key && key.indexOf(TASKS_PREFIX_SB) === 0) {
       const eid = key.slice(TASKS_PREFIX_SB.length);
-      await sbFetch("DELETE", "tasks?esteira=eq." + encodeURIComponent(eid));
+      // v10: soft-delete da esteira inteira (antes era DELETE fisico).
+      // Em modo compatibilidade, mantem o DELETE fisico da v9.
+      await _detectCompat();
+      if (_sync.compat) {
+        await sbFetch("DELETE", "tasks?esteira=eq." + encodeURIComponent(eid));
+      } else {
+        await sbFetch("PATCH", "tasks?esteira=eq." + encodeURIComponent(eid) + "&deleted_at=is.null",
+          { deleted_at: new Date().toISOString() });
+      }
       delete _taskCache[eid];
       return { key: key, deleted: true, shared: shared };
     }
@@ -320,6 +486,12 @@ window.storage = {
     return _kv.list(prefix, shared);
   }
 };
+
+// Pausa o relogio de sync quando a aba esta oculta: ao voltar o foco, o proximo ciclo
+// forca um delta imediato (custo: bytes). Economia extra sem mudar a experiencia.
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden && _sync.ready) { _sync.lastPull = 0; _ensureSynced(true).catch(function () {}); }
+});
 
 /* ===== Migracao unica: blobs antigos (kv: sinergy_est_*) -> tabela tasks =====
    NAO altera nem apaga os blobs antigos => rollback seguro. Idempotente (upsert por id).
@@ -395,9 +567,9 @@ function _banner(text, color) {
    Mostra, camada por camada, o que esta funcionando.                         */
 window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
-  console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
+  console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.27-bulk-multi-2026-07-01", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.1-sync-incremental-compat-2026-07-01", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
