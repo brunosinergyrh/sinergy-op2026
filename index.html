@@ -73,6 +73,7 @@ var lucide = (function() {
   icons['Calendar'] = makeIcon('Calendar', [["path",{"d":"M8 2v4"}],["path",{"d":"M16 2v4"}],["rect",{"width":"18","height":"18","x":"3","y":"4","rx":"2"}],["path",{"d":"M3 10h18"}]]);
   icons['Flame'] = makeIcon('Flame', [["path",{"d":"M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 3z"}]]);
   icons['Clock'] = makeIcon('Clock', [["circle",{"cx":"12","cy":"12","r":"10"}],["polyline",{"points":"12 6 12 12 16 14"}]]);
+  icons['Search'] = makeIcon('Search', [["circle",{"cx":"11","cy":"11","r":"8"}],["path",{"d":"m21 21-4.3-4.3"}]]);
 
   return icons;
 })();
@@ -178,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v9.26-esocial-3status-2026-07-01";
+window.OP2026_BUILD = "v9.32-busca-filtro-data-2026-07-01";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -396,7 +397,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v9 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v9.26-esocial-3status-2026-07-01", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v9.27-bulk-multi-2026-07-01", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -567,7 +568,8 @@ var _lucide = lucide,
   AlertTriangle = _lucide.AlertTriangle,
   Calendar = _lucide.Calendar,
   Flame = _lucide.Flame,
-  Clock = _lucide.Clock;
+  Clock = _lucide.Clock,
+  Search = _lucide.Search;
 
 /* ── CONSTANTS ── */
 var ESTEIRAS_DEFAULT = [{
@@ -3841,6 +3843,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var _slaP = useState(7), slaPeriod = _slaP[0], setSlaPeriod = _slaP[1];
   var _fEsocC = useState("__all__"), fEsocCoord = _fEsocC[0], setFEsocCoord = _fEsocC[1];
   var _fEsocA = useState("__all__"), fEsocAnalista = _fEsocA[0], setFEsocAnalista = _fEsocA[1];
+  var _fEsocM = useState("__all__"), fEsocMes = _fEsocM[0], setFEsocMes = _fEsocM[1];
 
   // ---- conjunto de tarefas conforme o papel ----
   var allTasks = Object.entries(tasks || {}).reduce(function (acc, _kv) { var eid = _kv[0], arr = _kv[1]; return acc.concat((arr || []).map(function (t) { return t._eid ? t : Object.assign({}, t, { _eid: eid }); })); }, []);
@@ -3943,6 +3946,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var esocialView = esocialBase;
   if (fEsocCoord !== "__all__") esocialView = esocialView.filter(function (t) { return norm(t.coordenador || "") === norm(fEsocCoord); });
   if (fEsocAnalista !== "__all__") esocialView = esocialView.filter(function (t) { return respsOf(t).some(function (r) { return norm(r) === norm(fEsocAnalista); }); });
+  var esocMesOpts = distinct(esocialBase.map(function (t) { return t.mes; }).filter(Boolean)).sort().reverse();
+  if (fEsocMes !== "__all__") esocialView = esocialView.filter(function (t) { return t.mes === fEsocMes; });
   // agrupa por status real da tarefa
   var esocSitMap = { "Concluída": 0, "Atrasada": 0, "Pendente": 0 };
   esocialView.forEach(function (t) {
@@ -4267,6 +4272,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   function prazoItem(t, color) {
     var resp = (respsOf(t)[0]) || "";
     var es = estMap[t._eid];
+    var ctx = [t.cliente, t.processo, t.coordenador, resp].filter(Boolean).join(" · ");
     return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
       e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 } }),
       e("div", { style: { minWidth: 0, flex: 1 } },
@@ -4274,7 +4280,10 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
           es && e("span", { style: { fontSize: 9.5, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, es.label),
           e("span", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title || "(sem titulo)")
         ),
-        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, [t.cliente, t.processo, t.coordenador, resp].filter(Boolean).join(" · "))
+        e("div", { style: { display: "flex", alignItems: "center", gap: 5, flexWrap: "nowrap", overflow: "hidden" } },
+          t.situacao && e("span", { style: { fontSize: 9.5, fontWeight: 600, color: "#6366f1", background: "rgba(99,102,241,0.1)", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, t.situacao),
+          ctx && e("span", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ctx)
+        )
       ),
       e("span", { style: { fontSize: 11, color: color, fontWeight: 600, flexShrink: 0 } }, fmtDate(t.deadline))
     );
@@ -4398,6 +4407,12 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                     style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
                   }, e("option", { value: "__all__" }, "Todo analista"),
                     esocAnalistaOpts.map(function (a) { return e("option", { key: a, value: a }, a); })
+                  ),
+                  e("select", {
+                    value: fEsocMes, onChange: function (ev) { setFEsocMes(ev.target.value); },
+                    style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                  }, e("option", { value: "__all__" }, "Toda referência"),
+                    esocMesOpts.map(function (m) { return e("option", { key: m, value: m }, fmtMonth(m)); })
                   )
                 )
               ),
@@ -4771,6 +4786,14 @@ function App() {
     _useState62 = _slicedToArray(_useState61, 2),
     showAdmin = _useState62[0],
     setShowAdmin = _useState62[1];
+  var _useState61s = useState(false),
+    _useState62s = _slicedToArray(_useState61s, 2),
+    showSearch = _useState62s[0],
+    setShowSearch = _useState62s[1];
+  var _useState61q = useState(""),
+    _useState62q = _slicedToArray(_useState61q, 2),
+    searchQ = _useState62q[0],
+    setSearchQ = _useState62q[1];
   var _useState63 = useState(false),
     _useState64 = _slicedToArray(_useState63, 2),
     showLog = _useState64[0],
@@ -4817,6 +4840,14 @@ function App() {
     _useState84 = _slicedToArray(_useState83, 2),
     showFilters = _useState84[0],
     setShowFilters = _useState84[1];
+  var _useState83a = useState(""),
+    _useState84a = _slicedToArray(_useState83a, 2),
+    dateFrom = _useState84a[0],
+    setDateFrom = _useState84a[1];
+  var _useState83b = useState(""),
+    _useState84b = _slicedToArray(_useState83b, 2),
+    dateTo = _useState84b[0],
+    setDateTo = _useState84b[1];
   var _useState85 = useState(0),
     _useState86 = _slicedToArray(_useState85, 2),
     sortIdx = _useState86[0],
@@ -4880,6 +4911,10 @@ function App() {
     _useState106 = _slicedToArray(_useState105, 2),
     bulkEditOpen = _useState106[0],
     setBulkEditOpen = _useState106[1];
+  var _useState105b = useState({}),
+    _useState106b = _slicedToArray(_useState105b, 2),
+    bulkMulti = _useState106b[0],
+    setBulkMulti = _useState106b[1];
   var _useState107 = useState(""),
     _useState108 = _slicedToArray(_useState107, 2),
     bulkF = _useState108[0],
@@ -5713,6 +5748,18 @@ function App() {
   useEffect(function () {
     if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
   }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
+  useEffect(function () {
+    function onKey(ev) {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "k") {
+        ev.preventDefault();
+        setShowSearch(true);
+        setSearchQ("");
+      }
+      if (ev.key === "Escape") setShowSearch(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return function () { document.removeEventListener("keydown", onKey); };
+  }, []);
   var closeAdmin = useCallback(function () {
     return setShowAdmin(false);
   }, []);
@@ -6419,6 +6466,7 @@ function App() {
     setBulkSel(new Set());
     setBulkEditOpen(false);
     setBulkCompleteConfirm(false);
+    setBulkMulti({});
   };
   var setF = function setF(k, v) {
     return setFilters(function (prev) {
@@ -6500,7 +6548,7 @@ function App() {
     return t._resp;
   }));
   var filtered = cur.filter(function (t) {
-    return Object.entries(filters).every(function (_ref37) {
+    var passFilters = Object.entries(filters).every(function (_ref37) {
       var _ref38 = _slicedToArray(_ref37, 2),
         k = _ref38[0],
         v = _ref38[1];
@@ -6510,6 +6558,10 @@ function App() {
       if ((k === "coordenador" || k === "gerente") && v === "__none__") return !((t[k] || "").trim());
       return t[k] === v;
     });
+    if (!passFilters) return false;
+    if (dateFrom && (!t.deadline || t.deadline < dateFrom)) return false;
+    if (dateTo && (!t.deadline || t.deadline > dateTo)) return false;
+    return true;
   });
   var sortOpt = SORT_OPTIONS[sortIdx] || SORT_OPTIONS[0];
   var sortFn = makeSortFn(sortOpt.field, sortOpt.dir);
@@ -6909,139 +6961,81 @@ function App() {
     }
     return bulkDelete;
   }();
-  var bulkEdit = /*#__PURE__*/function () {
-    var _bulkEdit = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee40() {
-      var ids, nt, count, moved, _i9, _Object$keys3, _eid6, gu, _i0, _Object$keys4, _eid7, _i1, _Object$keys5, _eid8, _i10, _Object$keys6, _eid9;
-      return _regenerator().w(function (_context41) {
-        while (1) switch (_context41.n) {
-          case 0:
-            if (!(!has("bulk_ops") || bulkSel.size === 0 || !bulkF)) {
-              _context41.n = 1;
-              break;
-            }
-            return _context41.a(2);
-          case 1:
-            ids = new Set(bulkSel);
-            nt = _objectSpread({}, tasksRef.current);
-            count = 0;
-            if (!(bulkF === "esteira")) {
-              _context41.n = 7;
-              break;
-            }
-            if (bulkV) {
-              _context41.n = 2;
-              break;
-            }
-            return _context41.a(2);
-          case 2:
-            if (!nt[bulkV]) nt[bulkV] = [];
+  var bulkEdit = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee_be() {
+    var ids, nt, count, fields, moved, gu, eKey, _eids, _ei;
+    return _regenerator().w(function (_ctx_be) {
+      while (1) switch (_ctx_be.n) {
+        case 0:
+          if (!(!has("bulk_ops") || bulkSel.size === 0)) { _ctx_be.n = 1; break; }
+          return _ctx_be.a(2);
+        case 1:
+          // filtra so os campos que foram preenchidos
+          fields = Object.keys(bulkMulti).filter(function (k) {
+            var v = bulkMulti[k];
+            if (k === "responsible") return Array.isArray(v) && v.length > 0;
+            if (k === "esteira" || k === "gerente") return !!v;
+            return v !== "" && v !== undefined;
+          });
+          if (fields.length) { _ctx_be.n = 2; break; }
+          return _ctx_be.a(2);
+        case 2:
+          ids = new Set(bulkSel);
+          nt = _objectSpread({}, tasksRef.current);
+          count = 0;
+          // Esteira: move tarefas entre arrays (deve ser processada primeiro)
+          eKey = bulkMulti["esteira"];
+          if (eKey && fields.indexOf("esteira") >= 0) {
+            if (!nt[eKey]) nt[eKey] = [];
             moved = [];
-            _i9 = 0, _Object$keys3 = Object.keys(nt);
-          case 3:
-            if (!(_i9 < _Object$keys3.length)) {
-              _context41.n = 6;
-              break;
-            }
-            _eid6 = _Object$keys3[_i9];
-            if (!(_eid6 === bulkV)) {
-              _context41.n = 4;
-              break;
-            }
-            return _context41.a(3, 5);
-          case 4:
-            nt[_eid6] = nt[_eid6].filter(function (t) {
-              if (ids.has(t.id)) {
-                moved.push(t);
-                count++;
-                return false;
-              }
-              return true;
-            });
-          case 5:
-            _i9++;
-            _context41.n = 3;
-            break;
-          case 6:
-            nt[bulkV] = [].concat(_toConsumableArray(nt[bulkV] || []), moved);
-            _context41.n = 10;
-            break;
-          case 7:
-            if (!(bulkF === "gerente")) {
-              _context41.n = 9;
-              break;
-            }
-            if (bulkV) {
-              _context41.n = 8;
-              break;
-            }
-            return _context41.a(2);
-          case 8:
-            gu = gerenteUsers.find(function (u) {
-              return u.id === bulkV;
-            });
-            for (_i0 = 0, _Object$keys4 = Object.keys(nt); _i0 < _Object$keys4.length; _i0++) {
-              _eid7 = _Object$keys4[_i0];
-              nt[_eid7] = nt[_eid7].map(function (t) {
-                if (ids.has(t.id)) {
-                  count++;
-                  return _objectSpread(_objectSpread({}, t), {}, {
-                    gerente: (gu === null || gu === void 0 ? void 0 : gu.name) || "",
-                    gerenteId: (gu === null || gu === void 0 ? void 0 : gu.id) || null
-                  });
-                }
-                return t;
+            _eids = Object.keys(nt);
+            for (_ei = 0; _ei < _eids.length; _ei++) {
+              if (_eids[_ei] === eKey) continue;
+              nt[_eids[_ei]] = nt[_eids[_ei]].filter(function (t) {
+                if (ids.has(t.id)) { moved.push(t); return false; } return true;
               });
             }
-            _context41.n = 10;
-            break;
-          case 9:
-            if (bulkF === "responsible") {
-              var bulkResps = Array.isArray(bulkV) ? bulkV : (bulkV ? [bulkV] : []);
-              for (_i1 = 0, _Object$keys5 = Object.keys(nt); _i1 < _Object$keys5.length; _i1++) {
-                _eid8 = _Object$keys5[_i1];
-                nt[_eid8] = nt[_eid8].map(function (t) {
-                  if (ids.has(t.id)) {
-                    count++;
-                    return _objectSpread(_objectSpread({}, t), {}, {
-                      responsibles: bulkResps,
-                      responsible: bulkResps.join(", ")
-                    });
-                  }
-                  return t;
-                });
-              }
-            } else {
-              for (_i10 = 0, _Object$keys6 = Object.keys(nt); _i10 < _Object$keys6.length; _i10++) {
-                _eid9 = _Object$keys6[_i10];
-                nt[_eid9] = nt[_eid9].map(function (t) {
-                  if (ids.has(t.id)) {
-                    count++;
-                    return _objectSpread(_objectSpread({}, t), {}, _defineProperty({}, bulkF, bulkV));
-                  }
-                  return t;
-                });
-              }
-            }
-          case 10:
-            mutate(nt);
-            _context41.n = 11;
-            return logAction("bulkEdited", "".concat(count, " tarefas - campo ").concat(bulkF));
-          case 11:
-            setBulkSel(new Set());
-            setBulkMode(false);
-            setBulkEditOpen(false);
-            setBulkF("");
-            setBulkV("");
-          case 12:
-            return _context41.a(2);
-        }
-      }, _callee40);
-    }));
-    function bulkEdit() {
-      return _bulkEdit.apply(this, arguments);
-    }
-    return bulkEdit;
-  }();
+            nt[eKey] = [].concat(_toConsumableArray(nt[eKey] || []), moved);
+          }
+          // Demais campos: atualiza in-place
+          Object.keys(nt).forEach(function (eid) {
+            nt[eid] = nt[eid].map(function (t) {
+              if (!ids.has(t.id)) return t;
+              var updates = {};
+              fields.forEach(function (k) {
+                if (k === "esteira") return; // ja tratado acima
+                var v = bulkMulti[k];
+                if (k === "responsible") {
+                  var rArr = Array.isArray(v) ? v : [v];
+                  updates.responsibles = rArr;
+                  updates.responsible = rArr.join(", ");
+                } else if (k === "gerente") {
+                  var gUser = gerenteUsers.find(function (u) { return u.id === v; });
+                  updates.gerente = (gUser && gUser.name) || "";
+                  updates.gerenteId = (gUser && gUser.id) || null;
+                } else {
+                  updates[k] = v;
+                }
+              });
+              if (Object.keys(updates).length) count++;
+              return Object.keys(updates).length ? _objectSpread(_objectSpread({}, t), updates) : t;
+            });
+          });
+          // conta movidos (esteira)
+          if (eKey && fields.indexOf("esteira") >= 0) count = Math.max(count, moved.length);
+          mutate(nt);
+          _ctx_be.n = 3;
+          return logAction("bulkEdited", count + " tarefas - campos: " + fields.join(", "));
+        case 3:
+          setBulkSel(new Set());
+          setBulkMode(false);
+          setBulkEditOpen(false);
+          setBulkMulti({});
+          setBulkF("");
+          setBulkV("");
+          return _ctx_be.a(2);
+      }
+    }, _callee_be);
+  }));
   var toggleSel = function toggleSel(id) {
     setBulkSel(function (prev) {
       var n = new Set(prev);
@@ -7087,6 +7081,20 @@ function App() {
       mes: ""
     });
   };
+  // Busca global
+  var searchResults = [];
+  if (showSearch && searchQ.trim().length >= 2) {
+    var qNorm = norm(searchQ.trim());
+    var allSearchTasks = Object.entries(tasks).flatMap(function (_e) {
+      var eid = _e[0], arr = _e[1];
+      return (arr || []).map(function (t) { return Object.assign({}, t, { _eid: eid }); });
+    }).filter(function (t) { return visTask(t); });
+    searchResults = allSearchTasks.filter(function (t) {
+      return [t.title, t.code, t.cliente, t.processo, t.situacao, t.coordenador, t.gerente, t.mes,
+        t.deadline, Array.isArray(t.responsibles) ? t.responsibles.join(" ") : t.responsible
+      ].some(function (v) { return v && norm(String(v)).includes(qNorm); });
+    }).slice(0, 40);
+  }
   var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
   var myGroup = groups.find(function (g) {
     return g.id === (session === null || session === void 0 ? void 0 : session.groupId);
@@ -8570,7 +8578,29 @@ function App() {
     })
   }, /*#__PURE__*/React.createElement(Filter, {
     size: 13
-  }), "Filtros", activeFC > 0 ? " (".concat(activeFC, ")") : ""), /*#__PURE__*/React.createElement("select", {
+  }), "Filtros", activeFC > 0 ? " (".concat(activeFC, ")") : ""),
+  /* Busca inline ao lado de Filtros */
+  showSearch ? /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 6, background: T.inpBg, border: "1px solid " + T.borderL, borderRadius: 8, padding: "4px 10px", flex: "0 0 260px" }
+  }, /*#__PURE__*/React.createElement(Search, { size: 13, color: T.textM }),
+    /*#__PURE__*/React.createElement("input", {
+      autoFocus: true,
+      value: searchQ,
+      onChange: function onChange(ev) { return setSearchQ(ev.target.value); },
+      onKeyDown: function onKeyDown(ev) { if (ev.key === "Escape") { setShowSearch(false); setSearchQ(""); } },
+      placeholder: "Buscar tarefas...",
+      style: { border: "none", outline: "none", fontSize: 12.5, background: "transparent", color: T.text, fontFamily: "inherit", width: "100%" }
+    }),
+    searchQ ? /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { return setSearchQ(""); },
+      style: { background: "none", border: "none", cursor: "pointer", color: T.textM, lineHeight: 1, padding: 0, flexShrink: 0 }
+    }, /*#__PURE__*/React.createElement(X, { size: 12 })) : null
+  ) : /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() { setShowSearch(true); setSearchQ(""); },
+    title: "Ctrl+K",
+    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "6px 12px", fontSize: 12, display: "flex", alignItems: "center", gap: 5 })
+  }, /*#__PURE__*/React.createElement(Search, { size: 13 }), "Buscar"),
+  /*#__PURE__*/React.createElement("select", {
     value: sortIdx,
     onChange: function onChange(ev) {
       return changeSort(parseInt(ev.target.value));
@@ -8748,64 +8778,187 @@ function App() {
   }, /*#__PURE__*/React.createElement(Trash2, {
     size: 13
   }), "Excluir selecionadas"))), bulkEditOpen && bulkSel.size > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 12,
-      paddingTop: 12,
-      borderTop: "1px solid rgba(99,102,241,0.2)",
-      display: "grid",
-      gridTemplateColumns: "1fr 1.5fr auto auto",
-      gap: 10,
-      alignItems: "end"
-    }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: T.textM,
-      marginBottom: 4
-    }
-  }, "Campo"), /*#__PURE__*/React.createElement("select", {
-    value: bulkF,
-    onChange: function onChange(ev) {
-      setBulkF(ev.target.value);
-      setBulkV(ev.target.value === "responsible" ? [] : "");
+    style: { marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(99,102,241,0.2)" }
+  },
+    /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, fontWeight: 600, color: "#818cf8", marginBottom: 10 }
+    }, "Editar em lote — preencha os campos que deseja alterar:"),
+    /*#__PURE__*/React.createElement("div", {
+      style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px,1fr))", gap: 10, marginBottom: 12 }
     },
-    style: _objectSpread(_objectSpread({}, I), {}, {
-      background: T.selBg,
-      colorScheme: T.cs,
-      padding: "6px 10px"
-    })
-  }, /*#__PURE__*/React.createElement("option", {
-    value: ""
-  }, "Selecione..."), BULK_FIELDS.map(function (f) {
-    return /*#__PURE__*/React.createElement("option", {
-      key: f.key,
-      value: f.key
-    }, f.label);
-  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: T.textM,
-      marginBottom: 4
-    }
-  }, "Valor"), bulkValueInput), /*#__PURE__*/React.createElement("button", {
-    onClick: function onClick() {
-      setBulkEditOpen(false);
-      setBulkF("");
-      setBulkV("");
+    // Analista
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Analista"),
+      /*#__PURE__*/React.createElement(MultiAutoInput, {
+        values: Array.isArray(bulkMulti.responsible) ? bulkMulti.responsible : [],
+        onChange: function onChange(v) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { responsible: v }); }); },
+        suggestions: userNames, placeholder: "Adicionar", T: T
+      })
+    ),
+    // Coordenador
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Coordenador"),
+      /*#__PURE__*/React.createElement(AutoInput, {
+        value: bulkMulti.coordenador || "",
+        onChange: function onChange(v) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { coordenador: v }); }); },
+        suggestions: distinct(users.filter(function (u) { return isCoordUser(u, groups); }).map(function (u) { return u.name; })),
+        placeholder: "Nome", T: T
+      })
+    ),
+    // Gerente
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Gerente"),
+      /*#__PURE__*/React.createElement("select", {
+        value: bulkMulti.gerente || "",
+        onChange: function onChange(ev) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { gerente: ev.target.value }); }); },
+        style: _objectSpread(_objectSpread({}, I), {}, { background: T.selBg, colorScheme: T.cs, padding: "6px 10px" })
+      }, /*#__PURE__*/React.createElement("option", { value: "" }, "Manter atual"),
+        gerenteUsers.map(function (u) { return /*#__PURE__*/React.createElement("option", { key: u.id, value: u.id }, u.name); }))
+    ),
+    // Esteira
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Esteira"),
+      /*#__PURE__*/React.createElement("select", {
+        value: bulkMulti.esteira || "",
+        onChange: function onChange(ev) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { esteira: ev.target.value }); }); },
+        style: _objectSpread(_objectSpread({}, I), {}, { background: T.selBg, colorScheme: T.cs, padding: "6px 10px" })
+      }, /*#__PURE__*/React.createElement("option", { value: "" }, "Manter atual"),
+        esteiras.map(function (e) { return /*#__PURE__*/React.createElement("option", { key: e.id, value: e.id }, e.label); }))
+    ),
+    // Cliente
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Cliente"),
+      /*#__PURE__*/React.createElement(AutoInput, {
+        value: bulkMulti.cliente || "",
+        onChange: function onChange(v) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { cliente: v }); }); },
+        suggestions: histCliente, placeholder: "Empresa", T: T
+      })
+    ),
+    // Processo
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Processo"),
+      /*#__PURE__*/React.createElement(AutoInput, {
+        value: bulkMulti.processo || "",
+        onChange: function onChange(v) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { processo: v }); }); },
+        suggestions: histProcesso, placeholder: "Processo", T: T
+      })
+    ),
+    // Situação
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Situação"),
+      /*#__PURE__*/React.createElement(AutoInput, {
+        value: bulkMulti.situacao || "",
+        onChange: function onChange(v) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { situacao: v }); }); },
+        suggestions: histSituacao, placeholder: "Situação", T: T
+      })
+    ),
+    // Prazo
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Prazo"),
+      /*#__PURE__*/React.createElement("input", {
+        type: "date", value: bulkMulti.deadline || "",
+        onChange: function onChange(ev) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { deadline: ev.target.value }); }); },
+        style: _objectSpread(_objectSpread({}, I), {}, { colorScheme: T.cs, padding: "6px 10px" })
+      })
+    ),
+    // Mês
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Mês"),
+      /*#__PURE__*/React.createElement("input", {
+        type: "month", value: bulkMulti.mes || "",
+        onChange: function onChange(ev) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { mes: ev.target.value }); }); },
+        style: _objectSpread(_objectSpread({}, I), {}, { colorScheme: T.cs, padding: "6px 10px" })
+      })
+    ),
+    // Prioridade
+    /*#__PURE__*/React.createElement("div", null,
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 4 } }, "Prioridade"),
+      /*#__PURE__*/React.createElement("select", {
+        value: bulkMulti.priority || "",
+        onChange: function onChange(ev) { return setBulkMulti(function (p) { return _objectSpread(_objectSpread({}, p), {}, { priority: ev.target.value }); }); },
+        style: _objectSpread(_objectSpread({}, I), {}, { background: T.selBg, colorScheme: T.cs, padding: "6px 10px" })
+      }, /*#__PURE__*/React.createElement("option", { value: "" }, "Manter atual"),
+        /*#__PURE__*/React.createElement("option", { value: "alta" }, "Alta"),
+        /*#__PURE__*/React.createElement("option", { value: "media" }, "Média"),
+        /*#__PURE__*/React.createElement("option", { value: "baixa" }, "Baixa"))
+    )
+  ),
+  /*#__PURE__*/React.createElement("div", { style: { display: "flex", gap: 8, justifyContent: "flex-end" } },
+    /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { setBulkEditOpen(false); setBulkMulti({}); setBulkF(""); setBulkV(""); },
+      style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "6px 12px", fontSize: 11.5 })
+    }, "Cancelar"),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: bulkEdit,
+      disabled: !Object.keys(bulkMulti).some(function (k) { var v = bulkMulti[k]; return k === "responsible" ? Array.isArray(v) && v.length > 0 : !!v; }),
+      style: _objectSpread(_objectSpread({}, mkB("#10b981", false, T)), {}, {
+        padding: "6px 14px", fontSize: 11.5,
+        opacity: Object.keys(bulkMulti).some(function (k) { var v = bulkMulti[k]; return k === "responsible" ? Array.isArray(v) && v.length > 0 : !!v; }) ? 1 : 0.4
+      })
+    }, "Aplicar alterações")
+  ))), showSearch && /*#__PURE__*/React.createElement("div", {
+    style: { padding: "0 28px 20px" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, overflow: "hidden" }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: { display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", borderBottom: "1px solid " + T.borderL }
+  }, /*#__PURE__*/React.createElement(Search, { size: 16, color: T.textM }),
+    /*#__PURE__*/React.createElement("input", {
+      autoFocus: true,
+      value: searchQ,
+      onChange: function onChange(ev) { return setSearchQ(ev.target.value); },
+      placeholder: "Buscar por título, cliente, processo, analista, código...",
+      style: { flex: 1, border: "none", outline: "none", fontSize: 14, background: "transparent", color: T.text, fontFamily: "inherit" }
+    }),
+    searchQ && /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { return setSearchQ(""); },
+      style: { background: "none", border: "none", cursor: "pointer", color: T.textM, lineHeight: 1, padding: 2 }
+    }, /*#__PURE__*/React.createElement(X, { size: 14 })),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { setShowSearch(false); setSearchQ(""); },
+      style: { fontSize: 11, color: T.textM, background: "none", border: "1px solid " + T.borderL, borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+    }, "Fechar")
+  ),
+  searchQ.trim().length < 2 ? /*#__PURE__*/React.createElement("div", {
+    style: { padding: "24px", textAlign: "center", color: T.textD, fontSize: 13 }
+  }, "Digite pelo menos 2 caracteres para buscar") : searchResults.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    style: { padding: "24px", textAlign: "center", color: T.textD, fontSize: 13 }
+  }, "Nenhuma tarefa encontrada para \"" + searchQ + "\"") : /*#__PURE__*/React.createElement("div", {
+    style: { maxHeight: 520, overflowY: "auto" }
+  }, searchResults.map(function (t) {
+    var es = esteiras.find(function (e2) { return e2.id === t._eid; });
+    var resps = Array.isArray(t.responsibles) ? t.responsibles : (t.responsible ? [t.responsible] : []);
+    var isLate = t.deadline && t.deadline < new Date().toISOString().slice(0, 10) && t.status !== "concluida";
+    return /*#__PURE__*/React.createElement("div", {
+      key: t.id,
+      onClick: function onClick() { switchTab(t._eid); setShowSearch(false); setSearchQ(""); },
+      style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid " + T.borderL, cursor: "pointer" },
+      onMouseEnter: function onMouseEnter(ev) { ev.currentTarget.style.background = T.card; },
+      onMouseLeave: function onMouseLeave(ev) { ev.currentTarget.style.background = "transparent"; }
     },
-    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
-      padding: "6px 12px",
-      fontSize: 11.5
-    })
-  }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
-    onClick: bulkEdit,
-    disabled: !bulkF || (bulkF === "esteira" || bulkF === "gerente") && !bulkV || (bulkF === "responsible") && (!bulkV || !Array.isArray(bulkV) || bulkV.length === 0),
-    style: _objectSpread(_objectSpread({}, mkB("#10b981", false, T)), {}, {
-      padding: "6px 14px",
-      fontSize: 11.5,
-      opacity: !bulkF || (bulkF === "esteira" || bulkF === "gerente") && !bulkV || (bulkF === "responsible") && (!bulkV || !Array.isArray(bulkV) || bulkV.length === 0) ? 0.4 : 1
-    })
-  }, "Aplicar"))), showFilters && /*#__PURE__*/React.createElement("div", {
+      es && /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 10, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "1px 8px", flexShrink: 0 }
+      }, es.label),
+      /*#__PURE__*/React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+        /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 13, fontWeight: 500, color: t.status === "concluida" ? T.textD : T.text,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            textDecoration: t.status === "concluida" ? "line-through" : "none" }
+        }, t.title || "(sem título)"),
+        /*#__PURE__*/React.createElement("div", {
+          style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }
+        }, [t.cliente, t.processo, resps.join(", ")].filter(Boolean).join(" · "))
+      ),
+      /*#__PURE__*/React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } },
+        t.deadline && /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: isLate ? "#ef4444" : T.textD, fontWeight: isLate ? 600 : 400 } }, fmtDate(t.deadline)),
+        t.situacao && /*#__PURE__*/React.createElement("div", { style: { fontSize: 10, color: "#6366f1" } }, t.situacao)
+      )
+    );
+  }),
+  searchResults.length === 40 && /*#__PURE__*/React.createElement("div", {
+    style: { padding: "10px 16px", textAlign: "center", color: T.textD, fontSize: 11, fontStyle: "italic" }
+  }, "Mostrando os primeiros 40 — refine a busca para ver mais"))
+  )), showFilters && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 16,
       padding: 16,
@@ -8913,14 +9066,32 @@ function App() {
       color: T.textM
     }
   }, "Filtros salvos no seu usuario."), /*#__PURE__*/React.createElement("button", {
-    onClick: clearFilters,
+    onClick: function onClick() { clearFilters(); setDateFrom(""); setDateTo(""); },
     style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
       fontSize: 11,
       padding: "4px 12px",
-      color: activeFC > 0 ? "#ef4444" : T.textM,
-      borderColor: activeFC > 0 ? "rgba(239,68,68,0.3)" : T.border
+      color: activeFC > 0 || dateFrom || dateTo ? "#ef4444" : T.textM,
+      borderColor: activeFC > 0 || dateFrom || dateTo ? "rgba(239,68,68,0.3)" : T.border
     })
-  }, "Limpar filtros"))), showForm && !isWS && has("create_task") && /*#__PURE__*/React.createElement("div", {
+  }, "Limpar filtros"),
+  /*#__PURE__*/React.createElement("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 } },
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: T.textM } }, "Prazo de"),
+    /*#__PURE__*/React.createElement("input", {
+      type: "date", value: dateFrom,
+      onChange: function onChange(ev) { return setDateFrom(ev.target.value); },
+      style: _objectSpread(_objectSpread({}, I), {}, { fontSize: 11, padding: "3px 8px", width: "auto", colorScheme: T.cs })
+    }),
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: T.textM } }, "até"),
+    /*#__PURE__*/React.createElement("input", {
+      type: "date", value: dateTo,
+      onChange: function onChange(ev) { return setDateTo(ev.target.value); },
+      style: _objectSpread(_objectSpread({}, I), {}, { fontSize: 11, padding: "3px 8px", width: "auto", colorScheme: T.cs })
+    }),
+    (dateFrom || dateTo) && /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { setDateFrom(""); setDateTo(""); },
+      style: { background: "none", border: "none", cursor: "pointer", color: "#ef4444", fontSize: 11, padding: "2px 6px" }
+    }, "✕")
+  ))), showForm && !isWS && has("create_task") && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 16,
       padding: 18,
