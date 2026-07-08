@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.1-sync-incremental-compat-2026-07-01";
+window.OP2026_BUILD = "v10.3.2-coluna-processo-2026-07-08";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -286,6 +286,21 @@ async function _detectCompat() {
   return _sync.compat;
 }
 
+/* v10.3: fila de eventos de mudanca (alimenta as notificacoes in-app).
+   _selfWrites evita auto-notificacao: gravacoes deste navegador nos ultimos 30s sao ignoradas
+   (necessario porque o jsonb do Postgres reordena as chaves e o JSON volta "diferente"). */
+window.OP2026_CHANGES = window.OP2026_CHANGES || [];
+var _selfWrites = {};
+function _markSelfWrite(id) { _selfWrites[id] = Date.now(); }
+function _pushChange(kind, eid, id, task, prevJson) {
+  try {
+    if (_selfWrites[id] && Date.now() - _selfWrites[id] < 30000) return;
+    var prev = prevJson ? JSON.parse(prevJson) : null;
+    window.OP2026_CHANGES.push({ kind: kind, eid: eid, id: id, task: task, prev: prev, at: Date.now() });
+    if (window.OP2026_CHANGES.length > 300) window.OP2026_CHANGES.splice(0, window.OP2026_CHANGES.length - 300);
+  } catch (_) {}
+}
+
 // Carga completa: reconstroi o cache inteiro a partir das linhas vivas (deleted_at nulo).
 // Em modo compatibilidade, busca tudo sem o filtro (a coluna nao existe) — igual a v9.
 async function _fullLoad() {
@@ -316,14 +331,21 @@ async function _deltaPull() {
     const id = String(r.id);
     if (r.deleted_at) {
       if (_taskCache[eid] && (id in _taskCache[eid])) {
+        var prevJsonD = _taskCache[eid][id];
         delete _taskCache[eid][id];
         window.OP2026_SYNC_STATS.softDeletesSeen++;
+        _pushChange("deleted", eid, id, null, prevJsonD);
       }
     } else {
       const t = _taskRowData(r);
       if (!t) return;
       if (!_taskCache[eid]) _taskCache[eid] = {};
-      _taskCache[eid][id] = JSON.stringify(t);
+      var newJson = JSON.stringify(t);
+      var prevJson = _taskCache[eid][id];
+      if (prevJson !== newJson) {
+        _taskCache[eid][id] = newJson;
+        _pushChange(prevJson ? "updated" : "created", eid, id, t, prevJson);
+      }
     }
     _advanceCursor(r.updated_at);
   });
@@ -427,6 +449,8 @@ async function _tasksSet(eid, arr) {
   // Continua apagando (marcando) apenas ids que ESTE navegador conhecia.
   const toDelete = Object.keys(prev).filter(function (id) { return !(id in incoming); });
 
+  changed.forEach(function (x) { _markSelfWrite(x.id); });
+  toDelete.forEach(function (id2) { _markSelfWrite(id2); });
   const upChunks = _chunk(changed, 200);
   for (var i = 0; i < upChunks.length; i++) { await sbFetch("POST", "tasks", upChunks[i]); }
   const delChunks = _chunk(toDelete, 100);
@@ -569,7 +593,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.1-sync-incremental-compat-2026-07-01", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.3.2-coluna-processo-2026-07-08", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -3986,6 +4010,414 @@ var LogModal = memo(function LogModal(_ref12) {
     )
   );
 });
+
+/* ═════ v10.3: NOTIFICACOES IN-APP + EXTRAS DO GERENCIAL ═════ */
+
+/* ── NotifBell: sino de notificacoes no cabecalho ──
+   Alimentado pelos deltas do sync incremental (window.OP2026_CHANGES) — custo zero de rede.
+   Gatilhos: nova tarefa para mim, tarefa atribuida/removida de mim, prazo alterado.
+   Persistencia por usuario no localStorage. Notificacao do navegador opcional.        */
+function NotifBell(props) {
+  var e = React.createElement;
+  var T = props.T, session = props.session;
+  var LS = "op2026_notifs_" + ((session && session.id) || "x");
+  var _n = React.useState(function () {
+    try { return JSON.parse(localStorage.getItem(LS) || "[]"); } catch (_) { return []; }
+  });
+  var notifs = _n[0], setNotifs = _n[1];
+  var _o = React.useState(false); var open = _o[0], setOpen = _o[1];
+  var _p = React.useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
+  var perm = _p[0], setPerm = _p[1];
+  var consumedRef = React.useRef((window.OP2026_CHANGES || []).length); // ignora eventos anteriores ao login
+  var panelRef = React.useRef(null);
+
+  function persist(list) {
+    var capped = list.slice(0, 50);
+    setNotifs(capped);
+    try { localStorage.setItem(LS, JSON.stringify(capped)); } catch (_) {}
+  }
+  function fmtPrazo(d) { return d ? d.split("-").reverse().join("/") : "sem prazo"; }
+
+  React.useEffect(function () {
+    var iv = setInterval(function () {
+      var ch = window.OP2026_CHANGES || [];
+      if (ch.length <= consumedRef.current) { if (ch.length < consumedRef.current) consumedRef.current = ch.length; return; }
+      var fresh = ch.slice(consumedRef.current);
+      consumedRef.current = ch.length;
+      var mine = (session && session.name) || "";
+      var news = [];
+      fresh.forEach(function (ev) {
+        try {
+          if (!ev || ev.kind === "deleted") return;
+          var t = ev.task || {}, p = ev.prev || {};
+          var inNow = respArr(t).indexOf(mine) >= 0;
+          var inBefore = ev.kind === "updated" ? respArr(p).indexOf(mine) >= 0 : false;
+          var msg = null, sub = null;
+          if (ev.kind === "created" && inNow) {
+            msg = "Nova tarefa para voc\u00EA"; sub = (t.title || "(sem titulo)") + " \u00B7 prazo " + fmtPrazo(t.deadline);
+          } else if (ev.kind === "updated") {
+            if (!inBefore && inNow) { msg = "Tarefa atribu\u00EDda a voc\u00EA"; sub = (t.title || "") + " \u00B7 prazo " + fmtPrazo(t.deadline); }
+            else if (inBefore && !inNow) { msg = "Tarefa removida de voc\u00EA"; sub = t.title || p.title || ""; }
+            else if (inNow && p.deadline !== t.deadline) { msg = "Prazo alterado"; sub = (t.title || "") + " \u2192 " + fmtPrazo(t.deadline); }
+          }
+          if (msg) news.push({ id: "N" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), msg: msg, sub: sub, at: Date.now(), read: false });
+        } catch (_) {}
+      });
+      if (!news.length) return;
+      persist(news.concat(notifs));
+      // notificacao do navegador quando a aba nao esta em foco
+      if (typeof Notification !== "undefined" && Notification.permission === "granted" && document.hidden) {
+        try { new Notification("Opera\u00E7\u00E3o 2026", { body: news[0].msg + ": " + (news[0].sub || "") + (news.length > 1 ? " (+" + (news.length - 1) + ")" : "") }); } catch (_) {}
+      }
+    }, 2000);
+    return function () { clearInterval(iv); };
+  }, [notifs, session && session.name]);
+
+  // fecha o painel ao clicar fora
+  React.useEffect(function () {
+    if (!open) return;
+    function onDoc(ev) { if (panelRef.current && !panelRef.current.contains(ev.target)) setOpen(false); }
+    document.addEventListener("mousedown", onDoc);
+    return function () { document.removeEventListener("mousedown", onDoc); };
+  }, [open]);
+
+  var unread = notifs.filter(function (n) { return !n.read; }).length;
+  function relTime(at) {
+    var s = Math.floor((Date.now() - at) / 1000);
+    if (s < 60) return "agora";
+    if (s < 3600) return "h\u00E1 " + Math.floor(s / 60) + " min";
+    if (s < 86400) return "h\u00E1 " + Math.floor(s / 3600) + " h";
+    return "h\u00E1 " + Math.floor(s / 86400) + " d";
+  }
+  function markAll() { persist(notifs.map(function (n) { return Object.assign({}, n, { read: true }); })); }
+  function askPerm() {
+    if (typeof Notification === "undefined") return;
+    Notification.requestPermission().then(function (p2) { setPerm(p2); });
+  }
+
+  return e("div", { ref: panelRef, style: { position: "relative" } },
+    e("button", {
+      onClick: function () { setOpen(!open); if (!open && unread) setTimeout(markAll, 1200); },
+      title: "Notifica\u00E7\u00F5es",
+      style: { position: "relative", background: "transparent", border: "1px solid " + T.border, borderRadius: 8, padding: "4px 9px", cursor: "pointer", fontSize: 14, lineHeight: 1.4 }
+    }, "\uD83D\uDD14",
+      unread > 0 && e("span", {
+        style: { position: "absolute", top: -6, right: -6, minWidth: 16, height: 16, borderRadius: 99, background: "#ef4444", color: "#fff", fontSize: 9.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }
+      }, unread > 9 ? "9+" : unread)
+    ),
+    open && e("div", {
+      style: { position: "absolute", right: 0, top: "calc(100% + 8px)", width: 330, maxHeight: 400, overflowY: "auto", background: T.surface, border: "1px solid " + T.border, borderRadius: 12, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", zIndex: 300, padding: 8 }
+    },
+      e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 8px 8px" } },
+        e("span", { style: { fontSize: 12, fontWeight: 700, color: T.text } }, "Notifica\u00E7\u00F5es"),
+        notifs.length > 0 && e("button", { onClick: function () { persist([]); }, style: { background: "transparent", border: "none", color: T.textM, fontSize: 10.5, cursor: "pointer" } }, "limpar")
+      ),
+      perm === "default" && e("button", {
+        onClick: askPerm,
+        style: { width: "100%", marginBottom: 6, padding: "7px 10px", fontSize: 11, borderRadius: 8, border: "1px dashed " + T.border, background: "transparent", color: T.textS, cursor: "pointer", textAlign: "left" }
+      }, "\uD83D\uDCE2 Ativar avisos do navegador (mesmo com a aba minimizada)"),
+      notifs.length === 0
+        ? e("div", { style: { padding: "18px 8px", textAlign: "center", fontSize: 12, color: T.textM } }, "Nenhuma notifica\u00E7\u00E3o por aqui. \uD83C\uDF89")
+        : notifs.map(function (n) {
+            return e("div", { key: n.id, style: { padding: "8px 10px", borderRadius: 8, marginBottom: 3, background: n.read ? "transparent" : "rgba(99,102,241,0.08)" } },
+              e("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
+                e("span", { style: { fontSize: 12, fontWeight: 700, color: T.text } }, n.msg),
+                e("span", { style: { fontSize: 10, color: T.textD, whiteSpace: "nowrap" } }, relTime(n.at))
+              ),
+              n.sub && e("div", { style: { fontSize: 11.5, color: T.textS, marginTop: 2 } }, n.sub)
+            );
+          })
+    )
+  );
+}
+
+/* ── ExportRiskBar: exportacao de "em risco + atrasadas" respeitando o papel ──
+   admin = tudo | gerente = time dele | coordenadora = so as tarefas dela (igual ao painel). */
+function ExportRiskBar(props) {
+  var e = React.createElement;
+  var T = props.T, tasks = props.tasks || {}, scope = props.scope;
+  var isAdminP = !!props.isAdmin, isGerenteP = !!props.isGerente;
+  var myName = (props.session && props.session.name) || "";
+  var _b = React.useState(false); var busy = _b[0], setBusy = _b[1];
+
+  function doExport() {
+    if (!window.XLSX) { alert("Biblioteca Excel ainda carregando, tente novamente em instantes."); return; }
+    setBusy(true);
+    try {
+      var todayD = new Date(); todayD.setHours(0, 0, 0, 0);
+      var todayStr = todayD.toISOString().slice(0, 10);
+      var lim2 = new Date(todayD); lim2.setDate(lim2.getDate() + 2);
+      var lim2Str = lim2.toISOString().slice(0, 10);
+      var all = [];
+      Object.keys(tasks).forEach(function (eid) { (tasks[eid] || []).forEach(function (t) { all.push(t); }); });
+      // mesmo escopo do Painel Gerencial:
+      var scoped = isAdminP ? all
+        : isGerenteP ? all.filter(function (t) { return t.gerenteId === scope; })
+        : all.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
+      var pend = scoped.filter(function (t) { return t.status !== "concluida"; });
+      var atrasadas = pend.filter(function (t) { return t.deadline && t.deadline < todayStr; });
+      var emRisco = pend.filter(function (t) { return t.deadline && t.deadline >= todayStr && t.deadline <= lim2Str; });
+      var rowFn = function (t) {
+        return { Cliente: t.cliente || "", Processo: t.processo || "", Tarefa: t.title || "", Responsavel: respStr(t), Coordenador: t.coordenador || "",
+                 Prazo: t.deadline ? t.deadline.split("-").reverse().join("/") : "", "Mes Ref": t.mes || "" };
+      };
+      var byPrazo = function (a, b) { return (a.deadline || "9999") < (b.deadline || "9999") ? -1 : 1; };
+      var wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet([
+        { Indicador: "Em risco (prazo em ate 2 dias)", Valor: emRisco.length },
+        { Indicador: "Atrasadas", Valor: atrasadas.length },
+        { Indicador: "Visao", Valor: isAdminP ? "Geral" : isGerenteP ? "Time do gerente" : "Coordenadora: " + myName },
+        { Indicador: "Gerado em", Valor: new Date().toLocaleString("pt-BR") }
+      ]), "Resumo");
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(emRisco.sort(byPrazo).map(rowFn)), "Em risco");
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(atrasadas.sort(byPrazo).map(rowFn)), "Atrasadas");
+      window.XLSX.writeFile(wb, "Risco_Atrasadas_" + todayStr + ".xlsx");
+    } catch (e2) { alert("Erro ao exportar: " + String(e2 && (e2.message || e2)).slice(0, 80)); }
+    setBusy(false);
+  }
+
+  return e("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 10 } },
+    e("button", {
+      onClick: doExport, disabled: busy,
+      title: "Excel com abas: Resumo, Em risco (prazo \u2264 2 dias) e Atrasadas \u2014 respeitando sua vis\u00E3o",
+      style: { border: "1px solid " + T.border, background: "transparent", color: T.textS, fontWeight: 600, fontSize: 11.5, borderRadius: 8, padding: "6px 13px", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }
+    }, busy ? "Gerando..." : "\u2B07 Exportar em risco + atrasadas")
+  );
+}
+
+/* ── WsDash (Meu Dia — painel motivacional da Minha Area, v10.2) ──
+   Calculado 100% no navegador a partir das tarefas ja carregadas (custo zero de rede).
+   Filosofia: comparar o analista com ele mesmo — nunca com colegas.                    */
+function WsDash(props) {
+  var cur = props.cur || [], T = props.T, session = props.session;
+  var e = React.createElement;
+  var _c = React.useState(function () {
+    try { return localStorage.getItem("op2026_wsdash_min") === "1"; } catch (_) { return false; }
+  });
+  var collapsed = _c[0], setCollapsed = _c[1];
+  function toggle() {
+    setCollapsed(function (v) {
+      try { localStorage.setItem("op2026_wsdash_min", v ? "0" : "1"); } catch (_) {}
+      return !v;
+    });
+  }
+
+  var todayD = new Date(); todayD.setHours(0, 0, 0, 0);
+  var todayStr = todayD.toISOString().slice(0, 10);
+  var curMonth = todayStr.slice(0, 7);
+
+  // ---- metricas do dia ----
+  var doneToday = 0, dueOpen = 0, overdue = 0, dueTodayOpen = 0;
+  var monthTotal = 0, monthDone = 0;
+  var nextTask = null;
+  var byDay = {}; // conclusoes por dia (para streak e recorde)
+  cur.forEach(function (t) {
+    var isDone = t.status === "concluida";
+    if (isDone && t.completedAt) {
+      var d = t.completedAt.slice(0, 10);
+      byDay[d] = (byDay[d] || 0) + 1;
+      if (d === todayStr) doneToday++;
+    }
+    if (!isDone && t.deadline) {
+      if (t.deadline < todayStr) { overdue++; dueOpen++; }
+      else if (t.deadline === todayStr) { dueTodayOpen++; dueOpen++; }
+      if (!nextTask || (t.deadline < nextTask.deadline)) nextTask = t;
+    }
+    if (t.mes === curMonth) { monthTotal++; if (isDone) monthDone++; }
+  });
+
+  var dayGoal = doneToday + dueOpen;                       // meta do dia: o que ja fez + o que vence ate hoje
+  var dayPct = dayGoal ? Math.round(doneToday / dayGoal * 100) : (doneToday > 0 ? 100 : 0);
+  var dayFree = dayGoal === 0 && doneToday === 0;
+  var monthPct = monthTotal ? Math.round(monthDone / monthTotal * 100) : 0;
+
+  // ---- streak: dias uteis consecutivos com >=1 conclusao (fds nao quebra, so nao conta) ----
+  var streak = 0;
+  (function () {
+    var d = new Date(todayD);
+    if (!byDay[todayStr]) d.setDate(d.getDate() - 1); // hoje ainda sem conclusao nao quebra o streak
+    for (var i = 0; i < 90; i++) {
+      var dow = d.getDay();
+      if (dow !== 0 && dow !== 6) {
+        var key = d.toISOString().slice(0, 10);
+        if (byDay[key]) streak++;
+        else break;
+      }
+      d.setDate(d.getDate() - 1);
+    }
+  })();
+
+  // ---- badges do mes (conquistas pessoais, sem comparacao com colegas) ----
+  var monthConcl = 0, bestDay = 0;
+  Object.keys(byDay).forEach(function (d) {
+    if (d.slice(0, 7) === curMonth) { monthConcl += byDay[d]; if (byDay[d] > bestDay) bestDay = byDay[d]; }
+  });
+  var badges = [
+    { icon: "\uD83D\uDEE1\uFE0F", label: "Zero atrasos", hint: "Nenhuma tarefa em atraso agora", ok: overdue === 0 },
+    { icon: "\u26A1", label: "Dia forte", hint: "10+ conclusoes em um dia no mes (recorde: " + bestDay + ")", ok: bestDay >= 10 },
+    { icon: "\uD83C\uDFAF", label: (monthConcl >= 100 ? "100" : monthConcl >= 50 ? "50" : "25") + " no mes", hint: monthConcl + " conclusoes na competencia", ok: monthConcl >= 25 }
+  ];
+
+  // ---- micro-celebracao: quando o dia fecha (100%) durante a sessao ----
+  var prevPctRef = React.useRef(dayPct);
+  var _cel = React.useState(false); var celebrate = _cel[0], setCelebrate = _cel[1];
+  React.useEffect(function () {
+    if (prevPctRef.current < 100 && dayPct === 100 && doneToday > 0) {
+      setCelebrate(true);
+      var tm = setTimeout(function () { return setCelebrate(false); }, 2600);
+      return function () { clearTimeout(tm); };
+    }
+    prevPctRef.current = dayPct;
+  }, [dayPct, doneToday]);
+
+  var estLabel = {};
+  (props.esteiras || []).forEach(function (es) { estLabel[es.id] = es.label || es.name || es.id; });
+  var _expP = React.useState("hoje"); var expPeriod = _expP[0], setExpPeriod = _expP[1];
+  var PERIOD_META = {
+    hoje:   { label: "hoje", sheet: "Meu dia",        file: "dia" },
+    semana: { label: "esta semana", sheet: "Minha semana", file: "semana" },
+    prox:   { label: "proxima semana", sheet: "Proxima semana", file: "prox_semana" },
+    mes:    { label: "este mes", sheet: "Este mes",   file: "mes" },
+    tudo:   { label: "pendentes", sheet: "Pendentes", file: "pendentes" }
+  };
+  function exportMy(kind) {
+    if (!window.XLSX) { alert("Biblioteca Excel ainda carregando, tente novamente em instantes."); return; }
+    var meta = PERIOD_META[kind] || PERIOD_META.hoje;
+    // janelas de prazo por periodo
+    var inPeriod;
+    if (kind === "hoje") {
+      inPeriod = function (t) {
+        if (t.status === "concluida") return t.completedAt && t.completedAt.slice(0, 10) === todayStr;
+        return t.deadline && t.deadline <= todayStr; // vence hoje + atrasadas
+      };
+    } else if (kind === "semana") {
+      var l7 = new Date(todayD); l7.setDate(l7.getDate() + 6);
+      var l7s = l7.toISOString().slice(0, 10);
+      inPeriod = function (t) { return t.status !== "concluida" && t.deadline && t.deadline <= l7s; };
+    } else if (kind === "prox") {
+      // segunda a domingo da semana seguinte
+      var dow = todayD.getDay(); // 0=dom
+      var nextMon = new Date(todayD); nextMon.setDate(nextMon.getDate() + ((8 - (dow === 0 ? 7 : dow)) % 7 || 7));
+      var nextSun = new Date(nextMon); nextSun.setDate(nextSun.getDate() + 6);
+      var nmS = nextMon.toISOString().slice(0, 10), nsS = nextSun.toISOString().slice(0, 10);
+      inPeriod = function (t) { return t.status !== "concluida" && t.deadline && t.deadline >= nmS && t.deadline <= nsS; };
+    } else if (kind === "mes") {
+      var lastD = new Date(todayD.getFullYear(), todayD.getMonth() + 1, 0).toISOString().slice(0, 10);
+      inPeriod = function (t) { return t.status !== "concluida" && t.deadline && t.deadline <= lastD; };
+    } else { // tudo pendente
+      inPeriod = function (t) { return t.status !== "concluida"; };
+    }
+    var rows = cur.filter(inPeriod)
+      .sort(function (a, b) { return (a.deadline || "9999") < (b.deadline || "9999") ? -1 : 1; })
+      .map(function (t) {
+        return {
+          Cliente: t.cliente || "",
+          Processo: t.processo || "",
+          Tarefa: t.title || "",
+          Esteira: estLabel[t._eid] || t._eid || "",
+          Prazo: t.deadline ? t.deadline.split("-").reverse().join("/") : "",
+          Situacao: t.status === "concluida" ? "Concluida" : (t.deadline && t.deadline < todayStr ? "ATRASADA" : "Pendente"),
+          "Mes Ref": t.mes || "",
+          Prioridade: t.priority || ""
+        };
+      });
+    if (!rows.length) { alert("Nenhuma tarefa para " + meta.label + ". \uD83C\uDFD6"); return; }
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(rows), meta.sheet);
+    var nome = ((session && session.name) || "analista").split(" ")[0];
+    window.XLSX.writeFile(wb, "Minhas_Tarefas_" + meta.file + "_" + nome + "_" + todayStr + ".xlsx");
+  }
+  var ringColor = dayPct === 100 && doneToday > 0 ? "#10b981" : overdue > 0 ? "#ef4444" : "#818cf8";
+  var R = 30, CIRC = 2 * Math.PI * R;
+  var firstName = ((session && session.name) || "").split(" ")[0];
+  var hour = new Date().getHours();
+  var hello = hour < 12 ? "Bom dia" : hour < 18 ? "Boa tarde" : "Boa noite";
+  var headline = dayFree ? "Sem prazos para hoje — dia livre para adiantar a competencia."
+    : dayPct === 100 ? "Dia fechado! " + doneToday + " conclu\u00EDda" + (doneToday > 1 ? "s" : "") + " hoje. \uD83C\uDF89"
+    : overdue > 0 ? "Voc\u00EA tem " + overdue + " em atraso — que tal zerar antes das de hoje?"
+    : "Faltam " + dueOpen + " para fechar o dia. Voc\u00EA consegue!";
+
+  var chip = function (bg, col, children, title) {
+    return e("div", { title: title || "", style: { display: "flex", alignItems: "center", gap: 6, background: bg, color: col, borderRadius: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" } }, children);
+  };
+
+  if (collapsed) {
+    return e("div", {
+      style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", marginBottom: 14, borderRadius: 12, background: T.panelBg, border: "1px solid " + T.panelB, cursor: "pointer" },
+      onClick: toggle, title: "Expandir Meu Dia"
+    },
+      e("span", { style: { fontSize: 12, fontWeight: 700, color: T.text } }, "Meu Dia"),
+      e("span", { style: { fontSize: 11.5, color: T.textM } }, doneToday + "/" + dayGoal + " hoje \u00B7 " + monthPct + "% da compet\u00EAncia" + (streak > 1 ? " \u00B7 \uD83D\uDD25 " + streak + " dias" : "")),
+      e("span", { style: { marginLeft: "auto", fontSize: 11, color: T.textD } }, "expandir \u25BE")
+    );
+  }
+
+  return e("div", {
+    style: { position: "relative", overflow: "hidden", display: "flex", alignItems: "center", gap: 18, padding: "16px 20px", marginBottom: 16, borderRadius: 14, background: T.panelBg, border: "1px solid " + T.panelB, flexWrap: "wrap" }
+  },
+    /* anel de progresso do dia */
+    e("div", { style: { position: "relative", width: 76, height: 76, flex: "0 0 auto" } },
+      e("svg", { width: 76, height: 76, viewBox: "0 0 76 76" },
+        e("circle", { cx: 38, cy: 38, r: R, fill: "none", stroke: T.progBg, strokeWidth: 7 }),
+        e("circle", {
+          cx: 38, cy: 38, r: R, fill: "none", stroke: ringColor, strokeWidth: 7, strokeLinecap: "round",
+          strokeDasharray: CIRC, strokeDashoffset: CIRC * (1 - (dayFree ? 1 : dayPct / 100)),
+          transform: "rotate(-90 38 38)", style: { transition: "stroke-dashoffset 0.8s ease, stroke 0.4s" }
+        })
+      ),
+      e("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" } },
+        e("span", { style: { fontSize: 16, fontWeight: 800, color: T.text, lineHeight: 1 } }, dayFree ? "\u2600\uFE0F" : dayPct + "%"),
+        !dayFree && e("span", { style: { fontSize: 9.5, color: T.textM, marginTop: 2 } }, doneToday + "/" + dayGoal)
+      ),
+      celebrate && e("div", { style: { position: "absolute", inset: -8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, animation: "wsPop 0.6s ease" } }, "\uD83C\uDF89")
+    ),
+    /* saudacao + frase do dia + chips */
+    e("div", { style: { flex: 1, minWidth: 230 } },
+      e("div", { style: { fontSize: 13.5, fontWeight: 700, color: T.text, marginBottom: 3 } }, hello + (firstName ? ", " + firstName : "") + "!"),
+      e("div", { style: { fontSize: 12, color: T.textS, marginBottom: 9 } }, headline),
+      e("div", { style: { display: "flex", gap: 7, flexWrap: "wrap" } },
+        streak > 1 && chip("rgba(249,115,22,0.12)", "#f97316", ["\uD83D\uDD25 ", streak, " dias seguidos"], "Dias uteis consecutivos com pelo menos 1 conclusao"),
+        overdue > 0 && chip("rgba(239,68,68,0.12)", "#ef4444", [overdue, " em atraso"], "Tarefas com prazo vencido"),
+        dueTodayOpen > 0 && chip("rgba(129,140,248,0.14)", "#818cf8", [dueTodayOpen, " vencem hoje"]),
+        badges.filter(function (b) { return b.ok; }).map(function (b, i) {
+          return e(React.Fragment, { key: i }, chip("rgba(16,185,129,0.12)", "#10b981", [b.icon + " ", b.label], b.hint));
+        })
+      )
+    ),
+    /* termometro da competencia + proxima acao */
+    e("div", { style: { flex: "0 0 250px", minWidth: 230 } },
+      e("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4 } },
+        e("span", { style: { fontSize: 11, color: T.textM, fontWeight: 600 } }, "Compet\u00EAncia " + curMonth.slice(5) + "/" + curMonth.slice(0, 4)),
+        e("span", { style: { fontSize: 11, fontWeight: 700, color: monthPct >= 100 ? "#10b981" : T.textS } }, monthDone + "/" + monthTotal + " \u00B7 " + monthPct + "%")
+      ),
+      e("div", { style: { height: 6, borderRadius: 99, background: T.progBg, marginBottom: 10 } },
+        e("div", { style: { height: "100%", width: monthPct + "%", borderRadius: 99, background: monthPct >= 100 ? "#10b981" : "linear-gradient(90deg,#818cf8,#6366f1)", transition: "width 0.6s ease" } })
+      ),
+      e("div", { style: { display: "flex", gap: 6, marginBottom: 8 } },
+        e("select", {
+          value: expPeriod, onChange: function (ev) { setExpPeriod(ev.target.value); },
+          style: { flex: 1, minWidth: 0, padding: "4px 6px", fontSize: 10.5, fontWeight: 600, borderRadius: 7, border: "1px solid " + T.cardB, background: T.card, color: T.textS, cursor: "pointer" }
+        },
+          e("option", { value: "hoje" }, "Hoje + atrasadas"),
+          e("option", { value: "semana" }, "Esta semana"),
+          e("option", { value: "prox" }, "Pr\u00F3xima semana"),
+          e("option", { value: "mes" }, "Este m\u00EAs"),
+          e("option", { value: "tudo" }, "Tudo pendente")
+        ),
+        e("button", { onClick: function () { exportMy(expPeriod); }, title: "Gera Excel com suas tarefas do per\u00EDodo escolhido",
+          style: { padding: "4px 12px", fontSize: 10.5, fontWeight: 700, borderRadius: 7, border: "none", background: "#6366f1", color: "#fff", cursor: "pointer", whiteSpace: "nowrap" } }, "\u2B07 Excel")
+      ),
+      nextTask ? e("div", { style: { background: T.card, border: "1px solid " + T.cardB, borderRadius: 10, padding: "8px 11px" } },
+        e("div", { style: { fontSize: 10, color: T.textM, fontWeight: 700, letterSpacing: 0.4, marginBottom: 3 } }, overdue > 0 ? "\u26A0 COMECE POR AQUI" : "PR\u00D3XIMA DA FILA"),
+        e("div", { style: { fontSize: 12, fontWeight: 600, color: T.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, nextTask.title || "(sem titulo)"),
+        e("div", { style: { fontSize: 10.5, color: T.textM, marginTop: 2 } },
+          (nextTask.cliente ? nextTask.cliente + " \u00B7 " : "") + "prazo " + (nextTask.deadline ? nextTask.deadline.split("-").reverse().join("/") : "-"))
+      ) : e("div", { style: { fontSize: 11.5, color: T.textM, fontStyle: "italic" } }, "Nenhuma pendente com prazo. \uD83C\uDFD6\uFE0F")
+    ),
+    e("button", { onClick: toggle, title: "Recolher", style: { position: "absolute", top: 8, right: 10, border: "none", background: "transparent", color: T.textD, cursor: "pointer", fontSize: 11 } }, "recolher \u25B4"),
+    e("style", null, "@keyframes wsPop{0%{transform:scale(0.3);opacity:0}50%{transform:scale(1.5);opacity:1}100%{transform:scale(1);opacity:0}}")
+  );
+}
 
 /* ── DashboardModal (Painel Gerencial) ── */
 var DashboardModal = memo(function DashboardModal(_refDash) {
@@ -8555,7 +8987,10 @@ function App() {
     style: {
       color: T.textD
     }
-  }, "\xB7 ", myGerenteName))), /*#__PURE__*/React.createElement("button", {
+  }, "\xB7 ", myGerenteName))), /*#__PURE__*/React.createElement(NotifBell, {
+    session: session,
+    T: T
+  }), /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
       logAction("login", "Sessao encerrada").finally(function() { setSession(null); });
     },
@@ -8681,7 +9116,14 @@ function App() {
     }, pending));
   }))), tab === "dashboard" && /*#__PURE__*/React.createElement("div", {
     style: { padding: "20px 28px" }
-  }, /*#__PURE__*/React.createElement(DashboardModal, {
+  }, /*#__PURE__*/React.createElement(ExportRiskBar, {
+    tasks: tasks,
+    scope: scope,
+    session: session,
+    isAdmin: isAdmin,
+    isGerente: isGerente,
+    T: T
+  }), /*#__PURE__*/React.createElement(DashboardModal, {
     tasks: tasks,
     scope: scope,
     isGerente: isGerente,
@@ -8694,7 +9136,7 @@ function App() {
       padding: "20px 28px",
       display: tab === "dashboard" ? "none" : "block"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, isWS && /*#__PURE__*/React.createElement(WsDash, { cur: cur, session: session, T: T, esteiras: esteiras }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
