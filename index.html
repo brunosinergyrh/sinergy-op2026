@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.3.3-criado-em-data-hora-2026-07-08";
+window.OP2026_BUILD = "v10.3.4-filtro-credito-2026-07-08";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -593,7 +593,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.3.3-criado-em-data-hora-2026-07-08", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.3.4-filtro-credito-2026-07-08", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -5457,6 +5457,14 @@ function App() {
     _useState84b = _slicedToArray(_useState83b, 2),
     dateTo = _useState84b[0],
     setDateTo = _useState84b[1];
+  var _useState83c = useState(""),
+    _useState84c = _slicedToArray(_useState83c, 2),
+    creditFrom = _useState84c[0],
+    setCreditFrom = _useState84c[1];
+  var _useState83d = useState(""),
+    _useState84d = _slicedToArray(_useState83d, 2),
+    creditTo = _useState84d[0],
+    setCreditTo = _useState84d[1];
   var _useState85 = useState(0),
     _useState86 = _slicedToArray(_useState85, 2),
     sortIdx = _useState86[0],
@@ -7170,6 +7178,8 @@ function App() {
     if (!passFilters) return false;
     if (dateFrom && (!t.deadline || t.deadline < dateFrom)) return false;
     if (dateTo && (!t.deadline || t.deadline > dateTo)) return false;
+    if (creditFrom && (!t.dataCredito || t.dataCredito < creditFrom)) return false;
+    if (creditTo && (!t.dataCredito || t.dataCredito > creditTo)) return false;
     return true;
   });
   var sortOpt = SORT_OPTIONS[sortIdx] || SORT_OPTIONS[0];
@@ -9687,15 +9697,15 @@ function App() {
       color: T.textM
     }
   }, "Filtros salvos no seu usuario."), /*#__PURE__*/React.createElement("button", {
-    onClick: function onClick() { clearFilters(); setDateFrom(""); setDateTo(""); },
+    onClick: function onClick() { clearFilters(); setDateFrom(""); setDateTo(""); setCreditFrom(""); setCreditTo(""); },
     style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
       fontSize: 11,
       padding: "4px 12px",
-      color: activeFC > 0 || dateFrom || dateTo ? "#ef4444" : T.textM,
-      borderColor: activeFC > 0 || dateFrom || dateTo ? "rgba(239,68,68,0.3)" : T.border
+      color: activeFC > 0 || dateFrom || dateTo || creditFrom || creditTo ? "#ef4444" : T.textM,
+      borderColor: activeFC > 0 || dateFrom || dateTo || creditFrom || creditTo ? "rgba(239,68,68,0.3)" : T.border
     })
   }, "Limpar filtros"),
-  /*#__PURE__*/React.createElement("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 } },
+  /*#__PURE__*/React.createElement("div", { style: { marginLeft: "auto", display: "flex", alignItems: "center", flexWrap: "wrap", rowGap: 6, gap: 8 } },
     /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: T.textM } }, "Prazo de"),
     /*#__PURE__*/React.createElement("input", {
       type: "date", value: dateFrom,
@@ -9710,6 +9720,22 @@ function App() {
     }),
     (dateFrom || dateTo) && /*#__PURE__*/React.createElement("button", {
       onClick: function onClick() { setDateFrom(""); setDateTo(""); },
+      style: { background: "none", border: "none", cursor: "pointer", color: "#ef4444", fontSize: 11, padding: "2px 6px" }
+    }, "✕"),
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: T.textM, marginLeft: 6, paddingLeft: 8, borderLeft: "1px solid " + T.border } }, "Crédito de"),
+    /*#__PURE__*/React.createElement("input", {
+      type: "date", value: creditFrom,
+      onChange: function onChange(ev) { return setCreditFrom(ev.target.value); },
+      style: _objectSpread(_objectSpread({}, I), {}, { fontSize: 11, padding: "3px 8px", width: "auto", colorScheme: T.cs })
+    }),
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 11, color: T.textM } }, "até"),
+    /*#__PURE__*/React.createElement("input", {
+      type: "date", value: creditTo,
+      onChange: function onChange(ev) { return setCreditTo(ev.target.value); },
+      style: _objectSpread(_objectSpread({}, I), {}, { fontSize: 11, padding: "3px 8px", width: "auto", colorScheme: T.cs })
+    }),
+    (creditFrom || creditTo) && /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { setCreditFrom(""); setCreditTo(""); },
       style: { background: "none", border: "none", cursor: "pointer", color: "#ef4444", fontSize: 11, padding: "2px 6px" }
     }, "✕")
   ))), showForm && !isWS && has("create_task") && /*#__PURE__*/React.createElement("div", {
