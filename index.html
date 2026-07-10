@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10)</title>
+  <title>SinergyRH – Operação - 2026 (v10.5)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.3.7-busca-respeita-filtros-2026-07-08";
+window.OP2026_BUILD = "v10.5.13-card-largura-calc-2026-07-10";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -593,7 +593,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.3.7-busca-respeita-filtros-2026-07-08", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.5.13-card-largura-calc-2026-07-10", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -837,7 +837,7 @@ var USERS_KEY = "sinergy_auth_v1",
   EST_KEY = "sinergy_esteiras_v1",
   GROUPS_KEY = "sinergy_groups_v1",
   PREFS_KEY = "sinergy_prefs_v1";
-var PERM_KEYS = ["create_task", "edit_task", "edit_own", "complete_task", "delete_task", "bulk_ops", "import", "export", "view_log", "export_log", "manage_users", "manage_groups", "manage_esteiras", "view_trash", "restore_trash", "view_workspace", "view_dashboard"];
+var PERM_KEYS = ["create_task", "edit_task", "edit_own", "complete_task", "delete_task", "bulk_ops", "import", "export", "view_log", "export_log", "manage_users", "manage_groups", "manage_esteiras", "view_trash", "restore_trash", "view_workspace", "view_dashboard", "view_calendar"];
 var ALL_P = Object.fromEntries(PERM_KEYS.map(function (k) {
   return [k, true];
 }));
@@ -870,7 +870,8 @@ var DEFAULT_GROUPS = [{
     view_trash: true,
     restore_trash: true,
     view_workspace: true,
-    view_dashboard: true
+    view_dashboard: true,
+    view_calendar: true
   }),
   esteiras: "all"
 }, {
@@ -888,7 +889,8 @@ var DEFAULT_GROUPS = [{
     view_log: true,
     export_log: true,
     view_workspace: true,
-    view_dashboard: true
+    view_dashboard: true,
+    view_calendar: true
   }),
   esteiras: "all"
 }, {
@@ -899,7 +901,8 @@ var DEFAULT_GROUPS = [{
     create_task: true,
     edit_own: true,
     complete_task: true,
-    view_workspace: true
+    view_workspace: true,
+    view_calendar: true
   }),
   esteiras: "all"
 }];
@@ -4191,6 +4194,325 @@ function ExportRiskBar(props) {
     }, busy ? "Gerando..." : "\u2B07 Exportar em risco + atrasadas")
   );
 }
+
+/* ── CalendarView (Mapa do mes) ──
+   Calendario mensal por Prazo, com escopo igual ao resto do sistema:
+   analista = so as proprias tarefas | coordenador = as da coordenacao |
+   gerente = o time dele | admin = tudo. 100% front-end, sem custo de rede. */
+function CalendarView(props) {
+  var e = React.createElement;
+  var T = props.T, tasks = props.tasks || {}, session = props.session;
+  var isAdminP = !!props.isAdmin, isGerenteP = !!props.isGerente, isCoordP = !!props.isCoord;
+  var scope = props.scope;
+  var myName = (session && session.name) || "";
+
+  var _m = React.useState(function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); });
+  var monthKey = _m[0], setMonthKey = _m[1];
+  var _sel = React.useState(null); var selDay = _sel[0], setSelDay = _sel[1];
+  var _selAn = React.useState("__all__"); var selAnalista = _selAn[0], setSelAnalista = _selAn[1];
+  var _selCo = React.useState("__all__"); var selCoord = _selCo[0], setSelCoord = _selCo[1];
+
+  var all = [];
+  Object.keys(tasks).forEach(function (eid) {
+    (tasks[eid] || []).forEach(function (t) { all.push(t._eid ? t : Object.assign({}, t, { _eid: eid })); });
+  });
+  var scopedBase = isAdminP ? all
+    : isGerenteP ? all.filter(function (t) { return t.gerenteId === scope; })
+    : isCoordP ? all.filter(function (t) { return norm(t.coordenador || "") === norm(myName); })
+    : all.filter(function (t) { return respArr(t).indexOf(myName) >= 0; });
+
+  // admin/gerente: drill-down em cascata Coordenação -> Analista. Coordenador: so Analista (da propria coordenacao).
+  var canDrill = isAdminP || isGerenteP;
+  var coordOpts = canDrill ? distinct(scopedBase.map(function (t) { return t.coordenador; }).filter(Boolean)).sort() : [];
+  var afterCoord = (canDrill && selCoord !== "__all__")
+    ? scopedBase.filter(function (t) { return norm(t.coordenador || "") === norm(selCoord); })
+    : scopedBase;
+  var analistaOpts = (canDrill || isCoordP)
+    ? distinct(afterCoord.reduce(function (acc, t) { return acc.concat(respArr(t)); }, [])).sort()
+    : [];
+  var scoped = (canDrill || isCoordP) && selAnalista !== "__all__"
+    ? afterCoord.filter(function (t) { return respArr(t).indexOf(selAnalista) >= 0; })
+    : afterCoord;
+
+  var byDay = {};
+  scoped.forEach(function (t) {
+    if (!t.deadline || t.deadline.slice(0, 7) !== monthKey) return;
+    var d = t.deadline.slice(8, 10);
+    if (!byDay[d]) byDay[d] = { total: 0, atrasadas: 0, concluidas: 0 };
+    byDay[d].total++;
+    if (t.status === "concluida") byDay[d].concluidas++;
+    else if (t.deadline < new Date().toISOString().slice(0, 10)) byDay[d].atrasadas++;
+  });
+
+  var _yy = monthKey.split("-").map(Number), yy = _yy[0], mm = _yy[1];
+  var firstDow = (new Date(yy, mm - 1, 1).getDay() + 6) % 7; // 0=segunda
+  var daysInMonth = new Date(yy, mm, 0).getDate();
+  var todayStr = new Date().toISOString().slice(0, 10);
+  var monthNames = ["Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+
+  function shiftMonth(delta) {
+    var d = new Date(yy, mm - 1 + delta, 1);
+    setMonthKey(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"));
+    setSelDay(null);
+  }
+
+  var cells = [];
+  for (var i = 0; i < firstDow; i++) cells.push(null);
+  for (var day = 1; day <= daysInMonth; day++) cells.push(day);
+
+  var dayStr = function (d) { return monthKey + "-" + String(d).padStart(2, "0"); };
+  var selList = selDay ? scoped.filter(function (t) { return t.deadline === dayStr(selDay); })
+    .sort(function (a, b) { return (a.title || "").localeCompare(b.title || ""); }) : [];
+
+  var WK = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
+
+  return e("div", { style: { marginBottom: 18 } },
+    e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+      e("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+        e("button", { onClick: function () { shiftMonth(-1); }, style: { border: "1px solid " + T.border, background: "transparent", color: T.textM, borderRadius: 8, width: 28, height: 28, cursor: "pointer" } }, "‹"),
+        e("span", { style: { fontSize: 15, fontWeight: 700, color: T.text, minWidth: 150, textAlign: "center" } }, monthNames[mm - 1] + " " + yy),
+        e("button", { onClick: function () { shiftMonth(1); }, style: { border: "1px solid " + T.border, background: "transparent", color: T.textM, borderRadius: 8, width: 28, height: 28, cursor: "pointer" } }, "›")
+      ),
+      e("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        canDrill && coordOpts.length > 0 && e("select", {
+          value: selCoord,
+          onChange: function (ev) { setSelCoord(ev.target.value); setSelAnalista("__all__"); setSelDay(null); },
+          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none" }
+        },
+          e("option", { value: "__all__" }, "Todas as coordenações"),
+          coordOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
+        ),
+        (canDrill || isCoordP) && analistaOpts.length > 0 && e("select", {
+          value: selAnalista,
+          onChange: function (ev) { setSelAnalista(ev.target.value); setSelDay(null); },
+          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none" }
+        },
+          e("option", { value: "__all__" }, isCoordP ? "Toda a coordenação" : "Todos os analistas"),
+          analistaOpts.map(function (a) { return e("option", { key: a, value: a }, a); })
+        ),
+        e("span", { style: { fontSize: 11, color: T.textM } },
+          selAnalista !== "__all__" ? selAnalista
+          : selCoord !== "__all__" ? "Coordenação: " + selCoord
+          : isAdminP ? "Visão geral" : isGerenteP ? "Meu time" : isCoordP ? "Minha coordenação" : "Minhas tarefas")
+      )
+    ),
+    e("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 4 } },
+      WK.map(function (w) { return e("span", { key: w, style: { fontSize: 10.5, color: T.textM, textAlign: "center", fontWeight: 600 } }, w); })
+    ),
+    e("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 } },
+      cells.map(function (d, idx) {
+        if (!d) return e("div", { key: "e" + idx });
+        var ds = dayStr(d), info = byDay[String(d).padStart(2, "0")];
+        var isToday = ds === todayStr, isSel = selDay === d;
+        var bg = T.card, border = T.cardB, txt = T.textM;
+        if (info) {
+          if (info.atrasadas > 0) { bg = "rgba(239,68,68,0.10)"; border = "rgba(239,68,68,0.4)"; txt = "#ef4444"; }
+          else if (info.concluidas === info.total) { bg = "rgba(16,185,129,0.10)"; border = "rgba(16,185,129,0.4)"; txt = "#10b981"; }
+          else if (info.total >= 5) { bg = "rgba(245,158,11,0.10)"; border = "rgba(245,158,11,0.4)"; txt = "#f59e0b"; }
+          else { txt = T.textS; }
+        }
+        return e("button", {
+          key: d, onClick: function () { setSelDay(isSel ? null : d); },
+          style: {
+            minHeight: 54, borderRadius: 8, padding: "5px 6px", textAlign: "left", cursor: "pointer",
+            background: bg, border: (isSel ? "2px solid #818cf8" : isToday ? "2px solid #6366f1" : "1px solid " + border),
+            display: "flex", flexDirection: "column", gap: 3
+          }
+        },
+          e("span", { style: { fontSize: 11, fontWeight: isToday ? 800 : 600, color: isToday ? "#818cf8" : T.textM } }, d),
+          info && e("span", { style: { fontSize: 10.5, fontWeight: 700, color: txt } },
+            info.atrasadas > 0 ? info.atrasadas + " atrasada" + (info.atrasadas > 1 ? "s" : "") : info.total + " tarefa" + (info.total > 1 ? "s" : ""))
+        );
+      })
+    ),
+    e("div", { style: { display: "flex", gap: 16, marginTop: 10, fontSize: 11, color: T.textM } },
+      e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#ef4444", marginRight: 5 } }), "atrasadas"),
+      e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#f59e0b", marginRight: 5 } }), "concentracao alta (5+)"),
+      e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#10b981", marginRight: 5 } }), "dia concluido")
+    ),
+    selDay && e("div", { style: { marginTop: 16, background: T.panelBg, border: "1px solid " + T.panelB, borderRadius: 12, padding: "12px 16px" } },
+      e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 } },
+        e("div", { style: { fontSize: 12, fontWeight: 700, color: T.text } },
+          String(selDay).padStart(2, "0") + "/" + String(mm).padStart(2, "0") + " · " + selList.length + " tarefa" + (selList.length !== 1 ? "s" : "")),
+        selList.length > 0 && e("button", {
+          onClick: function () {
+            if (!window.XLSX) return;
+            var estLbl = {};
+            (props.esteiras || []).forEach(function (es) { estLbl[es.id] = es.label; });
+            var _PRI = { alta: "Alta", media: "Média", baixa: "Baixa" };
+            var rows = selList.map(function (t) {
+              var resp = Array.isArray(t.responsibles) ? t.responsibles.join(", ") : (t.responsibles || "");
+              var late = t.status !== "concluida" && t.deadline < todayStr;
+              return {
+                "Esteira": estLbl[t._eid] || t._eid || "",
+                "Codigo": t.code || "",
+                "Titulo": t.title || "",
+                "Cliente": t.cliente || "",
+                "Processo": t.processo || "",
+                "Responsaveis": resp,
+                "Coordenador": t.coordenador || "",
+                "Gerente": t.gerente || "",
+                "Prazo": t.deadline ? t.deadline.split("-").reverse().join("/") : "",
+                "Data Credito": t.dataCredito ? t.dataCredito.split("-").reverse().join("/") : "",
+                "Situacao": t.situacao || "",
+                "Prioridade": _PRI[t.priority] || t.priority || "",
+                "Status": t.status === "concluida" ? "Concluída" : late ? "Atrasada" : "Pendente"
+              };
+            });
+            var wb = window.XLSX.utils.book_new();
+            window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(rows), "Tarefas");
+            window.XLSX.writeFile(wb, "Calendario_" + dayStr(selDay).split("-").reverse().join("-") + ".xlsx");
+          },
+          style: { padding: "4px 12px", fontSize: 11, fontWeight: 700, borderRadius: 7, border: "1px solid rgba(16,185,129,0.35)", background: "rgba(16,185,129,0.08)", color: "#10b981", cursor: "pointer" }
+        }, "\u2B07 Excel")),
+      selList.length === 0
+        ? e("div", { style: { fontSize: 11.5, color: T.textM, fontStyle: "italic" } }, "Nenhuma tarefa neste dia.")
+        : selList.map(function (t) {
+            var late = t.status !== "concluida" && t.deadline < todayStr;
+            var estLabel = "";
+            (props.esteiras || []).some(function (es) { if (es.id === t._eid) { estLabel = es.label; return true; } return false; });
+            var resp = Array.isArray(t.responsibles) ? t.responsibles.join(", ") : (t.responsibles || "");
+            var detalhes = [estLabel, resp, t.situacao, t.processo].filter(Boolean).join(" \u00B7 ");
+            return e("div", { key: t._eid + t.id, style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "7px 0", borderTop: "1px solid " + T.borderL, fontSize: 12 } },
+              e("div", { style: { minWidth: 0, flex: 1 } },
+                e("div", { style: { color: T.text } }, (t.cliente ? t.cliente + " \u00B7 " : "") + (t.title || "")),
+                detalhes && e("div", { style: { color: T.textM, fontSize: 10.5, marginTop: 2 } }, detalhes)),
+              e("div", { style: { textAlign: "right", flexShrink: 0 } },
+                e("div", { style: { color: t.status === "concluida" ? "#10b981" : late ? "#ef4444" : T.textM, fontWeight: 600, fontSize: 11 } },
+                  t.status === "concluida" ? "Concluída" : late ? "Atrasada" : "Pendente"),
+                t.priority === "alta" && t.status !== "concluida" && e("div", { style: { color: "#ef4444", fontSize: 9.5, fontWeight: 700, marginTop: 1 } }, "PRIORIDADE ALTA")));
+          })
+    )
+  );
+}
+
+
+/* ── HojePorAnalistaChart: carga do dia por analista (Gerencial) ──
+   Escopo igual ao resto do painel: admin=tudo | gerente=time dele | coordenadora=so a dela.
+   Conta, por analista: atrasadas (pendente, prazo < hoje), vencem hoje (pendente, prazo = hoje),
+   concluidas hoje (status concluida, prazo = hoje). Bar comprimento proporcional ao maior total.
+   Excel: aba Resumo (por analista) + aba Tarefas (todas as tarefas que compoem os totais). */
+function HojePorAnalistaChart(props) {
+  var e = React.createElement;
+  var T = props.T, tasks = props.tasks || {}, scope = props.scope;
+  var isAdminP = !!props.isAdmin, isGerenteP = !!props.isGerente;
+  var myName = (props.session && props.session.name) || "";
+  var _exp = React.useState(false); var expanded = _exp[0], setExpanded = _exp[1];
+  var _bz = React.useState(false); var busy = _bz[0], setBusy = _bz[1];
+  var estLabel = {};
+  (props.esteiras || []).forEach(function (es) { estLabel[es.id] = es.label || es.name || es.id; });
+
+  var all = [];
+  Object.keys(tasks).forEach(function (eid) { (tasks[eid] || []).forEach(function (t) { all.push(t._eid ? t : Object.assign({}, t, { _eid: eid })); }); });
+  var scoped = isAdminP ? all
+    : isGerenteP ? all.filter(function (t) { return t.gerenteId === scope; })
+    : all.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
+
+  var todayStr = new Date().toISOString().slice(0, 10);
+  var relevantes = []; // todas as tarefas que entram em algum contador (para o Excel)
+  var porAnalista = {};
+  scoped.forEach(function (t) {
+    if (!t.deadline) return;
+    var isHoje = t.deadline === todayStr;
+    var isAtrasada = t.status !== "concluida" && t.deadline < todayStr;
+    if (!isHoje && !isAtrasada) return;
+    var categoria = isAtrasada ? "Atrasada" : t.status === "concluida" ? "Concluída hoje" : "Vence hoje";
+    relevantes.push({ t: t, categoria: categoria });
+    respArr(t).forEach(function (nome) {
+      if (!nome) return;
+      if (!porAnalista[nome]) porAnalista[nome] = { atrasadas: 0, hojePendente: 0, hojeConcluida: 0 };
+      if (isAtrasada) porAnalista[nome].atrasadas++;
+      else if (t.status === "concluida") porAnalista[nome].hojeConcluida++;
+      else porAnalista[nome].hojePendente++;
+    });
+  });
+
+  var rows = Object.keys(porAnalista).map(function (nome) {
+    var c = porAnalista[nome];
+    return { nome: nome, atrasadas: c.atrasadas, hojePendente: c.hojePendente, hojeConcluida: c.hojeConcluida, total: c.atrasadas + c.hojePendente + c.hojeConcluida };
+  }).sort(function (a, b) { return b.total - a.total; });
+
+  var totAtrasadas = rows.reduce(function (s, r) { return s + r.atrasadas; }, 0);
+  var totHoje = rows.reduce(function (s, r) { return s + r.hojePendente; }, 0);
+  var totConcl = rows.reduce(function (s, r) { return s + r.hojeConcluida; }, 0);
+  var maxTotal = Math.max(1, rows.reduce(function (m, r) { return Math.max(m, r.total); }, 0));
+  var LIMIT = 8;
+  var visRows = expanded ? rows : rows.slice(0, LIMIT);
+  var hojeFmt = new Date().toLocaleDateString("pt-BR", { day: "2-digit", month: "long" });
+
+  function doExport() {
+    if (!window.XLSX) { alert("Biblioteca Excel ainda carregando, tente novamente em instantes."); return; }
+    setBusy(true);
+    try {
+      var wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(
+        rows.map(function (r) { return { Analista: r.nome, Atrasadas: r.atrasadas, "Vencem hoje": r.hojePendente, "Concluídas hoje": r.hojeConcluida, Total: r.total }; })
+      ), "Resumo por analista");
+      var rowFn = function (item) {
+        var t = item.t;
+        return {
+          Categoria: item.categoria,
+          Cliente: t.cliente || "", Processo: t.processo || "", Tarefa: t.title || "",
+          Esteira: estLabel[t._eid] || t._eid || "",
+          Situacao: t.situacao || "",
+          Responsavel: respStr(t), Coordenador: t.coordenador || "",
+          Prazo: t.deadline ? t.deadline.split("-").reverse().join("/") : "",
+          Status: t.status === "concluida" ? "Concluída" : "Pendente"
+        };
+      };
+      var ordem = { "Atrasada": 0, "Vence hoje": 1, "Concluída hoje": 2 };
+      var sorted = relevantes.slice().sort(function (a, b) { return (ordem[a.categoria] - ordem[b.categoria]) || (a.t.deadline || "").localeCompare(b.t.deadline || ""); });
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(sorted.map(rowFn)), "Tarefas");
+      window.XLSX.writeFile(wb, "Hoje_Por_Analista_" + todayStr + ".xlsx");
+    } catch (e2) { alert("Erro ao exportar: " + String(e2 && (e2.message || e2)).slice(0, 80)); }
+    setBusy(false);
+  }
+
+  return e("div", { style: { background: T.card, border: "1px solid " + T.cardB, borderRadius: 14, padding: "16px 18px", marginTop: 16, width: "calc(40% - 8px)", minWidth: 654, boxSizing: "border-box" } },
+    e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4, flexWrap: "wrap", gap: 8 } },
+      e("div", null,
+        e("div", { style: { fontSize: 13, fontWeight: 700, color: T.text } }, "Hoje por analista"),
+        e("div", { style: { fontSize: 11, color: T.textM, textTransform: "capitalize" } }, hojeFmt)),
+      e("div", { style: { display: "flex", alignItems: "center", gap: 12, fontSize: 11 } },
+        e("span", { style: { color: "#ef4444", fontWeight: 700 } }, totAtrasadas + " atrasada" + (totAtrasadas !== 1 ? "s" : "")),
+        e("span", { style: { color: "#f97316", fontWeight: 700 } }, totHoje + " vence" + (totHoje !== 1 ? "m" : "") + " hoje"),
+        e("span", { style: { color: "#10b981", fontWeight: 700 } }, totConcl + " conclu\u00EDda" + (totConcl !== 1 ? "s" : "")),
+        rows.length > 0 && e("button", {
+          onClick: doExport, disabled: busy,
+          title: "Excel com abas: Resumo por analista e Tarefas (as que compoem os totais acima)",
+          style: { border: "1px solid " + T.border, background: "transparent", color: T.textS, fontWeight: 600, fontSize: 11, borderRadius: 7, padding: "4px 11px", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }
+        }, busy ? "Gerando..." : "\u2B07 Excel"))
+    ),
+    rows.length === 0
+      ? e("div", { style: { fontSize: 12, color: T.textM, fontStyle: "italic", padding: "10px 0" } }, "Nenhuma tarefa atrasada ou com prazo hoje.")
+      : e("div", { style: { marginTop: 10 } },
+          visRows.map(function (r) {
+            var wAtr = r.atrasadas / maxTotal * 100;
+            var wHoj = r.hojePendente / maxTotal * 100;
+            var wCon = r.hojeConcluida / maxTotal * 100;
+            return e("div", { key: r.nome, style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 } },
+              e("div", { style: { width: 130, flexShrink: 0, fontSize: 11.5, color: T.textS, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.nome),
+              e("div", { style: { flex: 1, height: 14, background: T.panelBg, borderRadius: 4, overflow: "hidden", display: "flex" } },
+                r.atrasadas > 0 && e("div", { style: { width: wAtr + "%", height: "100%", background: "#ef4444" }, title: r.atrasadas + " atrasada(s)" }),
+                r.hojePendente > 0 && e("div", { style: { width: wHoj + "%", height: "100%", background: "#f97316" }, title: r.hojePendente + " vence(m) hoje" }),
+                r.hojeConcluida > 0 && e("div", { style: { width: wCon + "%", height: "100%", background: "#10b981" }, title: r.hojeConcluida + " conclu\u00EDda(s)" })
+              ),
+              e("div", { style: { width: 34, flexShrink: 0, textAlign: "right", fontSize: 11.5, fontWeight: 700, color: T.text } }, r.total)
+            );
+          }),
+          rows.length > LIMIT && e("button", {
+            onClick: function () { setExpanded(!expanded); },
+            style: { marginTop: 4, border: "none", background: "transparent", color: "#6366f1", fontSize: 11, fontWeight: 600, cursor: "pointer", padding: 0 }
+          }, expanded ? "Mostrar menos" : "Mostrar todos (" + rows.length + ")")
+        ),
+    e("div", { style: { display: "flex", gap: 14, marginTop: 12, paddingTop: 10, borderTop: "1px solid " + T.borderL, fontSize: 10.5, color: T.textM } },
+      e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "#ef4444", marginRight: 5 } }), "atrasadas"),
+      e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "#f97316", marginRight: 5 } }), "vencem hoje"),
+      e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 2, background: "#10b981", marginRight: 5 } }), "conclu\u00EDdas hoje")
+    )
+  );
+}
+
 
 /* ── WsDash (Meu Dia — painel motivacional da Minha Area, v10.2) ──
    Calculado 100% no navegador a partir das tarefas ja carregadas (custo zero de rede).
@@ -9094,6 +9416,32 @@ function App() {
       alignSelf: "stretch",
       margin: "0 6px"
     }
+  }), has("view_calendar") && /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() {
+      return switchTab("calendar");
+    },
+    style: {
+      padding: "9px 15px",
+      borderRadius: "8px 8px 0 0",
+      border: "none",
+      cursor: "pointer",
+      fontSize: 12.5,
+      fontWeight: tab === "calendar" ? 600 : 500,
+      whiteSpace: "nowrap",
+      background: tab === "calendar" ? "rgba(99,102,241,0.12)" : "transparent",
+      color: tab === "calendar" ? "#6366f1" : T.textM,
+      borderBottom: "2px solid ".concat(tab === "calendar" ? "#6366f1" : "transparent"),
+      display: "flex",
+      alignItems: "center",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Calendar, { size: 13 }), "Calendário"), has("view_calendar") && /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 1,
+      background: T.borderL,
+      alignSelf: "stretch",
+      margin: "0 6px"
+    }
   }), sortedEsts.map(function (e) {
     var pending = (tasks[e.id] || []).filter(function (t) {
       return visTask(t) && t.status === "pendente";
@@ -9147,10 +9495,29 @@ function App() {
     esteiras: esteiras,
     inline: true,
     T: T
+  }), /*#__PURE__*/React.createElement(HojePorAnalistaChart, {
+    tasks: tasks,
+    scope: scope,
+    session: session,
+    isAdmin: isAdmin,
+    isGerente: isGerente,
+    esteiras: esteiras,
+    T: T
+  })), tab === "calendar" && /*#__PURE__*/React.createElement("div", {
+    style: { padding: "20px 28px" }
+  }, /*#__PURE__*/React.createElement(CalendarView, {
+    tasks: tasks,
+    scope: scope,
+    session: session,
+    isAdmin: isAdmin,
+    isGerente: isGerente,
+    isCoord: isCoordUser(session, groups),
+    esteiras: esteiras,
+    T: T
   })), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "20px 28px",
-      display: tab === "dashboard" ? "none" : "block"
+      display: (tab === "dashboard" || tab === "calendar") ? "none" : "block"
     }
   }, isWS && /*#__PURE__*/React.createElement(WsDash, { cur: cur, session: session, T: T, esteiras: esteiras }), /*#__PURE__*/React.createElement("div", {
     style: {
