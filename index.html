@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.4)</title>
+  <title>SinergyRH – Operação - 2026 (v10.4.4)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.4.3-ordem-atrasadas-2026-07-11";
+window.OP2026_BUILD = "v10.4.4-fix-race-condition-2026-07-13";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -7572,6 +7572,20 @@ function App() {
             old = (tasksRef.current[tab] || []).find(function (t) {
               return t.id === editId;
             });
+            // [v10.4.4] Se não achou no tab atual, busca em todas as esteiras (race condition)
+            if (!old) {
+              var _allEids = Object.keys(tasksRef.current);
+              for (var _ei = 0; _ei < _allEids.length; _ei++) {
+                var _found2 = (tasksRef.current[_allEids[_ei]] || []).find(function(t) { return t.id === editId; });
+                if (_found2) { old = _found2; break; }
+              }
+            }
+            if (!old) {
+              setSaveError('Conflito: esta tarefa foi modificada ou removida por outro usuário. Feche e reabra para ver o estado atual.');
+              setEditId(null);
+              setShowForm(false);
+              return _context37.a(2);
+            }
             if (!(old && !canTaskEdit(old))) {
               _context37.n = 2;
               break;
@@ -7764,6 +7778,14 @@ function App() {
             task = (tasksRef.current[eid] || []).find(function (t) {
               return t.id === id;
             });
+            // [v10.4.4] Se não achou no eid informado, busca em todas as esteiras
+            if (!task) {
+              var _delEids = Object.keys(tasksRef.current);
+              for (var _di = 0; _di < _delEids.length; _di++) {
+                var _df = (tasksRef.current[_delEids[_di]] || []).find(function(t) { return t.id === id; });
+                if (_df) { task = _df; eid = _delEids[_di]; break; }
+              }
+            }
             if (task) {
               _context39.n = 3;
               break;
