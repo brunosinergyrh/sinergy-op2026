@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.4.2-filtro-gerente-2026-07-11";
+window.OP2026_BUILD = "v10.4.3-ordem-atrasadas-2026-07-11";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -593,7 +593,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.4.2-filtro-gerente-2026-07-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.4.3-ordem-atrasadas-2026-07-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4267,7 +4267,10 @@ function CalendarView(props) {
 
   var dayStr = function (d) { return monthKey + "-" + String(d).padStart(2, "0"); };
   var selList = selDay ? scoped.filter(function (t) { return t.deadline === dayStr(selDay); })
-    .sort(function (a, b) { return (a.title || "").localeCompare(b.title || ""); }) : [];
+    .sort(function (a, b) {
+      var rank = function (t) { return t.status !== "concluida" && t.deadline < todayStr ? 0 : t.status === "concluida" ? 2 : 1; };
+      return rank(a) - rank(b) || (a.title || "").localeCompare(b.title || "");
+    }) : [];
 
   var WK = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 
