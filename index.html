@@ -179,7 +179,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.4.5-excel-esocial-2026-07-13";
+window.OP2026_BUILD = "v10.4.7-2026-07-14";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -593,7 +593,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.4.5-excel-esocial-2026-07-13", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.4.7-2026-07-14", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4527,7 +4527,7 @@ function HojePorAnalistaChart(props) {
     setBusy(false);
   }
 
-  return e("div", { style: { background: T.card, border: "1px solid " + T.cardB, borderRadius: 14, padding: "16px 18px", marginTop: 16, width: "calc(40% - 8px)", minWidth: 654, boxSizing: "border-box" } },
+  return e("div", { style: { background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: 16, gridColumn: "span 2", minWidth: 0, boxSizing: "border-box" } },
     e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4, flexWrap: "wrap", gap: 8 } },
       e("div", null,
         e("div", { style: { fontSize: 13, fontWeight: 700, color: T.text } }, "Hoje por analista"),
@@ -4773,6 +4773,53 @@ function WsDash(props) {
         })
       )
     ),
+    /* mini-donut do dia: mesma leitura do anel, em formato de pizza (atrasada/vence hoje/concluida) */
+    (function () {
+      var miniData = [
+        { label: "Atrasada", count: overdue, color: "#ef4444" },
+        { label: "Vence hoje", count: dueTodayOpen, color: "#f97316" },
+        { label: "Concluída hoje", count: doneToday, color: "#10b981" }
+      ].filter(function (d) { return d.count > 0; });
+      var miniTotal = overdue + dueTodayOpen + doneToday;
+      if (!miniTotal) return null;
+      var size = 92, cx = size / 2, cy = size / 2, R = 38, r = 22;
+      var paths = [];
+      if (miniData.length === 1) {
+        paths.push(e("circle", { key: "o", cx: cx, cy: cy, r: R, fill: miniData[0].color }));
+        paths.push(e("circle", { key: "i", cx: cx, cy: cy, r: r, fill: T.card || "#fff" }));
+      } else {
+        var angle = -Math.PI / 2;
+        miniData.forEach(function (d, i) {
+          var slice = (d.count / miniTotal) * 2 * Math.PI;
+          var end = angle + slice;
+          var lg = slice > Math.PI ? 1 : 0;
+          var x1 = cx + R * Math.cos(angle), y1 = cy + R * Math.sin(angle);
+          var x2 = cx + R * Math.cos(end), y2 = cy + R * Math.sin(end);
+          var x3 = cx + r * Math.cos(end), y3 = cy + r * Math.sin(end);
+          var x4 = cx + r * Math.cos(angle), y4 = cy + r * Math.sin(angle);
+          paths.push(e("path", { key: i, d: "M " + x1 + " " + y1 + " A " + R + " " + R + " 0 " + lg + " 1 " + x2 + " " + y2 + " L " + x3 + " " + y3 + " A " + r + " " + r + " 0 " + lg + " 0 " + x4 + " " + y4 + " Z", fill: d.color }));
+          angle = end;
+        });
+      }
+      return e("div", { style: { flex: "0 0 auto", display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", borderRadius: 12, background: T.card, border: "1px solid " + T.cardB } },
+        e("div", { style: { position: "relative", flexShrink: 0 } },
+          e("svg", { width: size, height: size, viewBox: "0 0 " + size + " " + size }, paths),
+          e("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" } },
+            e("span", { style: { fontSize: 18, fontWeight: 800, color: T.text, lineHeight: 1 } }, miniTotal),
+            e("span", { style: { fontSize: 8.5, color: T.textD, textTransform: "uppercase" } }, "hoje")
+          )
+        ),
+        e("div", { style: { display: "flex", flexDirection: "column", gap: 6, minWidth: 118 } },
+          miniData.map(function (d) {
+            var pct = Math.round(d.count / miniTotal * 100);
+            return e("div", { key: d.label, style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.textS, whiteSpace: "nowrap" } },
+              e("span", { style: { width: 9, height: 9, borderRadius: 2, background: d.color, flexShrink: 0 } }),
+              e("span", { style: { flex: 1 } }, d.label),
+              e("span", { style: { fontWeight: 700, color: d.color } }, d.count + " (" + pct + "%)"));
+          })
+        )
+      );
+    })(),
     /* termometro da competencia + proxima acao */
     e("div", { style: { flex: "0 0 250px", minWidth: 230 } },
       e("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4 } },
@@ -4953,6 +5000,25 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     .map(function (k) { return { label: k, count: esocSitMap[k], color: ESOC_COLORS[k] }; });
   var esocTotal = esocialView.length;
 
+  // Sem Recibo eSocial: dois processos novos, agrupados por cliente (Rescisão e Admissão)
+  function buildSemRecibo(match) {
+    var map = {};
+    view.forEach(function (t) {
+      if (done_(t)) return; // concluída não conta: o card mede pendência em aberto, não histórico
+      if (norm(t.processo || "").indexOf(match) === -1) return;
+      var c = t.cliente || "(sem cliente)";
+      if (!map[c]) map[c] = { cliente: c, total: 0, atrasadas: 0 };
+      map[c].total++;
+      if (t.deadline && t.deadline < todayStr) map[c].atrasadas++;
+    });
+    return Object.keys(map).map(function (k) { return map[k]; })
+      .sort(function (a, b) { return b.total - a.total || a.cliente.localeCompare(b.cliente); });
+  }
+  var semReciboRescisao = buildSemRecibo("rescisao sem recibo");
+  var semReciboAdmissao = buildSemRecibo("admissao sem recibo");
+  var semReciboTotal = semReciboRescisao.reduce(function (s, r) { return s + r.total; }, 0)
+    + semReciboAdmissao.reduce(function (s, r) { return s + r.total; }, 0);
+
   // KPIs
   var total = view.length, done = 0, overdue = 0, dueWeek = 0;
   view.forEach(function (t) {
@@ -5114,6 +5180,41 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         e("div", { style: { width: w + "%", height: "100%", background: r.overdue > 0 ? "#ef4444" : "#6366f1" } })
       )
     );
+  }
+  function semReciboRow(r) {
+    var maxT = Math.max.apply(null, semReciboRescisao.concat(semReciboAdmissao).map(function (x) { return x.total; }).concat([1]));
+    var w = Math.max(8, Math.round(r.total / maxT * 100));
+    return e("div", { key: r.cliente, style: { marginBottom: 9 } },
+      e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3, gap: 8 } },
+        e("span", { style: { color: T.textS, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r.cliente),
+        e("span", { style: { color: r.atrasadas > 0 ? "#ef4444" : T.textM, flexShrink: 0, fontWeight: r.atrasadas > 0 ? 600 : 400 } },
+          r.total + (r.atrasadas > 0 ? " · " + r.atrasadas + " atrasada" + (r.atrasadas > 1 ? "s" : "") : ""))
+      ),
+      e("div", { style: { height: 6, background: T.border, borderRadius: 4, overflow: "hidden" } },
+        e("div", { style: { width: w + "%", height: "100%", background: r.atrasadas > 0 ? "#ef4444" : "#6366f1" } })
+      )
+    );
+  }
+  function exportSemRecibo() {
+    if (!window.XLSX || !semReciboTotal) return;
+    var rowFn = function (t, tipo) {
+      var situ = t.deadline && t.deadline < todayStr ? "Atrasada" : "Pendente";
+      return {
+        "Tipo": tipo, "Cliente": t.cliente || "", "Código": t.code || "", "Tarefa": t.title || "",
+        "Coordenador": t.coordenador || "", "Responsáveis": respsOf(t).join(", "),
+        "Prazo": t.deadline ? fmtDate(t.deadline) : "", "Status": situ
+      };
+    };
+    var rescisaoTasks = view.filter(function (t) { return !done_(t) && norm(t.processo || "").indexOf("rescisao sem recibo") !== -1; });
+    var admissaoTasks = view.filter(function (t) { return !done_(t) && norm(t.processo || "").indexOf("admissao sem recibo") !== -1; });
+    var ordem = { "Atrasada": 0, "Pendente": 1 };
+    var byStatusThenCliente = function (a, b) { return (ordem[a.Status] - ordem[b.Status]) || a.Cliente.localeCompare(b.Cliente); };
+    var rows = rescisaoTasks.map(function (t) { return rowFn(t, "Rescisão sem Recibo"); })
+      .concat(admissaoTasks.map(function (t) { return rowFn(t, "Admissão sem Recibo"); }))
+      .sort(byStatusThenCliente);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(rows), "Sem Recibo eSocial");
+    window.XLSX.writeFile(wb, "Sem_Recibo_eSocial_" + new Date().toISOString().slice(0, 10) + ".xlsx");
   }
   function exportEsocial() {
     if (!window.XLSX || !esocialView.length) return;
@@ -5448,6 +5549,21 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soon.length + ")"),
                 soon.length ? soon.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
               )),
+            // Sem Recibo eSocial: Rescisão e Admissão sem recibo, por cliente
+            section("Sem Recibo eSocial", Inbox,
+              e("div", { style: scrollBox },
+                e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 4px" } },
+                  e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1" } }, "Rescisão sem Recibo (" + semReciboRescisao.reduce(function (s, r) { return s + r.total; }, 0) + ")")
+                ),
+                semReciboRescisao.length ? semReciboRescisao.map(semReciboRow) : emptyMsg("Nenhuma pendência."),
+                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1", margin: "12px 0 4px" } }, "Admissão sem Recibo (" + semReciboAdmissao.reduce(function (s, r) { return s + r.total; }, 0) + ")"),
+                semReciboAdmissao.length ? semReciboAdmissao.map(semReciboRow) : emptyMsg("Nenhuma pendência.")
+              ),
+              semReciboTotal > 0 ? e("button", {
+                onClick: exportSemRecibo,
+                title: "Excel com clientes e tarefas dos dois processos, por status",
+                style: { fontSize: 10.5, fontWeight: 700, border: "1px solid rgba(16,185,129,0.35)", background: "rgba(16,185,129,0.08)", color: "#10b981", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }
+              }, "\u2B07 Excel") : (semReciboTotal + " tarefa" + (semReciboTotal !== 1 ? "s" : ""))),
             // Analista
             section("Carga por analista", Users,
               byAnalista.length ? e("div", { style: scrollBox }, byAnalista.map(analistaRow)) : emptyMsg("Sem analistas atribuídos."),
@@ -5508,7 +5624,9 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
             section("Última Ação", Clock,
               lastAccLoading ? emptyMsg("Carregando…")
                 : (lastAccess.length ? e("div", { style: scrollBox }, lastAccess.map(lastAccessItem)) : emptyMsg("Sem ações registradas.")),
-              lastAccess.length + " usuário" + (lastAccess.length !== 1 ? "s" : ""))
+              lastAccess.length + " usuário" + (lastAccess.length !== 1 ? "s" : "")),
+            // Hoje por analista (ocupa 2 colunas, no mesmo grid)
+            e(HojePorAnalistaChart, { tasks: tasks, scope: scope, session: session, isAdmin: canSeeAll, isGerente: isGerente, esteiras: esteiras, T: T })
           )
     )
   );
@@ -8117,7 +8235,7 @@ function App() {
   if (showSearch && searchQ.trim().length >= 2) {
     var qNorm = norm(searchQ.trim());
     searchResults = filtered.filter(function (t) {
-      return [t.title, t.code, t.cliente, t.processo, t.situacao, t.coordenador, t.gerente, t.mes,
+      return [t.title, t.code, t.cliente, t.processo, t.situacao, t.coordenador, t.gerente, t.mes, t.solicitacaoWorkflow,
         t.deadline, Array.isArray(t.responsibles) ? t.responsibles.join(" ") : t.responsible
       ].some(function (v) { return v && norm(String(v)).includes(qNorm); });
     }).slice(0, 40);
@@ -9581,14 +9699,6 @@ function App() {
     session: session,
     esteiras: esteiras,
     inline: true,
-    T: T
-  }), /*#__PURE__*/React.createElement(HojePorAnalistaChart, {
-    tasks: tasks,
-    scope: scope,
-    session: session,
-    isAdmin: isAdmin,
-    isGerente: isGerente,
-    esteiras: esteiras,
     T: T
   })), tab === "calendar" && /*#__PURE__*/React.createElement("div", {
     style: { padding: "20px 28px" }
