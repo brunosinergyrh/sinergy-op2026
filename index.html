@@ -8091,8 +8091,8 @@ function App() {
     return addTask;
   }();
   var doToggle = /*#__PURE__*/function () {
-    var _doToggle = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee37(eid, id) {
-      var task, bd, nt;
+    var _doToggle = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee37(eid, id, reassign) {
+      var task, bd, oldResp, nt;
       return _regenerator().w(function (_context38) {
         while (1) switch (_context38.n) {
           case 0:
@@ -8106,22 +8106,29 @@ function App() {
             return _context38.a(2);
           case 1:
             bd = task.status !== "concluida";
+            oldResp = respStr(task);
             nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, eid, tasksRef.current[eid].map(function (t) {
-              return t.id === id ? _objectSpread(_objectSpread({}, t), {}, {
+              if (t.id !== id) return t;
+              var updates = {
                 status: bd ? "concluida" : "pendente",
                 completedBy: bd ? session.name : null,
                 completedAt: bd ? new Date().toISOString() : null
-              }) : t;
+              };
+              if (bd && reassign) {
+                updates.responsibles = [session.name];
+                updates.responsible = session.name;
+              }
+              return _objectSpread(_objectSpread({}, t), updates);
             })));
             mutate(nt);
             _context38.n = 2;
-            return logAction(bd ? "completed" : "uncompleted", "".concat(task.code ? task.code + " · " : "").concat(task.title));
+            return logAction(bd ? "completed" : "uncompleted", "".concat(task.code ? task.code + " · " : "").concat(task.title).concat(bd && reassign ? " [analista alterado: " + (oldResp || "-") + " \u2192 " + session.name + "]" : ""));
           case 2:
             return _context38.a(2);
         }
       }, _callee37);
     }));
-    function doToggle(_x16, _x17) {
+    function doToggle(_x16, _x17, _x17b) {
       return _doToggle.apply(this, arguments);
     }
     return doToggle;
@@ -8142,14 +8149,15 @@ function App() {
       setPendingToggle({
         eid: eid,
         id: id,
-        title: task.title
+        title: task.title,
+        currentResp: respStr(task)
       });
       return;
     }
-    doToggle(eid, id);
+    doToggle(eid, id, false);
   };
-  var confirmToggle = function confirmToggle() {
-    if (pendingToggle) doToggle(pendingToggle.eid, pendingToggle.id);
+  var confirmToggle = function confirmToggle(reassign) {
+    if (pendingToggle) doToggle(pendingToggle.eid, pendingToggle.id, !!reassign);
     setPendingToggle(null);
   };
   var doSoftDelete = /*#__PURE__*/function () {
@@ -8834,35 +8842,48 @@ function App() {
       fontWeight: 700,
       color: T.text
     }
-  }, "Tarefa de outro responsavel")), /*#__PURE__*/React.createElement("div", {
+  }, "Tarefa de outro respons\u00E1vel")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 13,
       color: T.textM,
       marginBottom: 16
     }
-  }, "Esta tarefa nao esta atribuida a voce. Deseja conclui-la mesmo assim?", /*#__PURE__*/React.createElement("div", {
+  }, "Esta tarefa n\u00E3o est\u00E1 atribu\u00EDda a voc\u00EA.", /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 8,
       color: T.textS,
       fontWeight: 500
     }
-  }, pendingToggle.title)), /*#__PURE__*/React.createElement("div", {
+  }, pendingToggle.title), pendingToggle.currentResp && /*#__PURE__*/React.createElement("div", {
+    style: { marginTop: 4, fontSize: 12, color: T.textD }
+  }, "Analista atual: ", pendingToggle.currentResp)), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 8,
-      justifyContent: "flex-end"
+      flexDirection: "column",
+      gap: 8
     }
   }, /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() { return confirmToggle(true); },
+    style: _objectSpread(_objectSpread({}, mkB("#22c55e", false, T)), {}, { width: "100%", justifyContent: "flex-start", padding: "10px 14px" })
+  }, /*#__PURE__*/React.createElement(Check, { size: 14 }),
+    /*#__PURE__*/React.createElement("span", { style: { textAlign: "left" } },
+      /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700 } }, "Concluir e me atribuir a tarefa"),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 10.5, fontWeight: 400, opacity: 0.85 } }, "Troca o analista para " + session.name + " (recomendado quando quem executou foi voc\u00EA)")
+    )
+  ), /*#__PURE__*/React.createElement("button", {
+    onClick: function onClick() { return confirmToggle(false); },
+    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { width: "100%", justifyContent: "flex-start", padding: "10px 14px" })
+  }, /*#__PURE__*/React.createElement(Check, { size: 14 }),
+    /*#__PURE__*/React.createElement("span", { style: { textAlign: "left" } },
+      /*#__PURE__*/React.createElement("div", { style: { fontWeight: 700, color: T.text } }, "Concluir mantendo o analista original"),
+      /*#__PURE__*/React.createElement("div", { style: { fontSize: 10.5, fontWeight: 400, color: T.textM } }, "Fica registrado que voc\u00EA concluiu, mas o analista respons\u00E1vel n\u00E3o muda")
+    )
+  ), /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
       return setPendingToggle(null);
     },
-    style: mkB(null, true, T)
-  }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
-    onClick: confirmToggle,
-    style: mkB("#22c55e", false, T)
-  }, /*#__PURE__*/React.createElement(Check, {
-    size: 14
-  }), "Concluir")))), pendingDelete && /*#__PURE__*/React.createElement(OVL, {
+    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { width: "100%", justifyContent: "center", color: T.textD, borderStyle: "dashed" })
+  }, "Cancelar")))), pendingDelete && /*#__PURE__*/React.createElement(OVL, {
     zi: 72,
     ov: T.ov
   }, /*#__PURE__*/React.createElement("div", {
