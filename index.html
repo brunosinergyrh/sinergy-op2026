@@ -5984,8 +5984,12 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
           style: { fontSize: 10.5, fontWeight: 600, color: est.color }
         }, est.label),
         task.processo && /*#__PURE__*/React.createElement("span", {
+          title: task.processo,
           style: { fontSize: 10.5, fontStyle: "italic", fontWeight: 400, color: T.textD }
-        }, task.processo)
+        }, task.processo, task.solicitacaoWorkflow ? " \u00B7 WF " + task.solicitacaoWorkflow : ""),
+        !task.processo && task.solicitacaoWorkflow && /*#__PURE__*/React.createElement("span", {
+          style: { fontSize: 10.5, fontStyle: "italic", fontWeight: 400, color: T.textD }
+        }, "WF ", task.solicitacaoWorkflow)
       )
     ),
     /* situacao */
