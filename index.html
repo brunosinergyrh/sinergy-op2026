@@ -7282,7 +7282,7 @@ function App() {
             break;
           }
           t = _step6.value;
-          key = "".concat(norm(t.title), "|").concat(norm(t.cliente), "|").concat(t.mes || "", "|").concat(t.deadline || "", "|").concat(respStr(t));
+          key = "".concat(norm(t.title), "|").concat(norm(t.cliente), "|").concat(t.mes || "", "|").concat(t.deadline || "", "|").concat(respStr(t), "|").concat(t.solicitacaoWorkflow || "");
           if (!seen.has(key)) {
             _context31.n = 4;
             break;
