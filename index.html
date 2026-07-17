@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.5.7-2026-07-16";
+window.OP2026_BUILD = "v10.5.9-duplicatas-revisao-2026-07-16";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -478,6 +478,27 @@ async function _tasksSet(eid, arr) {
   _taskCacheSnapshot[eid] = Object.assign({}, incoming); // [v10.5.1] mantem o snapshot alinhado ao que acabou de ser gravado
 }
 
+// [v10.5.8] DELETE FISICO em lote por lista de ids — permanente, NAO passa pela lixeira.
+async function _tasksHardDeleteByIds(ids) {
+  ids = (ids || []).map(String).filter(Boolean);
+  if (!ids.length) return 0;
+  const chunks = _chunk(ids, 200);
+  let done = 0;
+  for (var i = 0; i < chunks.length; i++) {
+    const list = chunks[i].map(encodeURIComponent).join(",");
+    await sbFetch("DELETE", "tasks?id=in.(" + list + ")");
+    done += chunks[i].length;
+  }
+  const gone = {}; ids.forEach(function (id) { gone[id] = true; });
+  Object.keys(_taskCache).forEach(function (eid) {
+    const m = _taskCache[eid]; if (!m) return;
+    Object.keys(m).forEach(function (id) { if (gone[id]) delete m[id]; });
+    if (_taskCacheSnapshot[eid]) Object.keys(_taskCacheSnapshot[eid]).forEach(function (id) { if (gone[id]) delete _taskCacheSnapshot[eid][id]; });
+  });
+  return done;
+}
+window._tasksHardDeleteByIds = _tasksHardDeleteByIds;
+
 // window.storage: mesma interface de sempre. Tarefas vao para a tabela; o resto continua no KV.
 window.storage = {
   async get(key, shared) {
@@ -606,7 +627,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.5.7-2026-07-16", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.5.9-duplicatas-revisao-2026-07-16", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4259,7 +4280,8 @@ function CalendarView(props) {
   var _selAn = React.useState("__all__"); var selAnalista = _selAn[0], setSelAnalista = _selAn[1];
   var _selCo = React.useState("__all__"); var selCoord = _selCo[0], setSelCoord = _selCo[1];
   var _selGe = React.useState("__all__"); var selGerente = _selGe[0], setSelGerente = _selGe[1];
-  var _vm = React.useState("prazo"); var viewMode = _vm[0], setViewMode = _vm[1]; // "prazo" | "conclusao"
+  var _vm = React.useState("prazo"); var viewMode = _vm[0], setViewMode = _vm[1]; // "prazo" | "conclusao" | "esteira"
+  var _selEst = React.useState("__all__"); var selEsteira = _selEst[0], setSelEsteira = _selEst[1];
 
   var all = [];
   Object.keys(tasks).forEach(function (eid) {
@@ -4299,7 +4321,11 @@ function CalendarView(props) {
       byDay[d].concluidas++;
     });
   } else {
-    scoped.forEach(function (t) {
+    // "prazo" usa todas as tarefas do escopo; "esteira" usa so a esteira escolhida (mesma logica de dia = prazo)
+    var baseListPrazo = viewMode === "esteira"
+      ? (selEsteira !== "__all__" ? scoped.filter(function (t) { return t._eid === selEsteira; }) : [])
+      : scoped;
+    baseListPrazo.forEach(function (t) {
       if (!t.deadline || t.deadline.slice(0, 7) !== monthKey) return;
       var d = t.deadline.slice(8, 10);
       if (!byDay[d]) byDay[d] = { total: 0, atrasadas: 0, concluidas: 0 };
@@ -4327,9 +4353,9 @@ function CalendarView(props) {
 
   var dayStr = function (d) { return monthKey + "-" + String(d).padStart(2, "0"); };
   var selList = selDay ? scoped.filter(function (t) {
-      return viewMode === "conclusao"
-        ? (t.status === "concluida" && t.completedAt && t.completedAt.slice(0, 10) === dayStr(selDay))
-        : t.deadline === dayStr(selDay);
+      if (viewMode === "conclusao") return (t.status === "concluida" && t.completedAt && t.completedAt.slice(0, 10) === dayStr(selDay));
+      if (viewMode === "esteira") return t.deadline === dayStr(selDay) && (selEsteira === "__all__" || t._eid === selEsteira);
+      return t.deadline === dayStr(selDay);
     })
     .sort(function (a, b) {
       if (viewMode === "conclusao") return (a.completedAt || "").localeCompare(b.completedAt || "");
@@ -4378,7 +4404,7 @@ function CalendarView(props) {
           : isAdminP ? "Visão geral" : isGerenteP ? "Meu time" : isCoordP ? "Minha coordenação" : "Minhas tarefas")
       )
     ),
-    e("div", { style: { display: "flex", gap: 6, marginBottom: 10 } },
+    e("div", { style: { display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap", alignItems: "center" } },
       e("button", {
         onClick: function () { setViewMode("prazo"); setSelDay(null); },
         style: { fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 7, cursor: "pointer",
@@ -4392,8 +4418,42 @@ function CalendarView(props) {
           border: viewMode === "conclusao" ? "1px solid #10b981" : "1px solid " + T.border,
           background: viewMode === "conclusao" ? "rgba(16,185,129,0.1)" : "transparent",
           color: viewMode === "conclusao" ? "#10b981" : T.textM }
-      }, "Por conclusão")
+      }, "Por conclusão"),
+      e("button", {
+        onClick: function () { setViewMode("esteira"); setSelDay(null); },
+        style: { fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 7, cursor: "pointer",
+          border: viewMode === "esteira" ? "1px solid #f59e0b" : "1px solid " + T.border,
+          background: viewMode === "esteira" ? "rgba(245,158,11,0.1)" : "transparent",
+          color: viewMode === "esteira" ? "#f59e0b" : T.textM }
+      }, "Por Esteira"),
+      viewMode === "esteira" && e("select", {
+        value: selEsteira,
+        onChange: function (ev) { setSelEsteira(ev.target.value); setSelDay(null); },
+        style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none" }
+      },
+        e("option", { value: "__all__" }, "Selecione uma esteira"),
+        (props.esteiras || []).map(function (es) { return e("option", { key: es.id, value: es.id }, es.label || es.name || es.id); })
+      )
     ),
+    // [v10.5.15] Barra de resumo do mes (estilo mockup de homologacao)
+    (function () {
+      var mTotal = 0, mConc = 0, mAtr = 0;
+      Object.keys(byDay).forEach(function (k) { mTotal += byDay[k].total; mConc += byDay[k].concluidas; mAtr += byDay[k].atrasadas; });
+      var mPend = mTotal - mConc;
+      var mPct = mTotal > 0 ? Math.round(mConc / mTotal * 100) : 0;
+      if (mTotal === 0) return null;
+      return e("div", { style: { display: "flex", alignItems: "center", background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: "10px 16px", marginBottom: 12, flexWrap: "wrap", gap: 16 } },
+        e("div", { style: { display: "flex", flexDirection: "column", gap: 1 } }, e("span", { style: { fontSize: 17, fontWeight: 700, color: "#6366f1" } }, mTotal.toLocaleString("pt-BR")), e("span", { style: { fontSize: 9.5, color: T.textD, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" } }, "Total")),
+        e("div", { style: { display: "flex", flexDirection: "column", gap: 1 } }, e("span", { style: { fontSize: 17, fontWeight: 700, color: "#10b981" } }, mConc.toLocaleString("pt-BR")), e("span", { style: { fontSize: 9.5, color: T.textD, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" } }, "Concluídas")),
+        e("div", { style: { display: "flex", flexDirection: "column", gap: 1 } }, e("span", { style: { fontSize: 17, fontWeight: 700, color: mAtr > 0 ? "#ef4444" : T.textM } }, mAtr.toLocaleString("pt-BR")), e("span", { style: { fontSize: 9.5, color: T.textD, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" } }, "Atrasadas")),
+        e("div", { style: { display: "flex", flexDirection: "column", gap: 1 } }, e("span", { style: { fontSize: 17, fontWeight: 700, color: "#f59e0b" } }, mPend.toLocaleString("pt-BR")), e("span", { style: { fontSize: 9.5, color: T.textD, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em" } }, "Pendentes")),
+        e("div", { style: { flex: 1, minWidth: 160 } },
+          e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 9.5, color: T.textD, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em", marginBottom: 4 } },
+            e("span", null, "Progresso do mês"), e("span", { style: { color: "#6366f1", fontWeight: 700 } }, mPct + "%")),
+          e("div", { style: { height: 7, background: T.border, borderRadius: 4, overflow: "hidden" } },
+            e("div", { style: { width: mPct + "%", height: "100%", borderRadius: 4, background: "linear-gradient(90deg,#818cf8,#4f46e5)" } })))
+      );
+    })(),
     e("div", { style: { display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 4 } },
       WK.map(function (w) { return e("span", { key: w, style: { fontSize: 10.5, color: T.textM, textAlign: "center", fontWeight: 600 } }, w); })
     ),
@@ -4402,32 +4462,50 @@ function CalendarView(props) {
         if (!d) return e("div", { key: "e" + idx });
         var ds = dayStr(d), info = byDay[String(d).padStart(2, "0")];
         var isToday = ds === todayStr, isSel = selDay === d;
-        var bg = T.card, border = T.cardB, txt = T.textM;
+        var pct = info && info.total > 0 ? Math.round(info.concluidas / info.total * 100) : null;
+        var bg = T.card, border = T.cardB, fillColor = "#cbd5e1", pctLabel = "", pctColor = T.textD;
+        var isFuture = ds > todayStr;
         if (info) {
-          if (info.atrasadas > 0) { bg = "rgba(239,68,68,0.10)"; border = "rgba(239,68,68,0.4)"; txt = "#ef4444"; }
-          else if (info.concluidas === info.total) { bg = "rgba(16,185,129,0.10)"; border = "rgba(16,185,129,0.4)"; txt = "#10b981"; }
-          else if (info.total >= 5) { bg = "rgba(245,158,11,0.10)"; border = "rgba(245,158,11,0.4)"; txt = "#f59e0b"; }
-          else { txt = T.textS; }
+          if (info.atrasadas > 0) {
+            bg = "rgba(239,68,68,0.08)"; border = "rgba(239,68,68,0.35)"; fillColor = "#ef4444";
+            pctColor = "#dc2626"; pctLabel = pct + "% · " + info.atrasadas + " atrasada" + (info.atrasadas > 1 ? "s" : "");
+          } else if (pct === 100) {
+            bg = "rgba(16,185,129,0.08)"; border = "rgba(16,185,129,0.35)"; fillColor = "#10b981";
+            pctColor = "#10b981"; pctLabel = "100% concluído";
+          } else if (isToday) {
+            fillColor = "#6366f1"; pctColor = "#4f46e5"; pctLabel = pct + "% concluído";
+          } else if (isFuture && info.total > info.concluidas) {
+            bg = "rgba(245,158,11,0.08)"; border = "rgba(245,158,11,0.35)";
+            pctLabel = pct + "% concluído";
+          } else {
+            pctLabel = pct + "% concluído";
+          }
         }
         return e("button", {
           key: d, onClick: function () { setSelDay(isSel ? null : d); },
           style: {
-            minHeight: 54, borderRadius: 8, padding: "5px 6px", textAlign: "left", cursor: "pointer",
+            minHeight: 76, borderRadius: 8, padding: "6px 7px", textAlign: "left", cursor: "pointer",
             background: bg, border: (isSel ? "2px solid #818cf8" : isToday ? "2px solid #6366f1" : "1px solid " + border),
-            display: "flex", flexDirection: "column", gap: 3
+            display: "flex", flexDirection: "column", gap: 4
           }
         },
           e("span", { style: { fontSize: 11, fontWeight: isToday ? 800 : 600, color: isToday ? "#818cf8" : T.textM } }, d),
-          info && e("span", { style: { fontSize: 10.5, fontWeight: 700, color: txt } },
-            info.atrasadas > 0 ? info.atrasadas + " atrasada" + (info.atrasadas > 1 ? "s" : "") : viewMode === "conclusao" ? info.total + " conclu\u00EDda" + (info.total > 1 ? "s" : "") : info.total + " tarefa" + (info.total > 1 ? "s" : ""))
+          info && e("div", { style: { display: "flex", flexDirection: "column", gap: 2 } },
+            info.concluidas === info.total
+              ? e("span", { style: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 600, color: "#10b981", background: "transparent" } }, "\u2713 " + info.concluidas + " conclu\u00EDda" + (info.concluidas > 1 ? "s" : ""))
+              : [
+                e("span", { key: "tot", style: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 600, color: T.textS, background: "transparent" } }, info.total + " tarefa" + (info.total > 1 ? "s" : "")),
+                info.concluidas > 0 && e("span", { key: "conc", style: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 600, color: "#10b981", background: "transparent" } }, "\u2713 " + info.concluidas + " conclu\u00EDda" + (info.concluidas > 1 ? "s" : "")),
+                info.atrasadas > 0 && e("span", { key: "atr", style: { display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, color: "#ef4444", background: "transparent" } }, "\u26A0 " + info.atrasadas + " atrasada" + (info.atrasadas > 1 ? "s" : ""))
+              ])
         );
       })
     ),
-    e("div", { style: { display: "flex", gap: 16, marginTop: 10, fontSize: 11, color: T.textM } },
-      viewMode === "prazo" ? [
+    e("div", { style: { display: "flex", gap: 16, marginTop: 10, fontSize: 11, color: T.textM, flexWrap: "wrap" } },
+      viewMode === "prazo" || viewMode === "esteira" ? [
         e("span", { key: "l1" }, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#ef4444", marginRight: 5 } }), "atrasadas"),
-        e("span", { key: "l2" }, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#f59e0b", marginRight: 5 } }), "concentracao alta (5+)"),
-        e("span", { key: "l3" }, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#10b981", marginRight: 5 } }), "dia concluido")
+        e("span", { key: "l2" }, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#10b981", marginRight: 5 } }), "dia concluído"),
+        e("span", { key: "l4" }, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#f59e0b", marginRight: 5 } }), "planejadas")
       ] : e("span", null, e("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: 99, background: "#10b981", marginRight: 5 } }), "tarefas concluídas no dia")
     ),
     selDay && e("div", { style: { marginTop: 16, background: T.panelBg, border: "1px solid " + T.panelB, borderRadius: 12, padding: "12px 16px" } },
@@ -4510,7 +4588,8 @@ function HojePorAnalistaChart(props) {
 
   var all = [];
   Object.keys(tasks).forEach(function (eid) { (tasks[eid] || []).forEach(function (t) { all.push(t._eid ? t : Object.assign({}, t, { _eid: eid })); }); });
-  var scoped = isAdminP ? all
+  var fGerenteP = props.fGerente || "__all__";
+  var scoped = isAdminP ? (fGerenteP !== "__all__" ? all.filter(function (t) { return norm(t.gerente || "") === norm(fGerenteP); }) : all)
     : isGerenteP ? all.filter(function (t) { return t.gerenteId === scope; })
     : all.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
 
@@ -4948,6 +5027,55 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   // drill-down: gerente (admin only) → coordenadora → cliente
   var view = scoped;
   if (canSeeAll && fGerente !== "__all__") view = view.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
+
+  // [v10.5.11] Integracoes recentes (ultimos 7 dias): tarefas criadas pela integracao externa
+  // (createdBy === "Sistema"). Sem id de lote, agrupamos por sessao: uma nova integracao comeca
+  // sempre que o intervalo entre duas tarefas consecutivas passa de 15 min.
+  var recentIntegrations = [];
+  (function () {
+    var sysTasks = scoped.filter(function (t) { return t.createdBy === "Sistema" && t.createdAt; });
+    if (!sysTasks.length) return;
+    var cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    sysTasks = sysTasks.filter(function (t) { return new Date(t.createdAt).getTime() >= cutoff; });
+    if (!sysTasks.length) return;
+    sysTasks.sort(function (a, b) { return new Date(a.createdAt) - new Date(b.createdAt); }); // ascendente
+    var windowMs = 15 * 60 * 1000;
+    var groups = [];
+    var current = [sysTasks[0]];
+    for (var i = 1; i < sysTasks.length; i++) {
+      var gap = new Date(sysTasks[i].createdAt).getTime() - new Date(sysTasks[i - 1].createdAt).getTime();
+      if (gap > windowMs) { groups.push(current); current = [sysTasks[i]]; }
+      else current.push(sysTasks[i]);
+    }
+    groups.push(current);
+    recentIntegrations = groups.map(function (group) {
+      var first = group[0], last = group[group.length - 1];
+      return {
+        count: group.length,
+        firstAt: first.createdAt, lastAt: last.createdAt,
+        esteiras: distinct(group.map(function (t) { return (estMap[t._eid] && estMap[t._eid].label) || t._eid; }).filter(Boolean)),
+        clientes: distinct(group.map(function (t) { return t.cliente; }).filter(Boolean)),
+        tasks: group
+      };
+    }).sort(function (a, b) { return new Date(b.lastAt) - new Date(a.lastAt); }); // mais recente primeiro
+  })();
+  function exportIntegration(integ) {
+    if (!window.XLSX || !integ || !integ.tasks.length) return;
+    var rows = integ.tasks.map(function (t) {
+      var es = estMap[t._eid];
+      return {
+        "Esteira": (es && es.label) || t._eid || "", "Código": t.code || "", "Tarefa": t.title || "",
+        "Cliente": t.cliente || "", "Processo": t.processo || "",
+        "Coordenador": t.coordenador || "", "Gerente": t.gerente || "",
+        "Prazo": t.deadline ? fmtDate(t.deadline) : "", "Mês": t.mes ? fmtMonth(t.mes) : "",
+        "Criada em": t.createdAt ? fmtDT(t.createdAt) : ""
+      };
+    });
+    var ws = window.XLSX.utils.json_to_sheet(rows);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Integracao");
+    window.XLSX.writeFile(wb, "Integracao_" + new Date(integ.lastAt).toISOString().slice(0, 16).replace(/[:T]/g, "-") + ".xlsx");
+  }
   if (isManager && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fCli !== "__all__") view = view.filter(function (t) { return (t.cliente || "") === fCli; });
 
@@ -5672,8 +5800,31 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
               lastAccLoading ? emptyMsg("Carregando…")
                 : (lastAccess.length ? e("div", { style: scrollBox }, lastAccess.map(lastAccessItem)) : emptyMsg("Sem ações registradas.")),
               lastAccess.length + " usuário" + (lastAccess.length !== 1 ? "s" : "")),
+            // [v10.5.10] Ultima integracao (tarefas criadas pelo servico externo)
+            section("Últimas Integrações", RotateCcw,
+              !recentIntegrations.length ? emptyMsg("Nenhuma integração nos últimos 7 dias.") :
+                e("div", { style: scrollBox },
+                  recentIntegrations.map(function (integ, idx) {
+                    return e("div", { key: idx, style: { padding: "8px 0", borderTop: idx > 0 ? "1px solid " + T.borderL : "none" } },
+                      e("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+                        e("div", { style: { fontSize: 12, color: T.textS, lineHeight: 1.6 } },
+                          e("div", null, e("span", { style: { fontWeight: 700, color: T.text } }, integ.count), " tarefa" + (integ.count !== 1 ? "s" : "") + " criada" + (integ.count !== 1 ? "s" : "")),
+                          e("div", { style: { color: T.textM, fontSize: 11 } },
+                            integ.firstAt === integ.lastAt ? fmtDT(integ.lastAt) : fmtDT(integ.firstAt) + " até " + fmtDT(integ.lastAt)
+                          ),
+                          e("div", { style: { color: T.textM, fontSize: 11, marginTop: 2 } }, integ.esteiras.length + " esteira" + (integ.esteiras.length !== 1 ? "s" : "") + " · " + integ.clientes.length + " cliente" + (integ.clientes.length !== 1 ? "s" : ""))
+                        ),
+                        e("button", {
+                          onClick: function () { exportIntegration(integ); },
+                          style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 7px", cursor: "pointer", flexShrink: 0 }
+                        }, e(Download, { size: 10 }), "xlsx")
+                      )
+                    );
+                  })
+                ),
+              recentIntegrations.length + " nos últimos 7 dias"),
             // Hoje por analista (ocupa 2 colunas, no mesmo grid)
-            e(HojePorAnalistaChart, { tasks: tasks, scope: scope, session: session, isAdmin: canSeeAll, isGerente: isGerente, esteiras: esteiras, T: T })
+            e(HojePorAnalistaChart, { tasks: tasks, scope: scope, session: session, isAdmin: canSeeAll, isGerente: isGerente, esteiras: esteiras, T: T, fGerente: fGerente })
           )
     )
   );
@@ -6297,6 +6448,26 @@ function App() {
     _useState104 = _slicedToArray(_useState103, 2),
     bulkConfirm = _useState104[0],
     setBulkConfirm = _useState104[1];
+  var _useStateBH = useState(false),
+    _sBH = _slicedToArray(_useStateBH, 2),
+    bulkHardConfirm = _sBH[0],
+    setBulkHardConfirm = _sBH[1];
+  var _useStateDM = useState(false),
+    _sDM = _slicedToArray(_useStateDM, 2),
+    showDupModal = _sDM[0],
+    setShowDupModal = _sDM[1];
+  var _useStateDG = useState([]),
+    _sDG = _slicedToArray(_useStateDG, 2),
+    dupGroups = _sDG[0],
+    setDupGroups = _sDG[1];
+  var _useStateDS = useState({}),
+    _sDS = _slicedToArray(_useStateDS, 2),
+    dupSel = _sDS[0],
+    setDupSel = _sDS[1];
+  var _useStateDB = useState(false),
+    _sDB = _slicedToArray(_useStateDB, 2),
+    dupBusy = _sDB[0],
+    setDupBusy = _sDB[1];
   var _useState103b = useState(false),
     _useState104b = _slicedToArray(_useState103b, 2),
     bulkCompleteConfirm = _useState104b[0],
@@ -6357,6 +6528,22 @@ function App() {
     _useState130 = _slicedToArray(_useState129, 2),
     importing = _useState130[0],
     setImporting = _useState130[1];
+  var _useStateLI = useState(function () { try { return JSON.parse(localStorage.getItem("op2026_last_import") || "null"); } catch (_) { return null; } }),
+    _sLI = _slicedToArray(_useStateLI, 2),
+    lastImport = _sLI[0],
+    setLastImport = _sLI[1];
+  var _useStateIBC = useState(false),
+    _sIBC = _slicedToArray(_useStateIBC, 2),
+    importBigConfirm = _sIBC[0],
+    setImportBigConfirm = _sIBC[1];
+  var _useStateLIB = useState(false),
+    _sLIB = _slicedToArray(_useStateLIB, 2),
+    cancelingImport = _sLIB[0],
+    setCancelingImport = _sLIB[1];
+  var _useStateLIC = useState(false),
+    _sLIC = _slicedToArray(_useStateLIC, 2),
+    cancelImportConfirm = _sLIC[0],
+    setCancelImportConfirm = _sLIC[1];
   var _useState131 = useState({}),
     _useState132 = _slicedToArray(_useState131, 2),
     collapsedGroups = _useState132[0],
@@ -7160,8 +7347,8 @@ function App() {
     }
   }, [load, session]);
   useEffect(function () {
-    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete) window.scrollTo(0, 0);
-  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete]);
+    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete || showDupModal) window.scrollTo(0, 0);
+  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete, showDupModal]);
   useEffect(function () {
     function onKey(ev) {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "k") {
@@ -7257,92 +7444,88 @@ function App() {
       return _ref28.apply(this, arguments);
     };
   }(), [mutate, logAction]);
-  var dedupeTasks = useCallback(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee30() {
-    var nt, removed, _i2, _Object$entries2, _Object$entries2$_i, _eid, ts, seen, kept, _iterator6, _step6, t, key, _i3, _Object$entries3, _Object$entries3$_i, _eid2, _ts, _t25, _t26;
+  // [v10.5.9] Duplicatas: fluxo LISTAR -> VALIDAR (Excel) -> EXCLUIR CONFIRMADO.
+  // Criterio (10 campos): titulo + cliente + mes + prazo + responsaveis + gerente + esteira +
+  // processo + coordenador + solicitacao workflow. Mantem sempre a mais antiga (menor createdAt).
+  var findDuplicateGroups = useCallback(function () {
+    var groups = {};
+    Object.entries(tasksRef.current).forEach(function (_ref_fd) {
+      var _s_fd = _slicedToArray(_ref_fd, 2), eid = _s_fd[0], ts = _s_fd[1];
+      (ts || []).forEach(function (t) {
+        var key = [
+          norm(t.title), norm(t.cliente), t.mes || "", t.deadline || "", respStr(t),
+          norm(t.gerente), eid, norm(t.processo), norm(t.coordenador), norm(t.solicitacaoWorkflow)
+        ].join("|");
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(_objectSpread(_objectSpread({}, t), {}, { _eid: eid }));
+      });
+    });
+    var result = [];
+    Object.keys(groups).forEach(function (key) {
+      var items = groups[key];
+      if (items.length < 2) return;
+      var sorted = items.slice().sort(function (a, b) {
+        return (a.createdAt || "").localeCompare(b.createdAt || "");
+      });
+      result.push({ key: key, keep: sorted[0], remove: sorted.slice(1) });
+    });
+    return result;
+  }, []);
+  var applyDuplicateRemoval = useCallback(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee_adr(idsToRemove) {
+    var removeSet, now, nt, newTrashed, removed, _i2, _Object$entries2, _Object$entries2$_i, _eid, ts, kept, nt2, _t26;
     return _regenerator().w(function (_context31) {
       while (1) switch (_context31.p = _context31.n) {
         case 0:
+          removeSet = new Set((idsToRemove || []).map(String));
+          if (removeSet.size) { _context31.n = 1; break; }
+          return _context31.a(2, 0);
+        case 1:
+          now = new Date().toISOString();
           nt = _objectSpread({}, tasksRef.current);
+          newTrashed = [];
           removed = 0;
           _i2 = 0, _Object$entries2 = Object.entries(nt);
-        case 1:
-          if (!(_i2 < _Object$entries2.length)) {
-            _context31.n = 11;
-            break;
-          }
+        case 2:
+          if (!(_i2 < _Object$entries2.length)) { _context31.n = 3; break; }
           _Object$entries2$_i = _slicedToArray(_Object$entries2[_i2], 2), _eid = _Object$entries2$_i[0], ts = _Object$entries2$_i[1];
-          seen = new Set();
           kept = [];
-          _iterator6 = _createForOfIteratorHelper(ts);
-          _context31.p = 2;
-          _iterator6.s();
+          (ts || []).forEach(function (t) {
+            if (removeSet.has(String(t.id))) {
+              newTrashed.push(_objectSpread(_objectSpread({}, t), {}, { eid: _eid, deletedAt: now, deletedBy: session.name }));
+              removed++;
+            } else kept.push(t);
+          });
+          nt[_eid] = kept;
+          _i2++;
+          _context31.n = 2;
+          break;
         case 3:
-          if ((_step6 = _iterator6.n()).done) {
-            _context31.n = 6;
-            break;
-          }
-          t = _step6.value;
-          key = "".concat(norm(t.title), "|").concat(norm(t.cliente), "|").concat(t.mes || "", "|").concat(t.deadline || "", "|").concat(respStr(t), "|").concat(t.solicitacaoWorkflow || "");
-          if (!seen.has(key)) {
-            _context31.n = 4;
-            break;
-          }
-          removed++;
-          return _context31.a(3, 5);
-        case 4:
-          seen.add(key);
-          kept.push(t);
+          // [v10.5.12] mutate() ja persiste (soft-delete) via saveEsteira internamente — nao repetir
+          // o storage.set aqui (evita gravar duas vezes). Precisamos so alimentar a lista da Lixeira,
+          // igual ao bulkDelete, senao as tarefas somem da tela mas nao aparecem como "excluidas".
+          mutate(nt);
+          nt2 = [].concat(_toConsumableArray(trashRef.current), newTrashed);
+          trashRef.current = nt2;
+          setTrash(nt2);
+          _context31.p = 4;
+          _context31.n = 5;
+          return window.storage.set(TRASH_KEY, JSON.stringify(nt2), true);
         case 5:
-          _context31.n = 3;
+          _context31.n = 7;
           break;
         case 6:
-          _context31.n = 8;
-          break;
-        case 7:
-          _context31.p = 7;
-          _t25 = _context31.v;
-          _iterator6.e(_t25);
-        case 8:
-          _context31.p = 8;
-          _iterator6.f();
-          return _context31.f(8);
-        case 9:
-          nt[_eid] = kept;
-        case 10:
-          _i2++;
-          _context31.n = 1;
-          break;
-        case 11:
-          mutate(nt);
-          _i3 = 0, _Object$entries3 = Object.entries(nt);
-        case 12:
-          if (!(_i3 < _Object$entries3.length)) {
-            _context31.n = 17;
-            break;
-          }
-          _Object$entries3$_i = _slicedToArray(_Object$entries3[_i3], 2), _eid2 = _Object$entries3$_i[0], _ts = _Object$entries3$_i[1];
-          _context31.p = 13;
-          _context31.n = 14;
-          return window.storage.set(TASKS_PREFIX + _eid2, JSON.stringify(_ts), true);
-        case 14:
-          _context31.n = 16;
-          break;
-        case 15:
-          _context31.p = 15;
+          _context31.p = 6;
           _t26 = _context31.v;
-        case 16:
-          _i3++;
-          _context31.n = 12;
-          break;
-        case 17:
+        case 7:
           lastWriteRef.current = Date.now();
-          _context31.n = 18;
-          return logAction("bulkDeleted", "Duplicatas removidas: ".concat(removed));
-        case 18:
+          _context31.n = 8;
+          return logAction("bulkDeleted", "Duplicatas removidas (revisadas): ".concat(removed));
+        case 8:
           return _context31.a(2, removed);
       }
-    }, _callee30, null, [[13, 15], [2, 7, 8, 9]]);
+    }, _callee_adr, null, [[4, 6]]);
   })), [mutate, logAction]);
+
   var exportBackup = /*#__PURE__*/function () {
     var _exportBackup = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee31() {
       var bk, _i4, _arr, _arr$_i, key, name, r, json, blob, url, a, _t27, _t28, _t29, _t30;
@@ -7663,6 +7846,7 @@ function App() {
       mI = _ref30[9];
     var mapped = {};
     var skippedList = [];
+    window.__OP_CURRENT_IMPORT_ID = "imp_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
     importRows.forEach(function (row, ri2) {
       var _sessionRef$current2;
       var catVal = ci >= 0 ? String(row[ci] || "") : "";
@@ -7713,7 +7897,8 @@ function App() {
         mes: mI >= 0 ? toMonthStr(String(row[mI] || "")) : "",
         status: "pendente",
         createdAt: new Date().toISOString(),
-        createdBy: ((_sessionRef$current2 = sessionRef.current) === null || _sessionRef$current2 === void 0 ? void 0 : _sessionRef$current2.name) || ""
+        createdBy: ((_sessionRef$current2 = sessionRef.current) === null || _sessionRef$current2 === void 0 ? void 0 : _sessionRef$current2.name) || "",
+        importId: window.__OP_CURRENT_IMPORT_ID || null
       };
       if (!mapped[est]) mapped[est] = [];
       mapped[est].push(task);
@@ -7795,6 +7980,19 @@ function App() {
           case 10:
             lastWriteRef.current = Date.now();
             if (anyFail) setSaveError("Falha ao gravar algumas esteiras. Esvazie a lixeira e tente novamente.");
+            try {
+              if (!anyFail && window.__OP_CURRENT_IMPORT_ID) {
+                var _impMeta = {
+                  importId: window.__OP_CURRENT_IMPORT_ID,
+                  total: total,
+                  by: (session && session.name) || "",
+                  at: new Date().toISOString(),
+                  esteiras: Object.keys(preview.mapped)
+                };
+                localStorage.setItem("op2026_last_import", JSON.stringify(_impMeta));
+                setLastImport(_impMeta);
+              }
+            } catch (_impErr) {}
             _context35.n = 11;
             return logAction("imported", "".concat(total, " importadas").concat(preview.skippedList.length ? ", ".concat(preview.skippedList.length, " ignoradas") : "").concat(anyFail ? " [ERRO]" : ""));
           case 11:
@@ -7814,6 +8012,65 @@ function App() {
     }
     return doImport;
   }();
+  var cancelLastImport = /*#__PURE__*/function () {
+    var _fn = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _cli() {
+      var meta, targetIds, nt, removedFromUI, _keys, _k, _eid, kept, _arr, _idx, _t, done, _err;
+      return _regenerator().w(function (_c) {
+        while (1) switch (_c.p = _c.n) {
+          case 0:
+            meta = lastImport;
+            if (!(!meta || !meta.importId)) { _c.n = 1; break; }
+            return _c.a(2);
+          case 1:
+            setCancelingImport(true);
+            targetIds = [];
+            nt = _objectSpread({}, tasksRef.current);
+            _keys = Object.keys(nt);
+            for (_k = 0; _k < _keys.length; _k++) {
+              _eid = _keys[_k];
+              kept = [];
+              _arr = nt[_eid] || [];
+              for (_idx = 0; _idx < _arr.length; _idx++) {
+                _t = _arr[_idx];
+                if (_t && _t.importId && _t.importId === meta.importId) {
+                  targetIds.push(String(_t.id));
+                } else {
+                  kept.push(_t);
+                }
+              }
+              nt[_eid] = kept;
+            }
+            removedFromUI = targetIds.length;
+            _c.p = 2;
+            _c.n = 3;
+            return window._tasksHardDeleteByIds(targetIds);
+          case 3:
+            done = _c.v;
+            mutate(nt);
+            lastWriteRef.current = Date.now();
+            _c.n = 5;
+            break;
+          case 4:
+            _c.p = 4;
+            _err = _c.v;
+            setSaveError("Falha ao cancelar a importacao: " + String(_err && (_err.message || _err)).slice(0, 80));
+            setCancelingImport(false);
+            setCancelImportConfirm(false);
+            return _c.a(2);
+          case 5:
+            try { localStorage.removeItem("op2026_last_import"); } catch (_lrm) {}
+            setLastImport(null);
+            _c.n = 6;
+            return logAction("bulkDeleted", "Importacao cancelada: " + removedFromUI + " tarefas removidas em definitivo (lote " + meta.importId + ")");
+          case 6:
+            setCancelingImport(false);
+            setCancelImportConfirm(false);
+            return _c.a(2);
+        }
+      }, _cli, null, [[2, 4]]);
+    }));
+    return function cancelLastImport() { return _fn.apply(this, arguments); };
+  }();
   var closeImport = function closeImport() {
     setShowImport(false);
     setImportStep(1);
@@ -7821,6 +8078,7 @@ function App() {
     setImportRows([]);
     setImportHeaders([]);
     setShowSkipped(false);
+    setImportBigConfirm(false);
     if (fileRef.current) fileRef.current.value = "";
   };
   var exportXLSX = /*#__PURE__*/function () {
@@ -8363,6 +8621,11 @@ function App() {
             }
             return _context40.a(2);
           case 1:
+            if (bulkSel.size > 100) {
+              setBulkConfirm(false);
+              setSaveError("Selecao muito grande (" + bulkSel.size + "). A exclusao normal e limitada a 100 por vez para nao sobrecarregar o sistema. Para grandes volumes, use 'Cancelar ultima importacao' ou peca a exclusao em massa ao administrador.");
+              return _context40.a(2);
+            }
             ids = new Set(bulkSel);
             now = new Date().toISOString();
             nt = _objectSpread({}, tasksRef.current);
@@ -8420,6 +8683,61 @@ function App() {
       return _bulkDelete.apply(this, arguments);
     }
     return bulkDelete;
+  }();
+  var bulkHardDelete = /*#__PURE__*/function () {
+    var _fn = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _bhd() {
+      var targetIds, nt, _keys, _k, _eid, kept, _arr, _idx, _t, count, done, _err;
+      return _regenerator().w(function (_c) {
+        while (1) switch (_c.p = _c.n) {
+          case 0:
+            if (!(!isAdmin || !has("delete_task") || bulkSel.size === 0)) { _c.n = 1; break; }
+            return _c.a(2);
+          case 1:
+            setCancelingImport(true);
+            targetIds = [];
+            nt = _objectSpread({}, tasksRef.current);
+            _keys = Object.keys(nt);
+            for (_k = 0; _k < _keys.length; _k++) {
+              _eid = _keys[_k];
+              kept = [];
+              _arr = nt[_eid] || [];
+              for (_idx = 0; _idx < _arr.length; _idx++) {
+                _t = _arr[_idx];
+                if (_t && bulkSel.has(_t.id)) { targetIds.push(String(_t.id)); }
+                else { kept.push(_t); }
+              }
+              nt[_eid] = kept;
+            }
+            count = targetIds.length;
+            _c.p = 2;
+            _c.n = 3;
+            return window._tasksHardDeleteByIds(targetIds);
+          case 3:
+            done = _c.v;
+            mutate(nt);
+            lastWriteRef.current = Date.now();
+            _c.n = 5;
+            break;
+          case 4:
+            _c.p = 4;
+            _err = _c.v;
+            setSaveError("Falha na exclusao definitiva: " + String(_err && (_err.message || _err)).slice(0, 80));
+            setCancelingImport(false);
+            setBulkHardConfirm(false);
+            return _c.a(2);
+          case 5:
+            _c.n = 6;
+            return logAction("bulkDeleted", count + " tarefas EXCLUIDAS EM DEFINITIVO (admin, sem lixeira)");
+          case 6:
+            setBulkSel(new Set());
+            setBulkMode(false);
+            setBulkHardConfirm(false);
+            setCancelingImport(false);
+            return _c.a(2);
+        }
+      }, _bhd, null, [[2, 4]]);
+    }));
+    return function bulkHardDelete() { return _fn.apply(this, arguments); };
   }();
   var bulkEdit = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee_be() {
     var ids, nt, count, fields, moved, gu, eKey, _eids, _ei;
@@ -8622,7 +8940,7 @@ function App() {
       ].some(function (v) { return v && norm(String(v)).includes(qNorm); });
     }).slice(0, 40);
   }
-  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete;
+  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete || showDupModal;
   var myGroup = groups.find(function (g) {
     return g.id === (session === null || session === void 0 ? void 0 : session.groupId);
   });
@@ -8903,7 +9221,132 @@ function App() {
   }) : /*#__PURE__*/React.createElement(Moon, {
     size: 14
   }), darkMode ? "Modo Claro" : "Modo Escuro"))));
-  return /*#__PURE__*/React.createElement("div", {
+  // [v10.5.9] Modal de revisao de duplicatas.
+  function renderDupModal() {
+    var estLbl = {};
+    (esteiras || []).forEach(function (es) { estLbl[es.id] = es.label || es.name || es.id; });
+    var totalRemover = dupGroups.reduce(function (acc, g) {
+      return acc + (dupSel[g.key] ? g.remove.length : 0);
+    }, 0);
+    var allChecked = dupGroups.length > 0 && dupGroups.every(function (g) { return dupSel[g.key]; });
+    function toggleAll(val) {
+      var next = {};
+      dupGroups.forEach(function (g) { next[g.key] = val; });
+      setDupSel(next);
+    }
+    function toggleOne(key) {
+      setDupSel(function (s) { return _objectSpread(_objectSpread({}, s), {}, _defineProperty({}, key, !s[key])); });
+    }
+    function doExportDup() {
+      if (!window.XLSX) { alert("Biblioteca Excel ainda carregando, tente novamente em instantes."); return; }
+      var rows = [];
+      dupGroups.forEach(function (g) {
+        var allItems = [g.keep].concat(_toConsumableArray(g.remove));
+        allItems.forEach(function (t, idx) {
+          rows.push({
+            Acao: idx === 0 ? "MANTER (mais antiga)" : "REMOVER",
+            Selecionado: idx === 0 ? "-" : (dupSel[g.key] ? "Sim" : "Nao"),
+            Titulo: t.title || "", Cliente: t.cliente || "", Mes: t.mes || "",
+            Prazo: t.deadline ? t.deadline.split("-").reverse().join("/") : "",
+            Responsaveis: respStr(t), Gerente: t.gerente || "",
+            Esteira: estLbl[t._eid] || t._eid || "", Processo: t.processo || "",
+            Coordenador: t.coordenador || "", SolicitacaoWorkflow: t.solicitacaoWorkflow || "",
+            Criada: t.createdAt ? new Date(t.createdAt).toLocaleString("pt-BR") : "",
+            Codigo: t.code || ""
+          });
+        });
+      });
+      var wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(rows), "Duplicatas");
+      window.XLSX.writeFile(wb, "Duplicatas_" + new Date().toISOString().slice(0, 10) + ".xlsx");
+    }
+    function doConfirmRemoval() {
+      if (totalRemover === 0) { setShowDupModal(false); return; }
+      setDupBusy(true);
+      var ids = [];
+      dupGroups.forEach(function (g) {
+        if (dupSel[g.key]) g.remove.forEach(function (t) { ids.push(t.id); });
+      });
+      applyDuplicateRemoval(ids).then(function (n) {
+        setDupBusy(false);
+        setShowDupModal(false);
+        setSaveError("Removidas " + n + " duplicatas (enviadas para a lixeira).");
+        setTimeout(function () { setSaveError(function (s) { return s.indexOf("Removidas") === 0 ? "" : s; }); }, 4000);
+      }).catch(function (e2) {
+        setDupBusy(false);
+        setSaveError("Falha ao remover duplicatas: " + String(e2 && (e2.message || e2)).slice(0, 80));
+      });
+    }
+    return showDupModal && /*#__PURE__*/React.createElement(OVL, { zi: 55, ov: T.ov },
+      /*#__PURE__*/React.createElement("div", {
+        style: { width: "100%", maxWidth: 760, maxHeight: "85vh", display: "flex", flexDirection: "column",
+                 background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden" }
+      },
+        /*#__PURE__*/React.createElement(ModalHead, {
+          title: "Revisar duplicatas",
+          subtitle: dupGroups.length + " grupo" + (dupGroups.length !== 1 ? "s" : "") + " encontrado" + (dupGroups.length !== 1 ? "s" : "") + " \xB7 criterio: titulo, cliente, mes, prazo, responsaveis, gerente, esteira, processo, coordenador e solicitacao workflow",
+          onClose: function () { if (!dupBusy) setShowDupModal(false); },
+          T: T
+        }),
+        dupGroups.length === 0 ? /*#__PURE__*/React.createElement("div", {
+          style: { padding: 32, textAlign: "center", color: T.textM, fontSize: 13 }
+        }, "Nenhuma duplicata encontrada com o criterio atual.") : /*#__PURE__*/React.createElement(React.Fragment, null,
+          /*#__PURE__*/React.createElement("div", {
+            style: { padding: "12px 20px", borderBottom: "1px solid " + T.borderL, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }
+          },
+            /*#__PURE__*/React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" } },
+              /*#__PURE__*/React.createElement("input", { type: "checkbox", checked: allChecked, onChange: function (ev) { toggleAll(ev.target.checked); } }),
+              "Selecionar todos"
+            ),
+            /*#__PURE__*/React.createElement("button", {
+              onClick: doExportDup,
+              style: { padding: "6px 12px", borderRadius: 8, border: "1px solid " + T.border, background: T.panelBg, color: T.text, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }
+            }, /*#__PURE__*/React.createElement(Download, { size: 13 }), "Excel")
+          ),
+          /*#__PURE__*/React.createElement("div", { style: { overflowY: "auto", flex: 1, padding: "8px 20px" } },
+            dupGroups.map(function (g) {
+              return /*#__PURE__*/React.createElement("div", {
+                key: g.key,
+                style: { padding: 10, marginBottom: 8, borderRadius: 10, border: "1px solid " + T.borderL, background: dupSel[g.key] ? "rgba(239,68,68,0.05)" : T.panelBg }
+              },
+                /*#__PURE__*/React.createElement("label", { style: { display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" } },
+                  /*#__PURE__*/React.createElement("input", { type: "checkbox", checked: !!dupSel[g.key], onChange: function () { toggleOne(g.key); }, style: { marginTop: 3 } }),
+                  /*#__PURE__*/React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                    /*#__PURE__*/React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, color: T.text } }, g.keep.title || "(sem titulo)"),
+                    /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, color: T.textM, marginTop: 2 } },
+                      (g.keep.cliente || "sem cliente") + " \xB7 " + (g.keep.mes || "sem mes") + " \xB7 " + (estLbl[g.keep._eid] || g.keep._eid || "") + " \xB7 " + (g.keep.processo || "sem processo") + (g.keep.solicitacaoWorkflow ? (" \xB7 WF " + g.keep.solicitacaoWorkflow) : "")
+                    ),
+                    /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, marginTop: 6, color: "#10b981" } }, "Manter: " + (g.keep.code || g.keep.id) + " (criada em " + (g.keep.createdAt ? new Date(g.keep.createdAt).toLocaleDateString("pt-BR") : "?") + ")"),
+                    /*#__PURE__*/React.createElement("div", { style: { fontSize: 11, marginTop: 2, color: "#ef4444" } },
+                      "Remover (" + g.remove.length + "): " + g.remove.map(function (t) { return t.code || t.id; }).join(", ")
+                    )
+                  )
+                )
+              );
+            })
+          )
+        ),
+        /*#__PURE__*/React.createElement("div", {
+          style: { padding: "14px 20px", borderTop: "1px solid " + T.borderL, display: "flex", justifyContent: "space-between", alignItems: "center" }
+        },
+          /*#__PURE__*/React.createElement("span", { style: { fontSize: 12, color: T.textM } }, totalRemover + " tarefa" + (totalRemover !== 1 ? "s" : "") + " serao removidas (para a lixeira)"),
+          /*#__PURE__*/React.createElement("div", { style: { display: "flex", gap: 8 } },
+            /*#__PURE__*/React.createElement("button", {
+              onClick: function () { if (!dupBusy) setShowDupModal(false); },
+              disabled: dupBusy,
+              style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "7px 14px", fontSize: 12.5 })
+            }, "Cancelar"),
+            /*#__PURE__*/React.createElement("button", {
+              onClick: doConfirmRemoval,
+              disabled: dupBusy || totalRemover === 0,
+              style: { padding: "7px 16px", borderRadius: 8, border: "none", background: "#ef4444", color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: (dupBusy || totalRemover === 0) ? "default" : "pointer", opacity: (dupBusy || totalRemover === 0) ? 0.5 : 1 }
+            }, dupBusy ? "Removendo..." : "Excluir selecionadas")
+          )
+        )
+      )
+    );
+  }
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       minHeight: "100vh",
       height: anyModal ? "100vh" : undefined,
@@ -9650,16 +10093,23 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: function onClick() {
+      setImportBigConfirm(false);
       return setImportStep(2);
     },
     style: mkB(null, true, T)
-  }, "Voltar"), /*#__PURE__*/React.createElement("button", {
-    onClick: doImport,
+  }, "Voltar"), Object.values(preview.mapped).flat().length >= 1000 && !importBigConfirm && /*#__PURE__*/React.createElement("span", {
+    style: { fontSize: 11.5, color: "#f59e0b", alignSelf: "center", marginRight: 4 }
+  }, "Lote grande (" + Object.values(preview.mapped).flat().length + " tarefas) \u2014 confirme duas vezes"), /*#__PURE__*/React.createElement("button", {
+    onClick: function () {
+      var total = Object.values(preview.mapped).flat().length;
+      if (total >= 1000 && !importBigConfirm) { setImportBigConfirm(true); return; }
+      doImport();
+    },
     disabled: importing || Object.keys(preview.mapped).length === 0,
-    style: _objectSpread(_objectSpread({}, mkB("#10b981", false, T)), {}, {
+    style: _objectSpread(_objectSpread({}, mkB((Object.values(preview.mapped).flat().length >= 1000 && !importBigConfirm) ? "#f59e0b" : "#10b981", false, T)), {}, {
       opacity: importing || Object.keys(preview.mapped).length === 0 ? 0.5 : 1
     })
-  }, importing ? "Importando..." : "Confirmar"))))), /*#__PURE__*/React.createElement("div", {
+  }, importing ? "Importando..." : (Object.values(preview.mapped).flat().length >= 1000 && !importBigConfirm ? "Confirmar volume grande" : "Confirmar")))))), /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "18px 28px 0",
       borderBottom: "1px solid ".concat(T.borderL)
@@ -9803,26 +10253,14 @@ function App() {
   }, /*#__PURE__*/React.createElement(Trash2, {
     size: 14
   }), "Lixeira", trashCount > 0 ? " (".concat(trashCount, ")") : ""), isAdmin && /*#__PURE__*/React.createElement("button", {
-    onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee41() {
-      var n;
-      return _regenerator().w(function (_context42) {
-        while (1) switch (_context42.n) {
-          case 0:
-            _context42.n = 1;
-            return dedupeTasks();
-          case 1:
-            n = _context42.v;
-            if (n > 0) setSaveError("Removidas ".concat(n, " duplicatas."));
-            setTimeout(function () {
-              return setSaveError(function (s) {
-                return s.startsWith("Removidas") ? "" : s;
-              });
-            }, 4000);
-          case 2:
-            return _context42.a(2);
-        }
-      }, _callee41);
-    })),
+    onClick: function () {
+      var groups = findDuplicateGroups();
+      setDupGroups(groups);
+      var initSel = {};
+      groups.forEach(function (g) { initSel[g.key] = true; });
+      setDupSel(initSel);
+      setShowDupModal(true);
+    },
     style: {
       padding: "6px 12px",
       borderRadius: 8,
@@ -9836,10 +10274,11 @@ function App() {
       alignItems: "center",
       gap: 6
     },
-    title: "Remover tarefas com mesmo titulo/cliente/mes/prazo/analista"
+    title: "Lista as possiveis duplicatas para revisar antes de excluir"
   }, /*#__PURE__*/React.createElement(Layers, {
     size: 14
   }), "Duplicatas"), has("import") && /*#__PURE__*/React.createElement("button", {
+
     onClick: function onClick() {
       return setShowImport(true);
     },
@@ -9849,7 +10288,29 @@ function App() {
     })
   }, /*#__PURE__*/React.createElement(Upload, {
     size: 14
-  }), "Importar"), has("export") && /*#__PURE__*/React.createElement("button", {
+  }), "Importar"), has("import") && lastImport && lastImport.importId && (cancelImportConfirm ? /*#__PURE__*/React.createElement("span", {
+    style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 8, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.35)" }
+  },
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 11.5, color: "#ef4444", fontWeight: 600 } }, "Apagar " + lastImport.total + " em definitivo?"),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: function () { if (!cancelingImport) cancelLastImport(); },
+      disabled: cancelingImport,
+      style: { padding: "4px 12px", borderRadius: 7, border: "none", background: "#ef4444", color: "#fff", fontSize: 11.5, fontWeight: 700, cursor: cancelingImport ? "default" : "pointer", opacity: cancelingImport ? 0.6 : 1 }
+    }, cancelingImport ? "Apagando..." : "Confirmar"),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: function () { setCancelImportConfirm(false); },
+      disabled: cancelingImport,
+      style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { fontSize: 11.5, padding: "4px 10px" })
+    }, "Nao")
+  ) : /*#__PURE__*/React.createElement("button", {
+    onClick: function () { setCancelImportConfirm(true); },
+    title: "Apaga em definitivo o ultimo lote importado (" + lastImport.total + " tarefas, por " + (lastImport.by || "?") + ") sem passar pela lixeira.",
+    style: {
+      padding: "6px 13px", borderRadius: 8, border: "1px solid rgba(239,68,68,0.4)",
+      background: "rgba(239,68,68,0.08)", color: "#ef4444", fontSize: 12, fontWeight: 600,
+      cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Trash2, { size: 14 }), "Cancelar importacao (" + lastImport.total + ")")), has("export") && /*#__PURE__*/React.createElement("button", {
     onClick: exportXLSX,
     style: _objectSpread(_objectSpread({}, mkB("#10b981", false, T)), {}, {
       padding: "6px 13px",
@@ -10432,7 +10893,30 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement(Trash2, {
     size: 13
-  }), "Excluir selecionadas"))), bulkEditOpen && bulkSel.size > 0 && /*#__PURE__*/React.createElement("div", {
+  }), "Excluir selecionadas"))), isAdmin && has("delete_task") && (bulkHardConfirm ? /*#__PURE__*/React.createElement("span", {
+    style: { display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 6, padding: "4px 8px", borderRadius: 8, background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.5)" }
+  },
+    /*#__PURE__*/React.createElement("span", { style: { fontSize: 11.5, color: "#dc2626", fontWeight: 700 } }, "Apagar " + bulkSel.size + " EM DEFINITIVO (sem lixeira)?"),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: function () { if (!cancelingImport) bulkHardDelete(); },
+      disabled: cancelingImport,
+      style: { padding: "4px 12px", borderRadius: 7, border: "none", background: "#dc2626", color: "#fff", fontSize: 11.5, fontWeight: 700, cursor: cancelingImport ? "default" : "pointer", opacity: cancelingImport ? 0.6 : 1 }
+    }, cancelingImport ? "Apagando..." : "Confirmar"),
+    /*#__PURE__*/React.createElement("button", {
+      onClick: function () { setBulkHardConfirm(false); },
+      disabled: cancelingImport,
+      style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { fontSize: 11.5, padding: "4px 10px" })
+    }, "Nao")
+  ) : /*#__PURE__*/React.createElement("button", {
+    onClick: function () { setBulkHardConfirm(true); setBulkConfirm(false); setBulkEditOpen(false); },
+    disabled: bulkSel.size === 0,
+    title: "Somente admin: apaga em definitivo, sem passar pela lixeira. Use para grandes volumes.",
+    style: {
+      marginLeft: 6, padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(220,38,38,0.55)",
+      background: "rgba(220,38,38,0.12)", color: "#dc2626", fontSize: 12.5, fontWeight: 700,
+      cursor: "pointer", opacity: bulkSel.size === 0 ? 0.4 : 1, display: "inline-flex", alignItems: "center", gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Trash2, { size: 13 }), "Excluir definitivo")), bulkEditOpen && bulkSel.size > 0 && /*#__PURE__*/React.createElement("div", {
     style: { marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(99,102,241,0.2)" }
   },
     /*#__PURE__*/React.createElement("div", {
@@ -11236,7 +11720,7 @@ function App() {
         onDelete: softDelete
       });
     })));
-  }))));
+  }))), showDupModal && renderDupModal()));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));
 </script>
