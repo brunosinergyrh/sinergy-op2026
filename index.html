@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.5.1)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.5.9-duplicatas-revisao-2026-07-16";
+window.OP2026_BUILD = "v10.6-descricao-solicitacao-2026-07-20";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -627,7 +627,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.5.9-duplicatas-revisao-2026-07-16", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6-descricao-solicitacao-2026-07-20", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -1618,6 +1618,50 @@ function ModalHead(_ref3) {
     onClick: onClose,
     T: T
   }));
+}
+
+/* ── DetailsField: campo de texto longo colapsavel (nao ocupa espaco por padrao) ── */
+function DetailsField(_ref) {
+  var label = _ref.label, value = _ref.value, onChange = _ref.onChange, T = _ref.T;
+  return /*#__PURE__*/React.createElement("details", {
+    style: {
+      marginBottom: 10,
+      border: "1px solid " + T.borderL,
+      borderRadius: 8,
+      background: T.panelBg
+    },
+    open: !!value
+  }, /*#__PURE__*/React.createElement("summary", {
+    style: {
+      cursor: "pointer",
+      padding: "8px 12px",
+      fontSize: 11,
+      color: T.textM,
+      userSelect: "none",
+      listStyle: "none"
+    }
+  }, "\uD83D\uDCDD " + label + (value ? " \u2713" : "")), /*#__PURE__*/React.createElement("div", {
+    style: { padding: "0 12px 10px" }
+  }, /*#__PURE__*/React.createElement("textarea", {
+    value: value,
+    onChange: function onChange_(ev) {
+      return onChange(ev.target.value);
+    },
+    rows: 3,
+    style: {
+      width: "100%",
+      resize: "vertical",
+      minHeight: 60,
+      padding: "8px 10px",
+      borderRadius: 6,
+      border: "1px solid " + T.borderL,
+      background: T.inputBg || T.panelBg,
+      color: T.text,
+      fontSize: 12.5,
+      fontFamily: "inherit",
+      boxSizing: "border-box"
+    }
+  })));
 }
 
 /* ── AutoInput ── */
@@ -6409,6 +6453,7 @@ function App() {
       processo: "",
       situacao: "",
       solicitacaoWorkflow: "",
+      descricaoSolicitacao: "",
       mes: "",
       esteira: "",
       repeat: false,
@@ -8325,6 +8370,7 @@ function App() {
                 processo: form.processo,
                 situacao: form.situacao,
                 solicitacaoWorkflow: form.solicitacaoWorkflow,
+                descricaoSolicitacao: form.descricaoSolicitacao,
                 mes: form.mes
               }) : t;
             })));
@@ -8380,6 +8426,7 @@ function App() {
                 processo: form.processo,
                 situacao: form.situacao,
                 solicitacaoWorkflow: form.solicitacaoWorkflow,
+                descricaoSolicitacao: form.descricaoSolicitacao,
                 mes: shiftMonth(form.mes, form.repeatFreq, _ri),
                 status: "pendente",
                 createdAt: new Date().toISOString(),
@@ -8409,6 +8456,7 @@ function App() {
               processo: "",
               situacao: "",
               solicitacaoWorkflow: "",
+              descricaoSolicitacao: "",
               mes: "",
               esteira: "",
               repeat: false,
@@ -8835,6 +8883,7 @@ function App() {
       processo: t.processo || "",
       situacao: t.situacao || "",
       solicitacaoWorkflow: t.solicitacaoWorkflow || "",
+      descricaoSolicitacao: t.descricaoSolicitacao || "",
       mes: t.mes || ""
     });
     setEditId(t.id);
@@ -8856,6 +8905,7 @@ function App() {
       processo: "",
       situacao: "",
       solicitacaoWorkflow: "",
+      descricaoSolicitacao: "",
       mes: "",
       esteira: "",
       repeat: false,
@@ -8868,7 +8918,7 @@ function App() {
     setShowForm(false);
     setForm({
       title: "", responsibles: [], coordenador: "", gerente: "", deadline: "", dataCredito: "",
-      priority: "alta", cliente: "", processo: "", situacao: "", solicitacaoWorkflow: "", mes: "",
+      priority: "alta", cliente: "", processo: "", situacao: "", solicitacaoWorkflow: "", descricaoSolicitacao: "", mes: "",
       esteira: "", repeat: false, repeatFreq: "mensal", repeatCount: 12
     });
   };
@@ -8890,6 +8940,7 @@ function App() {
         processo: p.form.processo,
         situacao: p.form.situacao,
         solicitacaoWorkflow: p.form.solicitacaoWorkflow,
+        descricaoSolicitacao: p.form.descricaoSolicitacao,
         mes: p.form.mes
       }) : t;
     })));
@@ -8919,7 +8970,8 @@ function App() {
         cliente: p.form.cliente,
         processo: p.form.processo,
         situacao: p.form.situacao,
-        solicitacaoWorkflow: p.form.solicitacaoWorkflow
+        solicitacaoWorkflow: p.form.solicitacaoWorkflow,
+        descricaoSolicitacao: p.form.descricaoSolicitacao
       });
     })));
     mutate(nt);
@@ -11520,7 +11572,18 @@ function App() {
     value: "media"
   }, "Media"), /*#__PURE__*/React.createElement("option", {
     value: "baixa"
-  }, "Baixa")))), !editId && /*#__PURE__*/React.createElement("div", {
+  }, "Baixa")))), /*#__PURE__*/React.createElement(DetailsField, {
+    label: "Descri\u00E7\u00E3o Solicita\u00E7\u00E3o",
+    value: form.descricaoSolicitacao,
+    onChange: function onChange(v) {
+      return setForm(function (f) {
+        return _objectSpread(_objectSpread({}, f), {}, {
+          descricaoSolicitacao: v
+        });
+      });
+    },
+    T: T
+  }), !editId && /*#__PURE__*/React.createElement("div", {
     style: { marginBottom: 10, padding: "10px 12px", borderRadius: 8, background: T.panelBg, border: "1px solid " + T.borderL }
   },
     /*#__PURE__*/React.createElement("label", { style: { display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12.5, color: T.text, fontWeight: 600 } },
