@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.4)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.5)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.4-antiduplocreacao-2026-07-21";
+window.OP2026_BUILD = "v10.6.5-viewmode-sync-servidor-2026-07-21";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.4-antiduplocreacao-2026-07-21", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.5-viewmode-sync-servidor-2026-07-21", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -6666,7 +6666,12 @@ function App() {
     setViewModeRaw(mode);
     try {
       var _uid2 = sessionRef.current && sessionRef.current.id;
-      if (_uid2) localStorage.setItem('sinergy_viewmode_' + _uid2, mode);
+      if (_uid2) {
+        localStorage.setItem('sinergy_viewmode_' + _uid2, mode);
+        // [v10.6.5] Tambem sincroniza no Supabase, para a preferencia (cards/tabela)
+        // seguir o usuario em qualquer computador/navegador, nao so no que ele estava.
+        savePrefsFor(_uid2, filters, sortIdx, mode);
+      }
     } catch (_e) {}
   };
   var toggleRowExpand = function toggleRowExpand(id) {
@@ -7091,7 +7096,7 @@ function App() {
     return loadPrefsFor;
   }();
   var savePrefsFor = useCallback(/*#__PURE__*/function () {
-    var _ref19 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee20(uid, f, si) {
+    var _ref19 = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee20(uid, f, si, vm) {
       var r, all, _t12;
       return _regenerator().w(function (_context21) {
         while (1) switch (_context21.p = _context21.n) {
@@ -7108,9 +7113,12 @@ function App() {
           case 2:
             r = _context21.v;
             all = r ? JSON.parse(r.value) : {};
+            // [v10.6.5] Preserva viewMode ja salvo quando esta chamada nao o informa
+            // (ex.: mudanca de filtro/ordenacao nao deve apagar a preferencia de card/tabela).
             all[uid] = {
               filters: f,
-              sortIdx: si
+              sortIdx: si,
+              viewMode: vm !== undefined ? vm : (all[uid] && all[uid].viewMode)
             };
             _context21.n = 3;
             return window.storage.set(PREFS_KEY, JSON.stringify(all), true);
@@ -7876,9 +7884,12 @@ function App() {
               var _savedTheme = localStorage.getItem('sinergy_theme_' + user.id);
               if (_savedTheme !== null) setDarkMode(_savedTheme === 'dark');
             } catch(_e) {}
-            // Carregar modo de visualizacao da lista (tabela/cards) do usuario
+            // [v10.6.5] Carregar modo de visualizacao da lista (tabela/cards) do usuario —
+            // prioriza o que esta salvo no Supabase (segue o usuario em qualquer computador);
+            // so cai para o localStorage deste navegador se o servidor nao tiver nada ainda.
             try {
-              var _savedVM = localStorage.getItem('sinergy_viewmode_' + user.id);
+              var _vmFromServer = pr && pr.viewMode;
+              var _savedVM = _vmFromServer || localStorage.getItem('sinergy_viewmode_' + user.id);
               setViewModeRaw(_savedVM === 'cards' ? 'cards' : 'tabela');
             } catch(_e) {}
             setTab("workspace");
