@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.5.1)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.5.2)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.5.1-darkmode-select-calendario-2026-07-21";
+window.OP2026_BUILD = "v10.6.5.2-contraste-dropdown-calendario-2026-07-21";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -4460,26 +4460,26 @@ function CalendarView(props) {
         isAdminP && gerOpts.length > 0 && e("select", {
           value: selGerente,
           onChange: function (ev) { setSelGerente(ev.target.value); setSelCoord("__all__"); setSelAnalista("__all__"); setSelDay(null); },
-          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none", colorScheme: T.cs }
+          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.selBg, color: T.text, outline: "none", colorScheme: T.cs }
         },
-          e("option", { value: "__all__" }, "Todos os gerentes"),
-          gerOpts.map(function (g) { return e("option", { key: g, value: g }, g); })
+          e("option", { value: "__all__", style: { background: T.selBg, color: T.text } }, "Todos os gerentes"),
+          gerOpts.map(function (g) { return e("option", { key: g, value: g, style: { background: T.selBg, color: T.text } }, g); })
         ),
         canDrill && coordOpts.length > 0 && e("select", {
           value: selCoord,
           onChange: function (ev) { setSelCoord(ev.target.value); setSelAnalista("__all__"); setSelDay(null); },
-          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none", colorScheme: T.cs }
+          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.selBg, color: T.text, outline: "none", colorScheme: T.cs }
         },
-          e("option", { value: "__all__" }, "Todas as coordenações"),
-          coordOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
+          e("option", { value: "__all__", style: { background: T.selBg, color: T.text } }, "Todas as coordenações"),
+          coordOpts.map(function (c) { return e("option", { key: c, value: c, style: { background: T.selBg, color: T.text } }, c); })
         ),
         (canDrill || isCoordP) && analistaOpts.length > 0 && e("select", {
           value: selAnalista,
           onChange: function (ev) { setSelAnalista(ev.target.value); setSelDay(null); },
-          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none", colorScheme: T.cs }
+          style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.selBg, color: T.text, outline: "none", colorScheme: T.cs }
         },
-          e("option", { value: "__all__" }, isCoordP ? "Toda a coordenação" : "Todos os analistas"),
-          analistaOpts.map(function (a) { return e("option", { key: a, value: a }, a); })
+          e("option", { value: "__all__", style: { background: T.selBg, color: T.text } }, isCoordP ? "Toda a coordenação" : "Todos os analistas"),
+          analistaOpts.map(function (a) { return e("option", { key: a, value: a, style: { background: T.selBg, color: T.text } }, a); })
         ),
         e("span", { style: { fontSize: 11, color: T.textM } },
           selAnalista !== "__all__" ? selAnalista
@@ -4513,10 +4513,10 @@ function CalendarView(props) {
       viewMode === "esteira" && e("select", {
         value: selEsteira,
         onChange: function (ev) { setSelEsteira(ev.target.value); setSelDay(null); },
-        style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.inpBg, color: T.text, outline: "none", colorScheme: T.cs }
+        style: { fontSize: 11.5, padding: "5px 8px", borderRadius: 7, border: "1px solid " + T.border, background: T.selBg, color: T.text, outline: "none", colorScheme: T.cs }
       },
-        e("option", { value: "__all__" }, "Selecione uma esteira"),
-        (props.esteiras || []).map(function (es) { return e("option", { key: es.id, value: es.id }, es.label || es.name || es.id); })
+        e("option", { value: "__all__", style: { background: T.selBg, color: T.text } }, "Selecione uma esteira"),
+        (props.esteiras || []).map(function (es) { return e("option", { key: es.id, value: es.id, style: { background: T.selBg, color: T.text } }, es.label || es.name || es.id); })
       )
     ),
     // [v10.5.15] Barra de resumo do mes (estilo mockup de homologacao)
