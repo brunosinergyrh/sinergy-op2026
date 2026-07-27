@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.6)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.7)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.6-lembrar-filtro-esocial-2026-07-21";
+window.OP2026_BUILD = "v10.6.7-import24h-conclusao-calendario-2026-07-23";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.6-lembrar-filtro-esocial-2026-07-21", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.7-import24h-conclusao-calendario-2026-07-23", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4648,6 +4648,9 @@ function CalendarView(props) {
                   ? e("div", { style: { color: "#10b981", fontWeight: 600, fontSize: 11 } }, "\u2713 " + (t.completedAt ? fmtDT(t.completedAt).split(" ").slice(-1)[0] : ""))
                   : e("div", { style: { color: t.status === "concluida" ? "#10b981" : late ? "#ef4444" : T.textM, fontWeight: 600, fontSize: 11 } },
                       t.status === "concluida" ? "Concluída" : late ? "Atrasada" : "Pendente"),
+                // [v10.6.8] Quem e quando concluiu — visivel nas duas visualizacoes (por prazo e por conclusao).
+                t.status === "concluida" && t.completedBy && e("div", { style: { color: T.textD, fontSize: 9.5, marginTop: 1 } },
+                  t.completedBy + (t.completedAt ? " · " + fmtDT(t.completedAt) : "")),
                 t.priority === "alta" && t.status !== "concluida" && e("div", { style: { color: "#ef4444", fontSize: 9.5, fontWeight: 700, marginTop: 1 } }, "PRIORIDADE ALTA")));
           })
     )
@@ -6648,10 +6651,37 @@ function App() {
     _useState130 = _slicedToArray(_useState129, 2),
     importing = _useState130[0],
     setImporting = _useState130[1];
-  var _useStateLI = useState(function () { try { return JSON.parse(localStorage.getItem("op2026_last_import") || "null"); } catch (_) { return null; } }),
+  // [v10.6.7] O botao "Cancelar importacao" nao pode ficar disponivel indefinidamente —
+  // apaga em definitivo, sem passar pela lixeira. Expira sozinho depois de 24h.
+  var _useStateLI = useState(function () {
+    try {
+      var _raw = JSON.parse(localStorage.getItem("op2026_last_import") || "null");
+      if (_raw && _raw.at && (Date.now() - new Date(_raw.at).getTime()) > 24 * 60 * 60 * 1000) {
+        localStorage.removeItem("op2026_last_import");
+        return null;
+      }
+      return _raw;
+    } catch (_) { return null; }
+  }),
     _sLI = _slicedToArray(_useStateLI, 2),
     lastImport = _sLI[0],
     setLastImport = _sLI[1];
+  // Enquanto a aba ficar aberta, confere periodicamente se o prazo de 24h venceu,
+  // para o botao sumir sozinho mesmo sem recarregar a pagina.
+  useEffect(function () {
+    if (!lastImport || !lastImport.at) return;
+    var msLeft = 24 * 60 * 60 * 1000 - (Date.now() - new Date(lastImport.at).getTime());
+    if (msLeft <= 0) {
+      try { localStorage.removeItem("op2026_last_import"); } catch (_e) {}
+      setLastImport(null);
+      return;
+    }
+    var _t = setTimeout(function () {
+      try { localStorage.removeItem("op2026_last_import"); } catch (_e) {}
+      setLastImport(null);
+    }, Math.min(msLeft, 2147483000));
+    return function () { return clearTimeout(_t); };
+  }, [lastImport]);
   var _useStateIBC = useState(false),
     _sIBC = _slicedToArray(_useStateIBC, 2),
     importBigConfirm = _sIBC[0],
