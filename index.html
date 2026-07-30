@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.8)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.10)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.8-wf-no-calendario-2026-07-23";
+window.OP2026_BUILD = "v10.6.10-organizar-cards-2026-07-23";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.8-wf-no-calendario-2026-07-23", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.10-organizar-cards-2026-07-23", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -1417,6 +1417,10 @@ var toMonthStr = function toMonthStr(val) {
   if (!val) return "";
   var s = String(val).trim();
   if (/^\d{4}-\d{2}$/.test(s)) return s;
+  // [v10.6.9] "2026-7" (sem zero a esquerda) tambem e valido — antes caia no fallback
+  // sem normalizar, criando duas entradas distintas ("2026-7" e "2026-07") para o mesmo mes.
+  var mYm = s.match(/^(\d{4})-(\d{1,2})$/);
+  if (mYm) return "".concat(mYm[1], "-").concat(mYm[2].padStart(2, "0"));
   var m1 = s.match(/^(\d{1,2})\/(\d{4})$/);
   if (m1) return "".concat(m1[2], "-").concat(m1[1].padStart(2, "0"));
   var mn = {
@@ -5093,6 +5097,9 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var _fc = useState("__all__"), fCoord = _fc[0], setFCoord = _fc[1];
   var _fger = useState("__all__"), fGerente = _fger[0], setFGerente = _fger[1];
   var _fcl = useState("__all__"), fCli = _fcl[0], setFCli = _fcl[1];
+  // [v10.6.9] Filtro por mes (referencia) no Painel Gerencial — com varios meses ja
+  // importados, os totais sem esse filtro ficam mesclando periodos ja fechados com o atual.
+  var _fmes = useState("__all__"), fMes = _fmes[0], setFMes = _fmes[1];
   var _act = useState([]), activity = _act[0], setActivity = _act[1];
   var _actL = useState(true), actLoading = _actL[0], setActLoading = _actL[1];
   var _slaP = useState(7), slaPeriod = _slaP[0], setSlaPeriod = _slaP[1];
@@ -5114,6 +5121,143 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     } catch (_e) {}
   };
 
+  // [v10.6-B] Ordem + LARGURA personalizada dos cards do Painel Gerencial, com um modo
+  // "Organizar cards" que precisa ser ligado para poder arrastar/redimensionar — fora
+  // desse modo o painel fica 100% normal (sem icones, sem interferir em cliques).
+  var _ordLS = (function () {
+    try {
+      var raw = localStorage.getItem('sinergy_cardorder_' + (session && session.id));
+      var arr = raw ? JSON.parse(raw) : null;
+      return Array.isArray(arr) ? arr : [];
+    } catch (_e) { return []; }
+  })();
+  var _widLS = (function () {
+    try {
+      var raw = localStorage.getItem('sinergy_cardwidths_' + (session && session.id));
+      var obj = raw ? JSON.parse(raw) : null;
+      return obj && typeof obj === "object" ? obj : {};
+    } catch (_e) { return {}; }
+  })();
+  var _ord = useState(_ordLS), cardOrder = _ord[0], setCardOrder = _ord[1];
+  var _wid = useState(_widLS), cardWidths = _wid[0], setCardWidths = _wid[1];
+  var _drag = useState(null), draggedId = _drag[0], setDraggedId = _drag[1];
+  var _editCards = useState(false), cardsEditMode = _editCards[0], setCardsEditMode = _editCards[1];
+  useEffect(function () {
+    var uid = session && session.id;
+    if (!uid) return;
+    (async function () {
+      try {
+        var r = await window.storage.get(PREFS_KEY, true);
+        var all = r ? JSON.parse(r.value) : {};
+        var savedOrder = all[uid] && all[uid].cardOrder;
+        var savedWidths = all[uid] && all[uid].cardWidths;
+        if (Array.isArray(savedOrder) && savedOrder.length) {
+          setCardOrder(savedOrder);
+          try { localStorage.setItem('sinergy_cardorder_' + uid, JSON.stringify(savedOrder)); } catch (_e2) {}
+        }
+        if (savedWidths && typeof savedWidths === "object") {
+          setCardWidths(savedWidths);
+          try { localStorage.setItem('sinergy_cardwidths_' + uid, JSON.stringify(savedWidths)); } catch (_e2) {}
+        }
+      } catch (_e) {}
+    })();
+  }, [session && session.id]);
+  var persistCardLayout = function (order, widths) {
+    setCardOrder(order);
+    setCardWidths(widths);
+    var uid = session && session.id;
+    if (!uid) return;
+    try {
+      localStorage.setItem('sinergy_cardorder_' + uid, JSON.stringify(order));
+      localStorage.setItem('sinergy_cardwidths_' + uid, JSON.stringify(widths));
+    } catch (_e) {}
+    (async function () {
+      try {
+        var r = await window.storage.get(PREFS_KEY, true);
+        var all = r ? JSON.parse(r.value) : {};
+        all[uid] = Object.assign({}, all[uid], { cardOrder: order, cardWidths: widths });
+        await window.storage.set(PREFS_KEY, JSON.stringify(all), true);
+      } catch (_e) {}
+    })();
+  };
+  var MIN_W = 1, MAX_W = 3;
+  // [fix] Largura padrao explicita por card — nao dava pra "adivinhar" olhando o style,
+  // porque cards como "Hoje por analista" sao componentes proprios (a regra "ocupa 2
+  // colunas" fica escondida dentro do proprio componente, nao dava pra ler de fora).
+  // Isso causava o bug: reduzir a largura dele nao "grudava" depois de sair do modo
+  // de organizar, porque o sistema nunca sabia qual era o valor padrao real dele.
+  var DEFAULT_CARD_WIDTHS = { hojeAnalista: 2 };
+  var widthOf = function (id) {
+    if (cardWidths.hasOwnProperty(id)) return cardWidths[id];
+    return DEFAULT_CARD_WIDTHS[id] || MIN_W;
+  };
+  var changeWidth = function (id, delta) {
+    var cur = widthOf(id);
+    var next = Math.max(MIN_W, Math.min(MAX_W, cur + delta));
+    if (next === cur) return;
+    var widths = Object.assign({}, cardWidths, _defineProperty({}, id, next));
+    persistCardLayout(cardOrder.length ? cardOrder : Object.keys(cardMapRef.current || {}), widths);
+  };
+  // Envolve o card com os controles de arrastar/redimensionar. A largura (gridColumn)
+  // e sempre aplicada num DIV PROPRIO que envolve o card — nunca via cloneElement no
+  // card em si, porque cards que sao componentes (como "Hoje por analista") ignoram
+  // um "style" passado de fora, entao a largura nunca "colava" de verdade neles.
+  var withDrag = function (id, node) {
+    if (!node) return null;
+    var w = widthOf(id);
+    if (!cardsEditMode) {
+      return e("div", { key: id, style: { gridColumn: "span " + w, minWidth: 0 } }, node);
+    }
+    var isDragging = draggedId === id;
+    var doDrop = function (ev) {
+      ev.preventDefault();
+      if (!draggedId || draggedId === id) { setDraggedId(null); return; }
+      var newOrder = cardOrder.length ? cardOrder.slice() : Object.keys(cardMapRef.current || {});
+      var from = newOrder.indexOf(draggedId), to = newOrder.indexOf(id);
+      if (from === -1 || to === -1) { setDraggedId(null); return; }
+      newOrder.splice(from, 1);
+      newOrder.splice(to, 0, draggedId);
+      persistCardLayout(newOrder, cardWidths);
+      setDraggedId(null);
+    };
+    return e("div", {
+      key: id,
+      style: { position: "relative", gridColumn: "span " + w, minWidth: 0, opacity: isDragging ? 0.45 : 1, transition: "opacity .15s" },
+      onDragOver: function (ev) { ev.preventDefault(); },
+      onDrop: doDrop
+    },
+      // Alca de arrastar + controles de largura — visiveis so no modo "Organizar cards".
+      e("div", {
+        style: {
+          position: "absolute", top: -11, left: 14, zIndex: 5,
+          display: "flex", alignItems: "center", gap: 2,
+          background: T.panelBg, border: "1px solid " + T.borderL, borderBottom: "none",
+          borderRadius: "5px 5px 0 0", padding: "1px 3px"
+        }
+      },
+        e("div", {
+          draggable: true,
+          title: "Arraste para reorganizar",
+          onDragStart: function (ev) { setDraggedId(id); try { ev.dataTransfer.effectAllowed = "move"; } catch (_e) {} },
+          onDragEnd: function () { setDraggedId(null); },
+          style: { width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", cursor: "grab", color: T.textD, fontSize: 11, lineHeight: 1, userSelect: "none" }
+        }, "⠿"),
+        e("button", {
+          title: "Diminuir largura", disabled: w <= MIN_W,
+          onClick: function () { changeWidth(id, -1); },
+          style: { width: 15, height: 15, display: "flex", alignItems: "center", justifyContent: "center", cursor: w <= MIN_W ? "default" : "pointer", color: w <= MIN_W ? T.textD : T.textM, opacity: w <= MIN_W ? 0.4 : 1, fontSize: 11, lineHeight: 1, border: "none", background: "transparent" }
+        }, "−"),
+        e("button", {
+          title: "Aumentar largura", disabled: w >= MAX_W,
+          onClick: function () { changeWidth(id, 1); },
+          style: { width: 15, height: 15, display: "flex", alignItems: "center", justifyContent: "center", cursor: w >= MAX_W ? "default" : "pointer", color: w >= MAX_W ? T.textD : T.textM, opacity: w >= MAX_W ? 0.4 : 1, fontSize: 11, lineHeight: 1, border: "none", background: "transparent" }
+        }, "+")
+      ),
+      node
+    );
+  };
+  var cardMapRef = useRef({});
+
   // ---- conjunto de tarefas conforme o papel ----
   var allTasks = Object.entries(tasks || {}).reduce(function (acc, _kv) { var eid = _kv[0], arr = _kv[1]; return acc.concat((arr || []).map(function (t) { return t._eid ? t : Object.assign({}, t, { _eid: eid }); })); }, []);
   // admin = tudo; gerente = tarefas do seu time (gerenteId === scope); coordenadora = tarefas onde ela e a coordenadora
@@ -5126,6 +5270,11 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var gerenteOpts = canSeeAll ? distinct(scoped.map(function (t) { return t.gerente; }).filter(Boolean)) : [];
   var coordOpts = distinct(scoped.map(function (t) { return t.coordenador; }).filter(Boolean));
   var cliOpts = distinct(scoped.map(function (t) { return t.cliente; }).filter(Boolean));
+  // [v10.6.9] Filtro por mes considera o PRAZO (deadline) da tarefa, nao o campo manual
+  // "Mes"/referencia — o deadline ja vem sempre no formato ISO (YYYY-MM-DD), sem risco de
+  // duplicar por formatos diferentes.
+  var deadlineMonth = function (t) { return t.deadline ? t.deadline.slice(0, 7) : ""; };
+  var mesOpts = distinct(scoped.map(deadlineMonth).filter(Boolean)).sort().reverse();
 
   // drill-down: gerente (admin only) → coordenadora → cliente
   var view = scoped;
@@ -5181,6 +5330,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   }
   if (isManager && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fCli !== "__all__") view = view.filter(function (t) { return (t.cliente || "") === fCli; });
+  if (fMes !== "__all__") view = view.filter(function (t) { return deadlineMonth(t) === fMes; });
 
   // datas de referencia (local)
   var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
@@ -5206,6 +5356,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   if (canSeeAll && fGerente !== "__all__") unassigned = unassigned.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
   if (isManager && fCoord !== "__all__") unassigned = unassigned.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fCli !== "__all__") unassigned = unassigned.filter(function (t) { return (t.cliente || "") === fCli; });
+  if (fMes !== "__all__") unassigned = unassigned.filter(function (t) { return deadlineMonth(t) === fMes; });
 
   // Sem coordenador: gerente ve seu time sem coord; admin ve tudo sem coord (com filtros ativos)
   var unassignedCoord = null;
@@ -5214,6 +5365,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     unassignedCoord = _ucBase.filter(function (t) { return !done_(t) && noCoord(t); });
     if (canSeeAll && fGerente !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
     if (fCli !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return (t.cliente || "") === fCli; });
+    if (fMes !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return deadlineMonth(t) === fMes; });
   }
 
   // Sem gerente: admin apenas
@@ -5221,6 +5373,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   if (canSeeAll) {
     unassignedGerente = allTasks.filter(function (t) { return !done_(t) && !t.gerenteId; });
     if (fCli !== "__all__") unassignedGerente = unassignedGerente.filter(function (t) { return (t.cliente || "") === fCli; });
+    if (fMes !== "__all__") unassignedGerente = unassignedGerente.filter(function (t) { return deadlineMonth(t) === fMes; });
   }
 
   // ---- SLA: cumprimento de prazo por analista ----
@@ -5228,6 +5381,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var slaPool = fCli !== "__all__" ? scoped.filter(function (t) { return (t.cliente || "") === fCli; }) : scoped;
   if (canSeeAll && fGerente !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
   if (isManager && fCoord !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
+  if (fMes !== "__all__") slaPool = slaPool.filter(function (t) { return deadlineMonth(t) === fMes; });
   var slaCutoffStr = null;
   if (slaPeriod !== "all") {
     var slaCutoffDate = new Date(now.getTime() - Number(slaPeriod) * 86400000);
@@ -5759,11 +5913,32 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         }, e("option", { value: "__all__" }, "Todos os clientes"),
           cliOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
         ),
+        // [v10.6.9] Filtro por mes de referencia — com varios meses ja importados, os
+        // totais gerais ficavam misturando periodos ja fechados com o mes corrente.
+        mesOpts.length > 0 && e("select", {
+          value: fMes, onChange: function (ev) { setFMes(ev.target.value); },
+          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
+        }, e("option", { value: "__all__" }, "Todos os meses"),
+          mesOpts.map(function (m) { return e("option", { key: m, value: m }, fmtMonth(m)); })
+        ),
         !inline && e(CloseBtn, { onClick: onClose, T: T })
       )
     ),
     // Body
     e("div", { style: inline ? { paddingTop: 20 } : { padding: 20 } },
+      // [v10.6-B] Organizar cards: liga/desliga o modo de arrastar e redimensionar os
+      // cards abaixo. Fica discreto, entre o subtitulo e os totais.
+      e("div", { style: { marginBottom: 10 } },
+        e("button", {
+          onClick: function () { setCardsEditMode(!cardsEditMode); },
+          style: {
+            fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 20, cursor: "pointer",
+            border: cardsEditMode ? "1px solid #6366f1" : "1px solid " + T.borderL,
+            background: cardsEditMode ? "rgba(99,102,241,0.12)" : "transparent",
+            color: cardsEditMode ? "#6366f1" : T.textM
+          }
+        }, cardsEditMode ? "✓ Organizar cards (ativo)" : "Organizar cards")
+      ),
       // KPIs
       e("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 } },
         kpi("Total", total, T.text),
@@ -5774,13 +5949,12 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       ),
       total === 0
         ? emptyMsg("Nenhuma tarefa no escopo atual.")
-        : e("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 } },
-            // Cliente
-            section("Pendências por cliente", Layers,
+        : (function () {
+            var CARD_DEFS = [
+              { id: "clientes", node: section("Pendências por cliente", Layers,
               byCliente.length ? e("div", { style: scrollBox }, byCliente.map(clienteRow)) : emptyMsg("Sem dados de cliente."),
-              "top " + byCliente.length),
-            // eSocial dashboard
-            esocialEid ? e("div", {
+              "top " + byCliente.length), },
+              { id: "esocial", node: esocialEid ? e("div", {
               style: { background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: 16, minWidth: 0 }
             },
               // Header
@@ -5818,17 +5992,15 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
               ),
               // Donut + legenda
               esocTotal > 0 ? esocialDonut(esocData, esocTotal) : emptyMsg("Nenhuma tarefa eSocial no escopo.")
-            ) : null,
-            // Prazos
-            section("Prazos", Clock,
+            ) : null, },
+              { id: "prazos", node: section("Prazos", Clock,
               e("div", { style: scrollBox },
                 e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + late.length + ")"),
                 late.length ? late.map(function (t) { return prazoItem(t, "#ef4444"); }) : emptyMsg("Nenhuma atrasada."),
                 e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soon.length + ")"),
                 soon.length ? soon.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
-              )),
-            // Sem Recibo eSocial: Rescisão e Admissão sem recibo, por cliente
-            section("Sem Recibo eSocial", Inbox,
+              )), },
+              { id: "semRecibo", node: section("Sem Recibo eSocial", Inbox,
               e("div", { style: scrollBox },
                 e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 4px" } },
                   e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1" } }, "Rescisão sem Recibo (" + semReciboRescisao.reduce(function (s, r) { return s + r.total; }, 0) + ")")
@@ -5841,17 +6013,14 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 onClick: exportSemRecibo,
                 title: "Excel com clientes e tarefas dos dois processos, por status",
                 style: { fontSize: 10.5, fontWeight: 700, border: "1px solid rgba(16,185,129,0.35)", background: "rgba(16,185,129,0.08)", color: "#10b981", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }
-              }, "\u2B07 Excel") : (semReciboTotal + " tarefa" + (semReciboTotal !== 1 ? "s" : ""))),
-            // Analista
-            section("Carga por analista", Users,
+              }, "\u2B07 Excel") : (semReciboTotal + " tarefa" + (semReciboTotal !== 1 ? "s" : ""))), },
+              { id: "analista", node: section("Carga por analista", Users,
               byAnalista.length ? e("div", { style: scrollBox }, byAnalista.map(analistaRow)) : emptyMsg("Sem analistas atribuídos."),
-              byAnalista.length + " pessoa(s)"),
-            // Pendencias por analista
-            section("Pendências por analista", AlertTriangle,
+              byAnalista.length + " pessoa(s)"), },
+              { id: "pendAnalista", node: section("Pendências por analista", AlertTriangle,
               byPendAnalista.length ? e("div", { style: scrollBox }, byPendAnalista.map(pendAnalistaRow)) : emptyMsg("Sem pendências por analista."),
-              byPendAnalista.length + " pessoa(s)"),
-            // SLA - cumprimento de prazo por analista (logo apos pendencias)
-            section("SLA · Entrega no prazo", Clock,
+              byPendAnalista.length + " pessoa(s)"), },
+              { id: "sla", node: section("SLA · Entrega no prazo", Clock,
               bySla.length ? e("div", { style: scrollBox }, bySla.map(slaRow)) : emptyMsg("Sem conclusões com prazo neste período."),
               e("select", {
                 value: slaPeriod, onChange: function (ev) { setSlaPeriod(ev.target.value === "all" ? "all" : Number(ev.target.value)); },
@@ -5862,9 +6031,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 e("option", { value: "30" }, "30 dias"),
                 e("option", { value: "90" }, "90 dias"),
                 e("option", { value: "all" }, "Tudo")
-              )),
-            // Sem dono (analista/coordenador/gerente, conforme o nivel)
-            section("Sem analista", AlertTriangle,
+              )), },
+              { id: "semAnalista", node: section("Sem analista", AlertTriangle,
               unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
               e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                 e("span", { style: { fontSize: 11, color: T.textD } }, unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
@@ -5872,9 +6040,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                   onClick: exportUnassigned,
                   style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
                 }, e(Download, { size: 11 }), "xlsx")
-              )),
-            // Sem coordenador: gerente e admin
-            unassignedCoord !== null && section("Sem coordenador", AlertTriangle,
+              )), },
+              { id: "semCoord", node: unassignedCoord !== null && section("Sem coordenador", AlertTriangle,
               unassignedCoord.length ? e("div", { style: scrollBox }, unassignedCoord.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem coordenador."),
               e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                 e("span", { style: { fontSize: 11, color: T.textD } }, unassignedCoord.length + " tarefa" + (unassignedCoord.length !== 1 ? "s" : "")),
@@ -5882,9 +6049,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                   onClick: exportUnassignedCoord,
                   style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
                 }, e(Download, { size: 11 }), "xlsx")
-              )),
-            // Sem gerente: admin apenas
-            unassignedGerente !== null && section("Sem gerente", AlertTriangle,
+              )), },
+              { id: "semGerente", node: unassignedGerente !== null && section("Sem gerente", AlertTriangle,
               unassignedGerente.length ? e("div", { style: scrollBox }, unassignedGerente.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem gerente."),
               e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                 e("span", { style: { fontSize: 11, color: T.textD } }, unassignedGerente.length + " tarefa" + (unassignedGerente.length !== 1 ? "s" : "")),
@@ -5892,19 +6058,16 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                   onClick: exportUnassignedGerente,
                   style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
                 }, e(Download, { size: 11 }), "xlsx")
-              )),
-            // Atividade
-            section("Atividade recente", ScrollText,
+              )), },
+              { id: "atividade", node: section("Atividade recente", ScrollText,
               actLoading ? emptyMsg("Carregando…")
                 : (activity.length ? e("div", { style: scrollBox }, activity.map(actItem)) : emptyMsg("Sem atividade registrada.")),
-              canSeeAll && fCoord === "__all__" ? "geral" : "equipe"),
-            // Ultimo acesso por usuario
-            section("Última Ação", Clock,
+              canSeeAll && fCoord === "__all__" ? "geral" : "equipe"), },
+              { id: "ultimaAcao", node: section("Última Ação", Clock,
               lastAccLoading ? emptyMsg("Carregando…")
                 : (lastAccess.length ? e("div", { style: scrollBox }, lastAccess.map(lastAccessItem)) : emptyMsg("Sem ações registradas.")),
-              lastAccess.length + " usuário" + (lastAccess.length !== 1 ? "s" : "")),
-            // [v10.5.10] Ultima integracao (tarefas criadas pelo servico externo)
-            section("Últimas Integrações", RotateCcw,
+              lastAccess.length + " usuário" + (lastAccess.length !== 1 ? "s" : "")), },
+              { id: "integracoes", node: section("Últimas Integrações", RotateCcw,
               !recentIntegrations.length ? emptyMsg("Nenhuma integração nos últimos 7 dias.") :
                 e("div", { style: scrollBox },
                   recentIntegrations.map(function (integ, idx) {
@@ -5925,10 +6088,19 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                     );
                   })
                 ),
-              recentIntegrations.length + " nos últimos 7 dias"),
-            // Hoje por analista (ocupa 2 colunas, no mesmo grid)
-            e(HojePorAnalistaChart, { tasks: tasks, scope: scope, session: session, isAdmin: canSeeAll, isGerente: isGerente, esteiras: esteiras, T: T, fGerente: fGerente })
-          )
+              recentIntegrations.length + " nos últimos 7 dias"), },
+              { id: "hojeAnalista", node: e(HojePorAnalistaChart, { tasks: tasks, scope: scope, session: session, isAdmin: canSeeAll, isGerente: isGerente, esteiras: esteiras, T: T, fGerente: fGerente }) },
+            ];
+            var cardMap = {};
+            CARD_DEFS.forEach(function (c) { cardMap[c.id] = c.node; });
+            cardMapRef.current = cardMap;
+            var orderedIds = cardOrder.filter(function (id) { return cardMap.hasOwnProperty(id); });
+            CARD_DEFS.forEach(function (c) { if (orderedIds.indexOf(c.id) === -1) orderedIds.push(c.id); });
+            var renderedCards = orderedIds.map(function (id) { return withDrag(id, cardMap[id]); }).filter(Boolean);
+            return e("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 14 } },
+              renderedCards
+            );
+          })()
     )
   );
 });
@@ -7655,7 +7827,10 @@ function App() {
           kept = [];
           (ts || []).forEach(function (t) {
             if (removeSet.has(String(t.id))) {
-              newTrashed.push(_objectSpread(_objectSpread({}, t), {}, { eid: _eid, deletedAt: now, deletedBy: session.name }));
+              // [v10.6.11] Usa sessionRef (sempre atualizado) em vez de "session" direto —
+              // este useCallback nao lista "session" nas dependencias, entao "session" podia
+              // ficar "preso" em null se a funcao fosse criada antes do login carregar.
+              newTrashed.push(_objectSpread(_objectSpread({}, t), {}, { eid: _eid, deletedAt: now, deletedBy: (sessionRef.current && sessionRef.current.name) || "" }));
               removed++;
             } else kept.push(t);
           });
