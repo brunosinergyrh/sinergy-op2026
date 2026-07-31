@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.10)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.11)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.10-organizar-cards-2026-07-23";
+window.OP2026_BUILD = "v10.6.11-filtro-cliente-multi-2026-07-31";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.10-organizar-cards-2026-07-23", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.11-filtro-cliente-multi-2026-07-31", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -1196,6 +1196,11 @@ var COL_FIELDS = [{
   label: "Mes",
   required: false,
   kws: ["mes", "month", "competencia", "periodo", "referencia"]
+}, {
+  key: "dataCredito",
+  label: "Data de Crédito",
+  required: false,
+  kws: ["credito", "data credito", "credit"]
 }];
 var INIT_F = {
   status: "all",
@@ -1203,7 +1208,7 @@ var INIT_F = {
   responsible: "all",
   coordenador: "all",
   gerente: "all",
-  cliente: "all",
+  cliente: [], // [v10.6.11] agora aceita varios clientes simultaneamente
   processo: "all",
   mes: "all"
 };
@@ -1413,33 +1418,55 @@ var toDateStr = function toDateStr(val) {
   var d = new Date(s);
   return isNaN(d) ? "" : d.toISOString().slice(0, 10);
 };
+// [v10.6.11] Padroniza qualquer formato de "mes" vindo da planilha (nome completo,
+// abreviação, com/sem ano, com "de", numero serial do Excel, data completa etc.)
+// para o mesmo "YYYY-MM" usado pelo <input type="month"> do formulario manual.
+// Se realmente nao der pra reconhecer, retorna "" (vazio) em vez de guardar lixo —
+// um campo vazio e mais seguro que um valor invalido que quebra o seletor nativo.
+var MONTH_NAME_MAP = {
+  jan: "01", janeiro: "01",
+  fev: "02", fevereiro: "02",
+  mar: "03", marco: "03",
+  abr: "04", abril: "04",
+  mai: "05", maio: "05",
+  jun: "06", junho: "06",
+  jul: "07", julho: "07",
+  ago: "08", agosto: "08",
+  set: "09", setembro: "09",
+  out: "10", outubro: "10",
+  nov: "11", novembro: "11",
+  dez: "12", dezembro: "12"
+};
 var toMonthStr = function toMonthStr(val) {
-  if (!val) return "";
+  if (val === null || val === undefined || val === "") return "";
+  // Numero serial do Excel ou objeto Date (coluna formatada como data) — reaproveita
+  // o parser de data existente e usa so o "YYYY-MM".
+  if (val instanceof Date || typeof val === "number") {
+    var _ds = toDateStr(val);
+    return _ds ? _ds.slice(0, 7) : "";
+  }
   var s = String(val).trim();
-  if (/^\d{4}-\d{2}$/.test(s)) return s;
-  // [v10.6.9] "2026-7" (sem zero a esquerda) tambem e valido — antes caia no fallback
-  // sem normalizar, criando duas entradas distintas ("2026-7" e "2026-07") para o mesmo mes.
+  if (!s) return "";
+  // "2026-07" / "2026-7"
   var mYm = s.match(/^(\d{4})-(\d{1,2})$/);
   if (mYm) return "".concat(mYm[1], "-").concat(mYm[2].padStart(2, "0"));
+  // "07/2026" / "7/2026"
   var m1 = s.match(/^(\d{1,2})\/(\d{4})$/);
   if (m1) return "".concat(m1[2], "-").concat(m1[1].padStart(2, "0"));
-  var mn = {
-    jan: "01",
-    fev: "02",
-    mar: "03",
-    abr: "04",
-    mai: "05",
-    jun: "06",
-    jul: "07",
-    ago: "08",
-    set: "09",
-    out: "10",
-    nov: "11",
-    dez: "12"
-  };
-  var m2 = s.toLowerCase().match(/^([a-z]+)[\/\-](\d{4})$/);
-  if (m2 && mn[m2[1]]) return "".concat(m2[2], "-").concat(mn[m2[1]]);
-  return s;
+  // Remove acentos, baixa caixa e tira a palavra "de" para aceitar "Agosto de 2026",
+  // "Agosto/2026", "Ago-2026", "agosto 2026" etc. como equivalentes.
+  var norm2 = s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    .replace(/\bde\b/g, " ").replace(/\s+/g, " ").trim();
+  var m2 = norm2.match(/^([a-z]+)[\s\/\-]+(\d{4})$/);
+  if (m2 && MONTH_NAME_MAP[m2[1]]) return "".concat(m2[2], "-").concat(MONTH_NAME_MAP[m2[1]]);
+  // Só o nome do mes, sem ano (ex.: "Agosto") — assume o ano corrente.
+  var m3 = norm2.match(/^([a-z]+)$/);
+  if (m3 && MONTH_NAME_MAP[m3[1]]) return "".concat(new Date().getFullYear(), "-").concat(MONTH_NAME_MAP[m3[1]]);
+  // Ultima tentativa: se for uma data completa reconhecivel (ex. "01/08/2026"), usa
+  // o ano-mes dela.
+  var ds2 = toDateStr(s);
+  if (ds2) return ds2.slice(0, 7);
+  return "";
 };
 var fmtDate = function fmtDate(d) {
   return d ? new Date(d + "T12:00:00").toLocaleDateString("pt-BR") : null;
@@ -5096,7 +5123,31 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
 
   var _fc = useState("__all__"), fCoord = _fc[0], setFCoord = _fc[1];
   var _fger = useState("__all__"), fGerente = _fger[0], setFGerente = _fger[1];
-  var _fcl = useState("__all__"), fCli = _fcl[0], setFCli = _fcl[1];
+  // [v10.6.11] Filtro de cliente agora permite selecionar varios ao mesmo tempo;
+  // preferencia lembrada por usuario (localStorage + Supabase), mesmo padrao do cardOrder.
+  var _cliLS = (function () {
+    try {
+      var raw = localStorage.getItem('sinergy_fclilist_' + (session && session.id));
+      var arr = raw ? JSON.parse(raw) : null;
+      return Array.isArray(arr) ? arr : [];
+    } catch (_e) { return []; }
+  })();
+  var _fclL = useState(_cliLS), fCliList = _fclL[0], setFCliListRaw = _fclL[1];
+  var setFCliList = function (list) {
+    var arr = Array.isArray(list) ? list : [];
+    setFCliListRaw(arr);
+    var uid = session && session.id;
+    if (!uid) return;
+    try { localStorage.setItem('sinergy_fclilist_' + uid, JSON.stringify(arr)); } catch (_e) {}
+    (async function () {
+      try {
+        var r = await window.storage.get(PREFS_KEY, true);
+        var all = r ? JSON.parse(r.value) : {};
+        all[uid] = Object.assign({}, all[uid], { fCliList: arr });
+        await window.storage.set(PREFS_KEY, JSON.stringify(all), true);
+      } catch (_e) {}
+    })();
+  };
   // [v10.6.9] Filtro por mes (referencia) no Painel Gerencial — com varios meses ja
   // importados, os totais sem esse filtro ficam mesclando periodos ja fechados com o atual.
   var _fmes = useState("__all__"), fMes = _fmes[0], setFMes = _fmes[1];
@@ -5158,6 +5209,11 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         if (savedWidths && typeof savedWidths === "object") {
           setCardWidths(savedWidths);
           try { localStorage.setItem('sinergy_cardwidths_' + uid, JSON.stringify(savedWidths)); } catch (_e2) {}
+        }
+        var savedCliList = all[uid] && all[uid].fCliList;
+        if (Array.isArray(savedCliList) && savedCliList.length) {
+          setFCliListRaw(savedCliList);
+          try { localStorage.setItem('sinergy_fclilist_' + uid, JSON.stringify(savedCliList)); } catch (_e2) {}
         }
       } catch (_e) {}
     })();
@@ -5329,7 +5385,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     window.XLSX.writeFile(wb, "Integracao_" + new Date(integ.lastAt).toISOString().slice(0, 16).replace(/[:T]/g, "-") + ".xlsx");
   }
   if (isManager && fCoord !== "__all__") view = view.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
-  if (fCli !== "__all__") view = view.filter(function (t) { return (t.cliente || "") === fCli; });
+  var matchesCliFilter = function (t) { return !fCliList.length || fCliList.indexOf(t.cliente || "") !== -1; };
+  if (fCliList.length) view = view.filter(matchesCliFilter);
   if (fMes !== "__all__") view = view.filter(function (t) { return deadlineMonth(t) === fMes; });
 
   // datas de referencia (local)
@@ -5355,7 +5412,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   }
   if (canSeeAll && fGerente !== "__all__") unassigned = unassigned.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
   if (isManager && fCoord !== "__all__") unassigned = unassigned.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
-  if (fCli !== "__all__") unassigned = unassigned.filter(function (t) { return (t.cliente || "") === fCli; });
+  if (fCliList.length) unassigned = unassigned.filter(matchesCliFilter);
   if (fMes !== "__all__") unassigned = unassigned.filter(function (t) { return deadlineMonth(t) === fMes; });
 
   // Sem coordenador: gerente ve seu time sem coord; admin ve tudo sem coord (com filtros ativos)
@@ -5364,7 +5421,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     var _ucBase = canSeeAll ? allTasks : allTasks.filter(function (t) { return t.gerenteId === scope; });
     unassignedCoord = _ucBase.filter(function (t) { return !done_(t) && noCoord(t); });
     if (canSeeAll && fGerente !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
-    if (fCli !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return (t.cliente || "") === fCli; });
+    if (fCliList.length) unassignedCoord = unassignedCoord.filter(matchesCliFilter);
     if (fMes !== "__all__") unassignedCoord = unassignedCoord.filter(function (t) { return deadlineMonth(t) === fMes; });
   }
 
@@ -5372,13 +5429,13 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var unassignedGerente = null;
   if (canSeeAll) {
     unassignedGerente = allTasks.filter(function (t) { return !done_(t) && !t.gerenteId; });
-    if (fCli !== "__all__") unassignedGerente = unassignedGerente.filter(function (t) { return (t.cliente || "") === fCli; });
+    if (fCliList.length) unassignedGerente = unassignedGerente.filter(matchesCliFilter);
     if (fMes !== "__all__") unassignedGerente = unassignedGerente.filter(function (t) { return deadlineMonth(t) === fMes; });
   }
 
   // ---- SLA: cumprimento de prazo por analista ----
   // "No prazo" = concluida com completedAt <= deadline (mesmo dia ou antes). "Antecipada" = completedAt < deadline.
-  var slaPool = fCli !== "__all__" ? scoped.filter(function (t) { return (t.cliente || "") === fCli; }) : scoped;
+  var slaPool = fCliList.length ? scoped.filter(matchesCliFilter) : scoped;
   if (canSeeAll && fGerente !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
   if (isManager && fCoord !== "__all__") slaPool = slaPool.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
   if (fMes !== "__all__") slaPool = slaPool.filter(function (t) { return deadlineMonth(t) === fMes; });
@@ -5907,11 +5964,15 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         }, e("option", { value: "__all__" }, "Todas as coordenações"),
           coordOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
         ),
-        e("select", {
-          value: fCli, onChange: function (ev) { setFCli(ev.target.value); },
-          style: _objectSpread(_objectSpread({}, I), {}, { width: "auto", padding: "5px 10px", fontSize: 12, background: T.selBg, colorScheme: T.cs })
-        }, e("option", { value: "__all__" }, "Todos os clientes"),
-          cliOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
+        // [v10.6.11] Filtro de cliente agora aceita varios clientes ao mesmo tempo (tags).
+        e("div", { style: { minWidth: 180, maxWidth: 320 } },
+          e(MultiAutoInput, {
+            values: fCliList,
+            onChange: function (v) { setFCliList(v); },
+            suggestions: cliOpts,
+            placeholder: fCliList.length ? "Adicionar cliente" : "Todos os clientes",
+            T: T
+          })
         ),
         // [v10.6.9] Filtro por mes de referencia — com varios meses ja importados, os
         // totais gerais ficavam misturando periodos ja fechados com o mes corrente.
@@ -6821,6 +6882,10 @@ function App() {
     _useState128 = _slicedToArray(_useState127, 2),
     showSkipped = _useState128[0],
     setShowSkipped = _useState128[1];
+  // [v10.6.11] Aviso (nao bloqueante) de linhas cujo "Mes" nao foi reconhecido no import.
+  var _useStateMW = useState(false),
+    showMesWarn = _useStateMW[0],
+    setShowMesWarn = _useStateMW[1];
   var _useState129 = useState(false),
     _useState130 = _slicedToArray(_useState129, 2),
     importing = _useState130[0],
@@ -8098,7 +8163,12 @@ function App() {
                 if (_lsPrefs) pr = JSON.parse(_lsPrefs);
               } catch(_e) {}
             }
-            setFilters(pr !== null && pr !== void 0 && pr.filters ? _objectSpread(_objectSpread({}, INIT_F), pr.filters) : INIT_F);
+            (function () {
+              var _mf = pr !== null && pr !== void 0 && pr.filters ? _objectSpread(_objectSpread({}, INIT_F), pr.filters) : INIT_F;
+              // [v10.6.11] prefs antigas salvavam cliente como string ("all"/nome) — normaliza para array.
+              if (!Array.isArray(_mf.cliente)) _mf = _objectSpread(_objectSpread({}, _mf), {}, { cliente: (_mf.cliente && _mf.cliente !== "all") ? [_mf.cliente] : [] });
+              setFilters(_mf);
+            })();
             setSortIdx(typeof (pr === null || pr === void 0 ? void 0 : pr.sortIdx) === "number" ? pr.sortIdx : 0);
             // Carregar tema do usuario (localStorage por ID)
             try {
@@ -8175,7 +8245,7 @@ function App() {
     var idx = function idx(k) {
       return importHeaders.indexOf(colMap[k] || "");
     };
-    var _ref30 = [idx("category"), idx("title"), idx("responsible"), idx("coordenador"), idx("gerente"), idx("deadline"), idx("priority"), idx("cliente"), idx("processo"), idx("mes")],
+    var _ref30 = [idx("category"), idx("title"), idx("responsible"), idx("coordenador"), idx("gerente"), idx("deadline"), idx("priority"), idx("cliente"), idx("processo"), idx("mes"), idx("dataCredito")],
       ci = _ref30[0],
       ti = _ref30[1],
       ri = _ref30[2],
@@ -8185,9 +8255,11 @@ function App() {
       pi = _ref30[6],
       clI = _ref30[7],
       prI = _ref30[8],
-      mI = _ref30[9];
+      mI = _ref30[9],
+      dci = _ref30[10];
     var mapped = {};
     var skippedList = [];
+    var mesWarnList = []; // [v10.6.11] linhas com "Mes" preenchido na planilha mas nao reconhecido
     window.__OP_CURRENT_IMPORT_ID = "imp_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8);
     importRows.forEach(function (row, ri2) {
       var _sessionRef$current2;
@@ -8236,7 +8308,17 @@ function App() {
         priority: pi >= 0 ? mapPri(row[pi]) : "media",
         cliente: clI >= 0 ? String(row[clI] || "").trim() : "",
         processo: prI >= 0 ? String(row[prI] || "").trim() : "",
-        mes: mI >= 0 ? toMonthStr(String(row[mI] || "")) : "",
+        mes: (function () {
+          if (mI < 0) return "";
+          var raw = String(row[mI] || "").trim();
+          if (!raw) return "";
+          var parsed = toMonthStr(raw);
+          if (!parsed) {
+            mesWarnList.push({ linha: ri2 + 2, tarefa: titleVal, valor: raw });
+          }
+          return parsed;
+        })(),
+        dataCredito: dci >= 0 ? toDateStr(row[dci]) : "",
         status: "pendente",
         createdAt: new Date().toISOString(),
         createdBy: ((_sessionRef$current2 = sessionRef.current) === null || _sessionRef$current2 === void 0 ? void 0 : _sessionRef$current2.name) || "",
@@ -8251,10 +8333,12 @@ function App() {
     setPreview({
       mapped: mapped,
       skippedList: skippedList,
+      mesWarnList: mesWarnList,
       unassigned: unassigned,
       total: importRows.length
     });
     setShowSkipped(false);
+    setShowMesWarn(false);
     setImportStep(3);
   };
   var doImport = /*#__PURE__*/function () {
@@ -8511,8 +8595,9 @@ function App() {
       try { localStorage.setItem('sinergy_prefs_' + sessionRef.current.id, JSON.stringify({ filters: filters, sortIdx: v })); } catch(_e) {}
     }
   };
-  var activeFC = Object.values(filters).filter(function (v) {
-    return v !== "all";
+  var activeFC = Object.entries(filters).filter(function (_ref36x) {
+    var _r = _slicedToArray(_ref36x, 2), k = _r[0], v = _r[1];
+    return k === "cliente" ? v.length > 0 : v !== "all";
   }).length;
   var isWS = tab === "workspace";
   var sortedEsts = _toConsumableArray(visEsts).sort(function (a, b) {
@@ -8571,6 +8656,7 @@ function App() {
       var _ref38 = _slicedToArray(_ref37, 2),
         k = _ref38[0],
         v = _ref38[1];
+      if (k === "cliente") return !v.length || v.indexOf(t.cliente) !== -1;
       if (v === "all") return true;
       if (k === "responsible") return v === "__none__" ? t._resp.length === 0 : t._resp.includes(v);
       if (k === "status" && v === "atrasado") return t.status !== "concluida" && !!t.deadline && t.deadline < new Date().toISOString().slice(0, 10);
@@ -10411,7 +10497,54 @@ function App() {
       background: "rgba(234,179,8,0.06)",
       border: "1px solid rgba(234,179,8,0.18)"
     }
-  }, "Tarefas sem gerente reconhecido ficarao visiveis so para o Admin ate serem atribuidas (Editar em lote > Gerente)."), /*#__PURE__*/React.createElement("div", {
+  }, "Tarefas sem gerente reconhecido ficarao visiveis so para o Admin ate serem atribuidas (Editar em lote > Gerente)."),
+  // [v10.6.11] Alerta (nao bloqueante) de linhas com "Mes" preenchido na planilha mas
+  // que nao foi possivel reconhecer/padronizar — a tarefa e importada normalmente,
+  // so o campo Mes fica em branco (pode ser preenchido depois manualmente).
+  preview.mesWarnList && preview.mesWarnList.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: { marginBottom: 14 }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: function () { return setShowMesWarn(function (s) { return !s; }); },
+    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
+      fontSize: 11.5,
+      padding: "6px 12px",
+      width: "100%",
+      justifyContent: "space-between",
+      color: "#eab308",
+      border: "1px solid rgba(234,179,8,0.35)"
+    })
+  }, "⚠ ", preview.mesWarnList.length, " tarefa(s) com \"Mes\" nao reconhecido na planilha (campo ficara em branco)",
+    showMesWarn ? /*#__PURE__*/React.createElement(ChevronUp, { size: 14 }) : /*#__PURE__*/React.createElement(ChevronDown, { size: 14 })
+  ), showMesWarn && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      maxHeight: 200,
+      overflowY: "auto",
+      border: "1px solid ".concat(T.borderL),
+      borderRadius: 8
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: { width: "100%", borderCollapse: "collapse", fontSize: 12 }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: { background: T.panelBg }
+  }, ["Linha", "Tarefa", "Valor na planilha"].map(function (h) {
+    return /*#__PURE__*/React.createElement("th", {
+      key: h,
+      style: { padding: "6px 10px", textAlign: "left", color: T.textM, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", whiteSpace: "nowrap" }
+    }, h);
+  }))), /*#__PURE__*/React.createElement("tbody", null, preview.mesWarnList.map(function (s, i) {
+    return /*#__PURE__*/React.createElement("tr", {
+      key: i,
+      style: { borderTop: "1px solid ".concat(T.borderL) }
+    }, /*#__PURE__*/React.createElement("td", {
+      style: { padding: "6px 10px", color: T.textM }
+    }, s.linha), /*#__PURE__*/React.createElement("td", {
+      style: { padding: "6px 10px", color: T.text, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }
+    }, s.tarefa || "-"), /*#__PURE__*/React.createElement("td", {
+      style: { padding: "6px 10px", color: "#eab308" }
+    }, s.valor));
+  })))))
+  , /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -11499,7 +11632,8 @@ function App() {
   }, {
     key: "cliente",
     label: "Cliente",
-    dyn: true
+    dyn: true,
+    multi: true
   }, {
     key: "processo",
     label: "Processo",
@@ -11511,18 +11645,40 @@ function App() {
     fmt: fmtMonth
   }].map(function (fc) {
     var _fc$opts;
+    // [v10.6.11] Filtro de cliente virou multi-selecao (tags) — os demais continuam <select> simples.
+    var isActive = fc.multi ? (filters[fc.key] || []).length > 0 : filters[fc.key] !== "all";
+    if (fc.multi) {
+      return /*#__PURE__*/React.createElement("div", {
+        key: fc.key
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 10,
+          fontWeight: 600,
+          color: isActive ? activeE.color : T.textD,
+          marginBottom: 4,
+          textTransform: "uppercase",
+          letterSpacing: "0.07em"
+        }
+      }, fc.label, isActive && " *"), /*#__PURE__*/React.createElement(MultiAutoInput, {
+        values: filters[fc.key] || [],
+        onChange: function (v) { return setF(fc.key, v); },
+        suggestions: uVals(fc.key),
+        placeholder: (filters[fc.key] || []).length ? "Adicionar" : "Todos",
+        T: T
+      }));
+    }
     return /*#__PURE__*/React.createElement("div", {
       key: fc.key
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 10,
         fontWeight: 600,
-        color: filters[fc.key] !== "all" ? activeE.color : T.textD,
+        color: isActive ? activeE.color : T.textD,
         marginBottom: 4,
         textTransform: "uppercase",
         letterSpacing: "0.07em"
       }
-    }, fc.label, filters[fc.key] !== "all" && " *"), /*#__PURE__*/React.createElement("select", {
+    }, fc.label, isActive && " *"), /*#__PURE__*/React.createElement("select", {
       value: filters[fc.key],
       onChange: function onChange(ev) {
         return setF(fc.key, ev.target.value);
@@ -11532,7 +11688,7 @@ function App() {
         colorScheme: T.cs,
         padding: "6px 10px",
         fontSize: 12,
-        border: "1px solid ".concat(filters[fc.key] !== "all" ? activeE.color + "88" : T.inpB)
+        border: "1px solid ".concat(isActive ? activeE.color + "88" : T.inpB)
       })
     }, /*#__PURE__*/React.createElement("option", {
       value: "all"
