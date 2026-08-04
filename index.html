@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.12)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.13)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.12-importer-mes-e-filtro-cliente-2026-07-31";
+window.OP2026_BUILD = "v10.6.13-risco-dias-uteis-2026-07-31";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.12-importer-mes-e-filtro-cliente-2026-07-31", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.13-risco-dias-uteis-2026-07-31", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4336,7 +4336,20 @@ function ExportRiskBar(props) {
     try {
       var todayD = new Date(); todayD.setHours(0, 0, 0, 0);
       var todayStr = todayD.toISOString().slice(0, 10);
-      var lim2 = new Date(todayD); lim2.setDate(lim2.getDate() + 2);
+      // [v10.6.12] "Em risco" agora conta 2 DIAS UTEIS a frente (pula sabado/domingo),
+      // em vez de 2 dias corridos — antes, numa sexta, o prazo de sabado/domingo entrava
+      // como "em risco" (sem trabalho nesses dias) e o de segunda (proximo dia util) ficava de fora.
+      var addBusinessDays = function (start, n) {
+        var d = new Date(start);
+        var added = 0;
+        while (added < n) {
+          d.setDate(d.getDate() + 1);
+          var dow = d.getDay(); // 0 = domingo, 6 = sabado
+          if (dow !== 0 && dow !== 6) added++;
+        }
+        return d;
+      };
+      var lim2 = addBusinessDays(todayD, 2);
       var lim2Str = lim2.toISOString().slice(0, 10);
       var all = [];
       Object.keys(tasks).forEach(function (eid) { (tasks[eid] || []).forEach(function (t) { all.push(t._eid ? t : Object.assign({}, t, { _eid: eid })); }); });
@@ -4359,7 +4372,7 @@ function ExportRiskBar(props) {
       var byPrazo = function (a, b) { return (a.deadline || "9999") < (b.deadline || "9999") ? -1 : 1; };
       var wb = window.XLSX.utils.book_new();
       window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet([
-        { Indicador: "Em risco (prazo em ate 2 dias)", Valor: emRisco.length },
+        { Indicador: "Em risco (prazo em ate 2 dias uteis)", Valor: emRisco.length },
         { Indicador: "Atrasadas", Valor: atrasadas.length },
         { Indicador: "Visao", Valor: isAdminP ? "Geral" : isGerenteP ? "Time do gerente" : "Coordenadora: " + myName },
         { Indicador: "Gerado em", Valor: new Date().toLocaleString("pt-BR") }
@@ -4374,7 +4387,7 @@ function ExportRiskBar(props) {
   return e("div", { style: { display: "flex", justifyContent: "flex-end", marginBottom: 10 } },
     e("button", {
       onClick: doExport, disabled: busy,
-      title: "Excel com abas: Resumo, Em risco (prazo \u2264 2 dias) e Atrasadas \u2014 respeitando sua vis\u00E3o",
+      title: "Excel com abas: Resumo, Em risco (prazo em ate 2 dias uteis) e Atrasadas \u2014 respeitando sua vis\u00E3o",
       style: { border: "1px solid " + T.border, background: "transparent", color: T.textS, fontWeight: 600, fontSize: 11.5, borderRadius: 8, padding: "6px 13px", cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }
     }, busy ? "Gerando..." : "\u2B07 Exportar em risco + atrasadas")
   );
