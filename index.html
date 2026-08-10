@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.13)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.14)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.13-risco-dias-uteis-2026-07-31";
+window.OP2026_BUILD = "v10.6.14-esoc-gerente-usuarios-invalidos-2026-07-31";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.13-risco-dias-uteis-2026-07-31", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.14-esoc-gerente-usuarios-invalidos-2026-07-31", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4968,7 +4968,8 @@ function WsDash(props) {
           "Data Credito": t.dataCredito ? t.dataCredito.split("-").reverse().join("/") : "",
           Situacao: t.status === "concluida" ? "Concluida" : (t.deadline && t.deadline < todayStr ? "ATRASADA" : "Pendente"),
           "Mes Ref": t.mes || "",
-          Prioridade: t.priority || ""
+          Prioridade: t.priority || "",
+          "Descri\u00E7\u00E3o Solicita\u00E7\u00E3o": t.descricaoSolicitacao || "" // [v10.6.14]
         };
       });
     if (!rows.length) { alert("Nenhuma tarefa para " + meta.label + ". \uD83C\uDFD6"); return; }
@@ -5125,6 +5126,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     onClose = _refDash.onClose,
     esteiras = _refDash.esteiras,
     isGerente = _refDash.isGerente,
+    users = _refDash.users, // [v10.6.14]
     inline = _refDash.inline;
   var e = React.createElement;
   var I = mkI(T);
@@ -5180,10 +5182,12 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var _fEsocC = useState(_esocSaved.coord || "__all__"), fEsocCoord = _fEsocC[0], setFEsocCoord = _fEsocC[1];
   var _fEsocA = useState(_esocSaved.analista || "__all__"), fEsocAnalista = _fEsocA[0], setFEsocAnalista = _fEsocA[1];
   var _fEsocM = useState(_esocSaved.mes || "__all__"), fEsocMes = _fEsocM[0], setFEsocMes = _fEsocM[1];
-  var saveEsocFilters = function (coord, analista, mes) {
+  // [v10.6.14] Filtro de Gerente no card eSocial — so aparece para quem ve tudo (admin/diretor).
+  var _fEsocG = useState(_esocSaved.gerente || "__all__"), fEsocGerente = _fEsocG[0], setFEsocGerente = _fEsocG[1];
+  var saveEsocFilters = function (coord, analista, mes, gerente) {
     try {
       var uid = session && session.id;
-      if (uid) localStorage.setItem('sinergy_esocfilters_' + uid, JSON.stringify({ coord: coord, analista: analista, mes: mes }));
+      if (uid) localStorage.setItem('sinergy_esocfilters_' + uid, JSON.stringify({ coord: coord, analista: analista, mes: mes, gerente: gerente }));
     } catch (_e) {}
   };
 
@@ -5449,6 +5453,29 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     if (fMes !== "__all__") unassignedGerente = unassignedGerente.filter(function (t) { return deadlineMonth(t) === fMes; });
   }
 
+  // [v10.6.14] Tarefas associadas a analista/coordenador sem cadastro de usuario (nome
+  // digitado livre, usuario renomeado/excluido depois, erro de digitacao no import etc.)
+  // Mesmo escopo de visibilidade das demais listas: admin=tudo, gerente=time (gerenteId),
+  // coordenadora=so as proprias (scoped).
+  var validUserNames = distinct((users || []).map(function (u) { return u.name; }).filter(Boolean)).map(norm);
+  var isValidName = function (nome) { return validUserNames.indexOf(norm(nome)) !== -1; };
+  var invalidAnalistas = function (t) { return respsOf(t).filter(function (r) { return r && !isValidName(r); }); };
+  var invalidCoord = function (t) { return t.coordenador && !isValidName(t.coordenador) ? t.coordenador : null; };
+  var hasInvalidUser = function (t) { return invalidAnalistas(t).length > 0 || !!invalidCoord(t); };
+  var invalidUsersBase;
+  if (canSeeAll) {
+    invalidUsersBase = allTasks;
+  } else if (isGerente) {
+    invalidUsersBase = allTasks.filter(function (t) { return t.gerenteId === scope; });
+  } else {
+    invalidUsersBase = scoped;
+  }
+  var invalidUsersTasks = invalidUsersBase.filter(function (t) { return !done_(t) && hasInvalidUser(t); });
+  if (canSeeAll && fGerente !== "__all__") invalidUsersTasks = invalidUsersTasks.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
+  if (isManager && fCoord !== "__all__") invalidUsersTasks = invalidUsersTasks.filter(function (t) { return norm(t.coordenador || "") === norm(fCoord); });
+  if (fCliList.length) invalidUsersTasks = invalidUsersTasks.filter(matchesCliFilter);
+  if (fMes !== "__all__") invalidUsersTasks = invalidUsersTasks.filter(function (t) { return deadlineMonth(t) === fMes; });
+
   // ---- SLA: cumprimento de prazo por analista ----
   // "No prazo" = concluida com completedAt <= deadline (mesmo dia ou antes). "Antecipada" = completedAt < deadline.
   var slaPool = fCliList.length ? scoped.filter(matchesCliFilter) : scoped;
@@ -5486,9 +5513,13 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var ESOC_COLORS = { "Concluída": "#10b981", "Atrasada": "#ef4444", "Pendente": "#f97316" };
   var esocialBase = esocialEid ? scoped.filter(function (t) { return t._eid === esocialEid; }) : [];
   if (canSeeAll && fGerente !== "__all__") esocialBase = esocialBase.filter(function (t) { return norm(t.gerente || "") === norm(fGerente); });
+  // [v10.6.14] Filtro de Gerente proprio do card eSocial — so para quem ve tudo (admin/diretor),
+  // independente do filtro de gerente geral do painel (permite comparar gerentes so nesse card).
+  var esocGerenteOpts = canSeeAll ? distinct(esocialBase.map(function (t) { return t.gerente; }).filter(Boolean)) : [];
   var esocCoordOpts = distinct(esocialBase.map(function (t) { return t.coordenador; }).filter(Boolean));
   var esocAnalistaOpts = distinct(esocialBase.flatMap(function (t) { return respsOf(t); }).filter(Boolean));
   var esocialView = esocialBase;
+  if (canSeeAll && fEsocGerente !== "__all__") esocialView = esocialView.filter(function (t) { return norm(t.gerente || "") === norm(fEsocGerente); });
   if (fEsocCoord !== "__all__") esocialView = esocialView.filter(function (t) { return norm(t.coordenador || "") === norm(fEsocCoord); });
   if (fEsocAnalista !== "__all__") esocialView = esocialView.filter(function (t) { return respsOf(t).some(function (r) { return norm(r) === norm(fEsocAnalista); }); });
   var esocMesOpts = distinct(esocialBase.map(function (t) { return t.mes; }).filter(Boolean)).sort().reverse();
@@ -5810,6 +5841,47 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     window.XLSX.utils.book_append_sheet(wb, ws, "Sem Gerente");
     window.XLSX.writeFile(wb, "Sem_Gerente_" + new Date().toISOString().slice(0, 10) + ".xlsx");
   }
+  // [v10.6.14] "Usuarios invalidos": analista/coordenador com nome que nao corresponde a
+  // nenhum usuario cadastrado no sistema.
+  function exportInvalidUsers() {
+    if (!window.XLSX || !invalidUsersTasks.length) return;
+    var rows = invalidUsersTasks.map(function (t) {
+      var es = estMap[t._eid];
+      return {
+        "Esteira": (es && es.label) || t._eid || "",
+        "Código": t.code || "",
+        "Tarefa": t.title || "",
+        "Cliente": t.cliente || "",
+        "Processo": t.processo || "",
+        "Analista(s) invalido(s)": invalidAnalistas(t).join(", "),
+        "Coordenador invalido": invalidCoord(t) || "",
+        "Prazo": t.deadline ? fmtDate(t.deadline) : "",
+        "Mês": t.mes ? fmtMonth(t.mes) : ""
+      };
+    });
+    var ws = window.XLSX.utils.json_to_sheet(rows);
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, ws, "Usuarios invalidos");
+    window.XLSX.writeFile(wb, "Usuarios_Invalidos_" + new Date().toISOString().slice(0, 10) + ".xlsx");
+  }
+  function invalidUserItem(t) {
+    var es = estMap[t._eid];
+    var badNames = invalidAnalistas(t).slice();
+    var badCoord = invalidCoord(t);
+    if (badCoord) badNames.push(badCoord + " (coord.)");
+    var ctx = [t.cliente, t.processo].filter(Boolean).join(" · ");
+    return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: "#ef4444", flexShrink: 0 } }),
+      e("div", { style: { minWidth: 0, flex: 1 } },
+        e("div", { style: { display: "flex", alignItems: "center", gap: 5, marginBottom: 1 } },
+          es && e("span", { style: { fontSize: 9.5, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, es.label),
+          e("span", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title || "(sem titulo)")
+        ),
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ctx || "sem cliente/processo")
+      ),
+      e("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#ef4444", flexShrink: 0, whiteSpace: "nowrap", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" } }, badNames.join(" · "))
+    );
+  }
   function unassignedItem(t) {
     var es = estMap[t._eid];
     var missing = [];
@@ -6047,20 +6119,26 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                   }, "\u2B07 Excel")
                 ),
                 e("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+                  canSeeAll && esocGerenteOpts.length > 0 && e("select", {
+                    value: fEsocGerente, onChange: function (ev) { var v = ev.target.value; setFEsocGerente(v); saveEsocFilters(fEsocCoord, fEsocAnalista, fEsocMes, v); },
+                    style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                  }, e("option", { value: "__all__" }, "Todo gerente"),
+                    esocGerenteOpts.map(function (g) { return e("option", { key: g, value: g }, g); })
+                  ),
                   e("select", {
-                    value: fEsocCoord, onChange: function (ev) { var v = ev.target.value; setFEsocCoord(v); saveEsocFilters(v, fEsocAnalista, fEsocMes); },
+                    value: fEsocCoord, onChange: function (ev) { var v = ev.target.value; setFEsocCoord(v); saveEsocFilters(v, fEsocAnalista, fEsocMes, fEsocGerente); },
                     style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
                   }, e("option", { value: "__all__" }, "Toda coord."),
                     esocCoordOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
                   ),
                   e("select", {
-                    value: fEsocAnalista, onChange: function (ev) { var v = ev.target.value; setFEsocAnalista(v); saveEsocFilters(fEsocCoord, v, fEsocMes); },
+                    value: fEsocAnalista, onChange: function (ev) { var v = ev.target.value; setFEsocAnalista(v); saveEsocFilters(fEsocCoord, v, fEsocMes, fEsocGerente); },
                     style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
                   }, e("option", { value: "__all__" }, "Todo analista"),
                     esocAnalistaOpts.map(function (a) { return e("option", { key: a, value: a }, a); })
                   ),
                   e("select", {
-                    value: fEsocMes, onChange: function (ev) { var v = ev.target.value; setFEsocMes(v); saveEsocFilters(fEsocCoord, fEsocAnalista, v); },
+                    value: fEsocMes, onChange: function (ev) { var v = ev.target.value; setFEsocMes(v); saveEsocFilters(fEsocCoord, fEsocAnalista, v, fEsocGerente); },
                     style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
                   }, e("option", { value: "__all__" }, "Toda referência"),
                     esocMesOpts.map(function (m) { return e("option", { key: m, value: m }, fmtMonth(m)); })
@@ -6133,6 +6211,17 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 e("span", { style: { fontSize: 11, color: T.textD } }, unassignedGerente.length + " tarefa" + (unassignedGerente.length !== 1 ? "s" : "")),
                 unassignedGerente.length > 0 && e("button", {
                   onClick: exportUnassignedGerente,
+                  style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                }, e(Download, { size: 11 }), "xlsx")
+              )), },
+              // [v10.6.14] Tarefas com analista/coordenador cujo nome nao corresponde a
+              // nenhum usuario cadastrado (renomeado, excluido, digitado livre no import etc.)
+              { id: "usuariosInvalidos", node: section("Usuários inválidos", AlertTriangle,
+              invalidUsersTasks.length ? e("div", { style: scrollBox }, invalidUsersTasks.slice(0, 50).map(invalidUserItem)) : emptyMsg("Nenhum analista/coordenador sem cadastro neste nível."),
+              e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                e("span", { style: { fontSize: 11, color: T.textD } }, invalidUsersTasks.length + " tarefa" + (invalidUsersTasks.length !== 1 ? "s" : "")),
+                invalidUsersTasks.length > 0 && e("button", {
+                  onClick: exportInvalidUsers,
                   style: { display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10.5, fontWeight: 600, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
                 }, e(Download, { size: 11 }), "xlsx")
               )), },
@@ -11104,6 +11193,7 @@ function App() {
     isGerente: isGerente,
     session: session,
     esteiras: esteiras,
+    users: users, // [v10.6.14] para o card "Usuarios invalidos" (analista/coord sem cadastro)
     inline: true,
     T: T
   })), tab === "calendar" && /*#__PURE__*/React.createElement("div", {
