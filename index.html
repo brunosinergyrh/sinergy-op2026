@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.15)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.16)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.15-inativar-acesso-wf-export-2026-08-11";
+window.OP2026_BUILD = "v10.6.16-fix-drag-cards-novos-2026-08-11";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.15-inativar-acesso-wf-export-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.16-fix-drag-cards-novos-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -5312,12 +5312,25 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     if (cardWidths.hasOwnProperty(id)) return cardWidths[id];
     return DEFAULT_CARD_WIDTHS[id] || MIN_W;
   };
+  // [v10.6.16] Bug: cardOrder salvo antes de um card novo existir nao contem o id dele.
+  // "cardOrder.length ? cardOrder : ..." so caia no fallback quando a lista salva estava
+  // vazia — com qualquer ordem antiga persistida, cards novos (ex.: usuariosInvalidos,
+  // prazosWF) nunca apareciam no array usado pra achar indexOf, e o drop/resize era
+  // silenciosamente ignorado. fullOrder() sempre inclui todos os cards atuais, na ordem
+  // salva + qualquer id novo anexado no final (mesma logica que ja existia so na hora
+  // de renderizar, em orderedIds, mas que doDrop/changeWidth nao conseguiam usar).
+  var fullOrder = function () {
+    var known = Object.keys(cardMapRef.current || {});
+    var merged = cardOrder.filter(function (id) { return known.indexOf(id) !== -1; });
+    known.forEach(function (id) { if (merged.indexOf(id) === -1) merged.push(id); });
+    return merged;
+  };
   var changeWidth = function (id, delta) {
     var cur = widthOf(id);
     var next = Math.max(MIN_W, Math.min(MAX_W, cur + delta));
     if (next === cur) return;
     var widths = Object.assign({}, cardWidths, _defineProperty({}, id, next));
-    persistCardLayout(cardOrder.length ? cardOrder : Object.keys(cardMapRef.current || {}), widths);
+    persistCardLayout(fullOrder(), widths);
   };
   // Envolve o card com os controles de arrastar/redimensionar. A largura (gridColumn)
   // e sempre aplicada num DIV PROPRIO que envolve o card — nunca via cloneElement no
@@ -5333,7 +5346,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     var doDrop = function (ev) {
       ev.preventDefault();
       if (!draggedId || draggedId === id) { setDraggedId(null); return; }
-      var newOrder = cardOrder.length ? cardOrder.slice() : Object.keys(cardMapRef.current || {});
+      var newOrder = fullOrder();
       var from = newOrder.indexOf(draggedId), to = newOrder.indexOf(id);
       if (from === -1 || to === -1) { setDraggedId(null); return; }
       newOrder.splice(from, 1);
