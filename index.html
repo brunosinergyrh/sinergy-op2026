@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.14)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.15)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.14-esoc-gerente-usuarios-invalidos-2026-07-31";
+window.OP2026_BUILD = "v10.6.15-inativar-acesso-wf-export-2026-08-11";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.14-esoc-gerente-usuarios-invalidos-2026-07-31", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.15-inativar-acesso-wf-export-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -988,7 +988,8 @@ var DEFAULT_USERS = [{
   pin: "1234",
   role: "admin",
   groupId: "admin",
-  gerenteId: "all"
+  gerenteId: "all",
+  active: true // [v10.6.15]
 }];
 var PERM_SECTIONS = [{
   s: "Tarefas",
@@ -2079,7 +2080,8 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
               pin: nu.pin,
               role: nu.groupId === "admin" ? "admin" : "user",
               groupId: nu.groupId,
-              gerenteId: finalGId(nu.groupId, nu.gerenteId, id)
+              gerenteId: finalGId(nu.groupId, nu.gerenteId, id),
+              active: true // [v10.6.15]
             };
             _context5.n = 4;
             return onSaveUsers([].concat(_toConsumableArray(users), [u]));
@@ -2136,6 +2138,22 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
     }
     return removeUser;
   }();
+  // [v10.6.15] Inativar/reativar acesso — nao remove o usuario, so impede login e o tira
+  // da lista de selecao. Nao altera nada em tarefas (nome permanece intacto onde ja usado).
+  var toggleUserActive = function toggleUserActive(u) {
+    var isActive = u.active !== false;
+    if (isActive) {
+      if (u.id === session.id) return; // nao pode inativar a si mesmo
+      if (u.groupId === "admin" && users.filter(function (x) {
+        return x.groupId === "admin" && x.active !== false && x.id !== u.id;
+      }).length === 0) return; // nao pode deixar o sistema sem nenhum admin ativo
+    }
+    var updated = users.map(function (x) {
+      return x.id === u.id ? _objectSpread(_objectSpread({}, x), {}, { active: !isActive }) : x;
+    });
+    onSaveUsers(updated);
+    onLog(isActive ? "userDeactivated" : "userReactivated", u.name);
+  };
   var doReset = /*#__PURE__*/function () {
     var _doReset = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee7() {
       var u;
@@ -2267,6 +2285,10 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
     var lastAd = u.groupId === "admin" && users.filter(function (x) {
       return x.groupId === "admin";
     }).length <= 1;
+    // [v10.6.15] Nao pode inativar o unico admin ainda ativo.
+    var lastActiveAd = u.groupId === "admin" && u.active !== false && users.filter(function (x) {
+      return x.groupId === "admin" && x.active !== false;
+    }).length <= 1;
     var editing = eId === u.id;
     return /*#__PURE__*/React.createElement("div", {
       key: u.id,
@@ -2279,7 +2301,8 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
         border: "1px solid ".concat(T.borderL),
         background: T.panelBg,
         marginBottom: 6,
-        flexWrap: "wrap"
+        flexWrap: "wrap",
+        opacity: u.active === false ? 0.55 : 1 // [v10.6.15]
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -2365,7 +2388,17 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
         color: T.textD,
         marginLeft: 6
       }
-    }, "(voce)")), /*#__PURE__*/React.createElement("div", {
+    }, "(voce)"), u.active === false && /*#__PURE__*/React.createElement("span", { // [v10.6.15]
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        color: "#ef4444",
+        background: "rgba(239,68,68,0.12)",
+        borderRadius: 20,
+        padding: "1px 7px",
+        marginLeft: 6
+      }
+    }, "Inativo")), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 11,
         color: accent,
@@ -2469,7 +2502,17 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
         padding: "4px 10px",
         fontSize: 11
       })
-    }, "PIN"), u.id !== session.id && !lastAd && /*#__PURE__*/React.createElement("button", {
+    }, "PIN"), session.role === "admin" && u.id !== session.id && !lastActiveAd && /*#__PURE__*/React.createElement("button", { // [v10.6.15]
+      onClick: function onClick() {
+        return toggleUserActive(u);
+      },
+      title: u.active === false ? "Reativar este acesso" : "Inativar este acesso (não aparece mais para login; pode ser revertido)",
+      style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, {
+        padding: "4px 10px",
+        fontSize: 11,
+        color: u.active === false ? "#10b981" : "#f59e0b"
+      })
+    }, u.active === false ? "Reativar" : "Inativar"), u.id !== session.id && !lastAd && /*#__PURE__*/React.createElement("button", {
       onClick: function onClick() {
         return removeUser(u);
       },
@@ -4367,7 +4410,9 @@ function ExportRiskBar(props) {
                  Responsavel: respStr(t), Coordenador: t.coordenador || "",
                  Prazo: t.deadline ? t.deadline.split("-").reverse().join("/") : "",
                  "Data Credito": t.dataCredito ? t.dataCredito.split("-").reverse().join("/") : "",
-                 "Mes Ref": t.mes || "" };
+                 "Mes Ref": t.mes || "",
+                 "WF": t.solicitacaoWorkflow || "",
+                 "Descrição Solicitação": t.descricaoSolicitacao || "" }; // [v10.6.15]
       };
       var byPrazo = function (a, b) { return (a.deadline || "9999") < (b.deadline || "9999") ? -1 : 1; };
       var wb = window.XLSX.utils.book_new();
@@ -4969,6 +5014,7 @@ function WsDash(props) {
           Situacao: t.status === "concluida" ? "Concluida" : (t.deadline && t.deadline < todayStr ? "ATRASADA" : "Pendente"),
           "Mes Ref": t.mes || "",
           Prioridade: t.priority || "",
+          "WF": t.solicitacaoWorkflow || "", // [v10.6.15]
           "Descri\u00E7\u00E3o Solicita\u00E7\u00E3o": t.descricaoSolicitacao || "" // [v10.6.14]
         };
       });
@@ -5603,6 +5649,16 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var byD = function (a, b) { return (a.deadline || "").localeCompare(b.deadline || ""); };
   late.sort(byD); soon.sort(byD);
 
+  // [v10.6.15] Prazo - Outras Solicitações: mesmo card de Prazos, mas so tarefas com
+  // "Solicitação Workflow" preenchida (solicitacoes de atendimento vindas por WF).
+  var hasWF = function (t) { return !!(t.solicitacaoWorkflow || "").trim(); };
+  var lateWF = [], soonWF = [];
+  view.forEach(function (t) {
+    if (done_(t) || !t.deadline || !hasWF(t)) return;
+    if (t.deadline < todayStr) lateWF.push(t); else if (t.deadline <= weekStr) soonWF.push(t);
+  });
+  lateWF.sort(byD); soonWF.sort(byD);
+
   // nomes do "time" para escopar a atividade
   var teamSet = {};
   view.forEach(function (t) { respsOf(t).forEach(function (n) { if (n) teamSet[n] = 1; }); if (t.coordenador) teamSet[t.coordenador] = 1; });
@@ -6154,6 +6210,14 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 late.length ? late.map(function (t) { return prazoItem(t, "#ef4444"); }) : emptyMsg("Nenhuma atrasada."),
                 e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soon.length + ")"),
                 soon.length ? soon.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
+              )), },
+              // [v10.6.15] Mesmo formato do card "Prazos", mas so tarefas com Solicitação Workflow preenchida.
+              { id: "prazosWF", node: section("Prazo - Outras Solicitações", Clock,
+              e("div", { style: scrollBox },
+                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + lateWF.length + ")"),
+                lateWF.length ? lateWF.map(function (t) { return prazoItem(t, "#ef4444"); }) : emptyMsg("Nenhuma atrasada."),
+                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soonWF.length + ")"),
+                soonWF.length ? soonWF.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
               )), },
               { id: "semRecibo", node: section("Sem Recibo eSocial", Inbox,
               e("div", { style: scrollBox },
@@ -7547,6 +7611,10 @@ function App() {
               ch = true;
               nu.gerenteId = nu.role === "admin" ? "all" : "";
             }
+            if (nu.active === undefined) { // [v10.6.15] usuarios antigos entram como ativos
+              ch = true;
+              nu.active = true;
+            }
             return nu;
           });
           if (!(!r || ch)) {
@@ -8249,6 +8317,14 @@ function App() {
             user = users.find(function (u) {
               return u.name === loginName && u.pin === loginPin;
             });
+            if (!(user && user.active === false)) { // [v10.6.15] trava mesmo com lista antiga em cache na aba
+              _context34.n = 0.4;
+              break;
+            }
+            setLoginErr("Este acesso foi desativado. Fale com o administrador.");
+            setLoginPin("");
+            return _context34.a(2);
+          case 0.4:
             if (user) {
               _context34.n = 1;
               break;
@@ -9695,7 +9771,7 @@ function App() {
     })
   }, /*#__PURE__*/React.createElement("option", {
     value: ""
-  }, "Selecione..."), sortUsersByHierarchy(users, groups).map(function (u) {
+  }, "Selecione..."), sortUsersByHierarchy(users.filter(function (u) { return u.active !== false; }), groups).map(function (u) { // [v10.6.15]
     return /*#__PURE__*/React.createElement("option", {
       key: u.id,
       value: u.name
