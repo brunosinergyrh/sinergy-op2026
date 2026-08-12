@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.16)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.17)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.16-fix-drag-cards-novos-2026-08-11";
+window.OP2026_BUILD = "v10.6.17-calendario-filtro-salvo-reatribuir-2026-08-11";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.16-fix-drag-cards-novos-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.17-calendario-filtro-salvo-reatribuir-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4448,15 +4448,72 @@ function CalendarView(props) {
   var isAdminP = !!props.isAdmin, isGerenteP = !!props.isGerente, isCoordP = !!props.isCoord;
   var scope = props.scope;
   var myName = (session && session.name) || "";
+  // [v10.6.17] Coordenador, gerente e admin podem reatribuir o analista direto por aqui.
+  var canReassign = isAdminP || isGerenteP || isCoordP;
+  var onReassign = props.onReassign;
+  var memberNames = props.memberNames || [];
+  var _reass = React.useState(null); var reassignKey = _reass[0], setReassignKey = _reass[1]; // "<eid>|<taskId>"
+  var _reassVal = React.useState([]); var reassignVal = _reassVal[0], setReassignVal = _reassVal[1];
 
   var _m = React.useState(function () { var d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); });
   var monthKey = _m[0], setMonthKey = _m[1];
   var _sel = React.useState(null); var selDay = _sel[0], setSelDay = _sel[1];
-  var _selAn = React.useState("__all__"); var selAnalista = _selAn[0], setSelAnalista = _selAn[1];
-  var _selCo = React.useState("__all__"); var selCoord = _selCo[0], setSelCoord = _selCo[1];
-  var _selGe = React.useState("__all__"); var selGerente = _selGe[0], setSelGerente = _selGe[1];
-  var _vm = React.useState("prazo"); var viewMode = _vm[0], setViewMode = _vm[1]; // "prazo" | "conclusao" | "esteira"
-  var _selEst = React.useState("__all__"); var selEsteira = _selEst[0], setSelEsteira = _selEst[1];
+  // [v10.6.17] Filtros do calendario agora lembram por usuario (mesmo padrao das
+  // esteiras/painel gerencial): seed rapido do localStorage, depois confere o Supabase
+  // (PREFS_KEY, mesmo blob compartilhado usado pelo resto do app) e sincroniza.
+  var _calLS = (function () {
+    try {
+      var raw = localStorage.getItem('sinergy_calfilters_' + (props.session && props.session.id));
+      var obj = raw ? JSON.parse(raw) : null;
+      return obj && typeof obj === "object" ? obj : {};
+    } catch (_e) { return {}; }
+  })();
+  var _selAn = React.useState(_calLS.analista || "__all__"); var selAnalista = _selAn[0], setSelAnalistaRaw = _selAn[1];
+  var _selCo = React.useState(_calLS.coord || "__all__"); var selCoord = _selCo[0], setSelCoordRaw = _selCo[1];
+  var _selGe = React.useState(_calLS.gerente || "__all__"); var selGerente = _selGe[0], setSelGerenteRaw = _selGe[1];
+  var _vm = React.useState(_calLS.viewMode || "prazo"); var viewMode = _vm[0], setViewModeRaw = _vm[1]; // "prazo" | "conclusao" | "esteira"
+  var _selEst = React.useState(_calLS.esteira || "__all__"); var selEsteira = _selEst[0], setSelEsteiraRaw = _selEst[1];
+
+  var persistCalFilters = function (partial) {
+    var uid = session && session.id;
+    if (!uid) return;
+    var merged = Object.assign({ analista: selAnalista, coord: selCoord, gerente: selGerente, viewMode: viewMode, esteira: selEsteira }, partial);
+    try { localStorage.setItem('sinergy_calfilters_' + uid, JSON.stringify(merged)); } catch (_e) {}
+    (async function () {
+      try {
+        var r = await window.storage.get(PREFS_KEY, true);
+        var all2 = r ? JSON.parse(r.value) : {};
+        all2[uid] = Object.assign({}, all2[uid], { calFilters: merged });
+        await window.storage.set(PREFS_KEY, JSON.stringify(all2), true);
+      } catch (_e) {}
+    })();
+  };
+  var setSelAnalista = function (v) { setSelAnalistaRaw(v); persistCalFilters({ analista: v }); };
+  var setSelCoord = function (v) { setSelCoordRaw(v); persistCalFilters({ coord: v }); };
+  var setSelGerente = function (v) { setSelGerenteRaw(v); persistCalFilters({ gerente: v }); };
+  var setViewMode = function (v) { setViewModeRaw(v); persistCalFilters({ viewMode: v }); };
+  var setSelEsteira = function (v) { setSelEsteiraRaw(v); persistCalFilters({ esteira: v }); };
+  // Confere o Supabase por si (outro navegador/dispositivo pode ter salvo depois do
+  // seed local) — mesma logica de carregamento por sessao usada no Painel Gerencial.
+  React.useEffect(function () {
+    var uid = session && session.id;
+    if (!uid) return;
+    (async function () {
+      try {
+        var r = await window.storage.get(PREFS_KEY, true);
+        var all2 = r ? JSON.parse(r.value) : {};
+        var saved = all2[uid] && all2[uid].calFilters;
+        if (saved && typeof saved === "object") {
+          if (saved.analista) setSelAnalistaRaw(saved.analista);
+          if (saved.coord) setSelCoordRaw(saved.coord);
+          if (saved.gerente) setSelGerenteRaw(saved.gerente);
+          if (saved.viewMode) setViewModeRaw(saved.viewMode);
+          if (saved.esteira) setSelEsteiraRaw(saved.esteira);
+          try { localStorage.setItem('sinergy_calfilters_' + uid, JSON.stringify(saved)); } catch (_e2) {}
+        }
+      } catch (_e) {}
+    })();
+  }, [session && session.id]);
 
   var all = [];
   Object.keys(tasks).forEach(function (eid) {
@@ -4732,10 +4789,46 @@ function CalendarView(props) {
             var detalhes = viewMode === "conclusao"
               ? [estLabel, resp, t.situacao, wfLabel].filter(Boolean).join(" \u00B7 ")
               : [estLabel, resp, t.situacao, t.processo, wfLabel].filter(Boolean).join(" \u00B7 ");
+            // [v10.6.17] Coordenador/gerente/admin podem reatribuir o analista sem sair do calendario.
+            var rKey = t._eid + "|" + t.id;
+            var isReassigning = canReassign && reassignKey === rKey;
             return e("div", { key: t._eid + t.id, style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "7px 0", borderTop: "1px solid " + T.borderL, fontSize: 12 } },
               e("div", { style: { minWidth: 0, flex: 1 } },
                 e("div", { style: { color: T.text } }, (t.cliente ? t.cliente + " \u00B7 " : "") + (t.title || "")),
-                detalhes && e("div", { style: { color: T.textM, fontSize: 10.5, marginTop: 2 } }, detalhes)),
+                isReassigning
+                  ? e("div", { style: { marginTop: 4, display: "flex", flexDirection: "column", gap: 4, maxWidth: 260 } },
+                      e(MultiAutoInput, {
+                        values: reassignVal,
+                        onChange: function (v) { return setReassignVal(v); },
+                        suggestions: memberNames,
+                        placeholder: "Adicionar analista",
+                        T: T
+                      }),
+                      e("div", { style: { display: "flex", gap: 6 } },
+                        e("button", {
+                          onClick: function () {
+                            if (onReassign) onReassign(t._eid, t.id, reassignVal);
+                            setReassignKey(null);
+                          },
+                          style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 700, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                        }, e(Check, { size: 11 }), "Salvar"),
+                        e("button", {
+                          onClick: function () { return setReassignKey(null); },
+                          style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 600, color: T.textM, background: "transparent", border: "1px solid " + T.borderL, borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+                        }, e(X, { size: 11 }), "Cancelar")
+                      )
+                    )
+                  : e("div", { style: { color: T.textM, fontSize: 10.5, marginTop: 2, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" } },
+                      detalhes && e("span", null, detalhes),
+                      canReassign && e("button", {
+                        title: "Reatribuir analista",
+                        onClick: function () {
+                          setReassignVal(Array.isArray(t.responsibles) ? t.responsibles.slice() : (t.responsibles ? [t.responsibles] : []));
+                          setReassignKey(rKey);
+                        },
+                        style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, border: "none", background: "transparent", color: T.textD, cursor: "pointer", flexShrink: 0 }
+                      }, e(Pencil, { size: 10.5 }))
+                    )),
               e("div", { style: { textAlign: "right", flexShrink: 0 } },
                 viewMode === "conclusao"
                   ? e("div", { style: { color: "#10b981", fontWeight: 600, fontSize: 11 } }, "\u2713 " + (t.completedAt ? fmtDT(t.completedAt).split(" ").slice(-1)[0] : ""))
@@ -7318,6 +7411,21 @@ function App() {
       console.error('[logAction FAIL] Nao foi possivel salvar log no Supabase:', e && (e.message || e));
     });
   }, []);
+  // [v10.6.17] Reatribuir analista direto pelo Calendario (coordenador/gerente/admin) —
+  // mesma logica imutavel de mutate usada no restante do app, so que sem abrir o
+  // formulario completo de edicao.
+  var reassignFromCalendar = useCallback(function (eid, taskId, newResponsibles) {
+    var old = (tasksRef.current[eid] || []).find(function (t) { return t.id === taskId; });
+    if (!old) return;
+    var nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, eid, (tasksRef.current[eid] || []).map(function (t) {
+      if (t.id !== taskId) return t;
+      return _objectSpread(_objectSpread({}, t), {}, { responsibles: newResponsibles, responsible: newResponsibles[0] || "" });
+    })));
+    mutate(nt);
+    var oldResp = respStr(old);
+    var newResp = newResponsibles.join(", ");
+    logAction("edited", (old.code || "") + " · " + (old.title || "") + " | Analista (via calendário): \"" + oldResp + "\" → \"" + newResp + "\"");
+  }, [mutate, logAction]);
   var resolveGerente = function resolveGerente(name) {
     return usersRef.current.find(function (u) {
       return isGerenteUser(u, groupsRef.current) && norm(u.name) === norm(name);
@@ -11295,6 +11403,8 @@ function App() {
     isGerente: isGerente,
     isCoord: isCoordUser(session, groups),
     esteiras: esteiras,
+    onReassign: reassignFromCalendar, // [v10.6.17]
+    memberNames: userNames, // [v10.6.17]
     T: T
   })), /*#__PURE__*/React.createElement("div", {
     style: {
