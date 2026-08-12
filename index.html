@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.17)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.18)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.17-calendario-filtro-salvo-reatribuir-2026-08-11";
+window.OP2026_BUILD = "v10.6.18-reatribuir-usuarios-invalidos-2026-08-11";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.17-calendario-filtro-salvo-reatribuir-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.18-reatribuir-usuarios-invalidos-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -5266,11 +5266,16 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     esteiras = _refDash.esteiras,
     isGerente = _refDash.isGerente,
     users = _refDash.users, // [v10.6.14]
+    onReassign = _refDash.onReassign, // [v10.6.18]
+    memberNames = _refDash.memberNames || [], // [v10.6.18]
     inline = _refDash.inline;
   var e = React.createElement;
   var I = mkI(T);
   var estMap = {};
   (esteiras || []).forEach(function (es) { estMap[es.id] = es; });
+  // [v10.6.18] Reatribuir analista direto pelo card "Usuários inválidos".
+  var _reass = useState(null), reassignKey = _reass[0], setReassignKey = _reass[1]; // "<eid>|<taskId>"
+  var _reassVal = useState([]), reassignVal = _reassVal[0], setReassignVal = _reassVal[1];
 
   var canSeeAll = scope === "all";
   // Gerente: pode ver tudo do time (filtra por gerenteId) e ainda escolher coordenadora.
@@ -6032,16 +6037,49 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     var badCoord = invalidCoord(t);
     if (badCoord) badNames.push(badCoord + " (coord.)");
     var ctx = [t.cliente, t.processo].filter(Boolean).join(" · ");
-    return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
-      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: "#ef4444", flexShrink: 0 } }),
+    // [v10.6.18] Lapis pra corrigir o analista sem sair do card.
+    var rKey = t._eid + "|" + t.id;
+    var isReassigning = reassignKey === rKey;
+    return e("div", { key: t.id, style: { display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: "#ef4444", flexShrink: 0, marginTop: 5 } }),
       e("div", { style: { minWidth: 0, flex: 1 } },
         e("div", { style: { display: "flex", alignItems: "center", gap: 5, marginBottom: 1 } },
           es && e("span", { style: { fontSize: 9.5, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, es.label),
           e("span", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title || "(sem titulo)")
         ),
-        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ctx || "sem cliente/processo")
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ctx || "sem cliente/processo"),
+        isReassigning && e("div", { style: { marginTop: 6, display: "flex", flexDirection: "column", gap: 4, maxWidth: 260 } },
+          e(MultiAutoInput, {
+            values: reassignVal,
+            onChange: function (v) { return setReassignVal(v); },
+            suggestions: memberNames,
+            placeholder: "Adicionar analista",
+            T: T
+          }),
+          e("div", { style: { display: "flex", gap: 6 } },
+            e("button", {
+              onClick: function () {
+                if (onReassign) onReassign(t._eid, t.id, reassignVal);
+                setReassignKey(null);
+              },
+              style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 700, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+            }, e(Check, { size: 11 }), "Salvar"),
+            e("button", {
+              onClick: function () { return setReassignKey(null); },
+              style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 600, color: T.textM, background: "transparent", border: "1px solid " + T.borderL, borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+            }, e(X, { size: 11 }), "Cancelar")
+          )
+        )
       ),
-      e("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#ef4444", flexShrink: 0, whiteSpace: "nowrap", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" } }, badNames.join(" · "))
+      !isReassigning && e("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#ef4444", flexShrink: 0, whiteSpace: "nowrap", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" } }, badNames.join(" · ")),
+      !isReassigning && e("button", {
+        title: "Reatribuir analista",
+        onClick: function () {
+          setReassignVal(Array.isArray(t.responsibles) ? t.responsibles.slice() : (t.responsibles ? [t.responsibles] : []));
+          setReassignKey(rKey);
+        },
+        style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, border: "none", background: "transparent", color: T.textD, cursor: "pointer", flexShrink: 0, marginTop: 2 }
+      }, e(Pencil, { size: 11 }))
     );
   }
   function unassignedItem(t) {
@@ -7414,7 +7452,7 @@ function App() {
   // [v10.6.17] Reatribuir analista direto pelo Calendario (coordenador/gerente/admin) —
   // mesma logica imutavel de mutate usada no restante do app, so que sem abrir o
   // formulario completo de edicao.
-  var reassignFromCalendar = useCallback(function (eid, taskId, newResponsibles) {
+  var reassignResponsibles = useCallback(function (eid, taskId, newResponsibles) {
     var old = (tasksRef.current[eid] || []).find(function (t) { return t.id === taskId; });
     if (!old) return;
     var nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, eid, (tasksRef.current[eid] || []).map(function (t) {
@@ -7424,7 +7462,7 @@ function App() {
     mutate(nt);
     var oldResp = respStr(old);
     var newResp = newResponsibles.join(", ");
-    logAction("edited", (old.code || "") + " · " + (old.title || "") + " | Analista (via calendário): \"" + oldResp + "\" → \"" + newResp + "\"");
+    logAction("edited", (old.code || "") + " · " + (old.title || "") + " | Analista (reatribuição rápida): \"" + oldResp + "\" → \"" + newResp + "\"");
   }, [mutate, logAction]);
   var resolveGerente = function resolveGerente(name) {
     return usersRef.current.find(function (u) {
@@ -11391,6 +11429,8 @@ function App() {
     session: session,
     esteiras: esteiras,
     users: users, // [v10.6.14] para o card "Usuarios invalidos" (analista/coord sem cadastro)
+    onReassign: reassignResponsibles, // [v10.6.18]
+    memberNames: userNames, // [v10.6.18]
     inline: true,
     T: T
   })), tab === "calendar" && /*#__PURE__*/React.createElement("div", {
@@ -11403,7 +11443,7 @@ function App() {
     isGerente: isGerente,
     isCoord: isCoordUser(session, groups),
     esteiras: esteiras,
-    onReassign: reassignFromCalendar, // [v10.6.17]
+    onReassign: reassignResponsibles, // [v10.6.17]
     memberNames: userNames, // [v10.6.17]
     T: T
   })), /*#__PURE__*/React.createElement("div", {
