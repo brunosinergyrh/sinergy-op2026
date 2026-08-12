@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.18)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.19)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.18-reatribuir-usuarios-invalidos-2026-08-11";
+window.OP2026_BUILD = "v10.6.19-perf-skip-reprocess-poll-2026-08-12";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.18-reatribuir-usuarios-invalidos-2026-08-11", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.19-perf-skip-reprocess-poll-2026-08-12", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -811,6 +811,7 @@ var _React = React,
   useEffect = _React.useEffect,
   useCallback = _React.useCallback,
   useRef = _React.useRef,
+  useMemo = _React.useMemo, // [v10.6.20] antes nao usado em lugar nenhum do app
   memo = _React.memo;
 var _lucide = lucide,
   Lock = _lucide.Lock,
@@ -7287,6 +7288,10 @@ function App() {
   var tasksRef = useRef({});
   var trashRef = useRef([]);
   var lastWriteRef = useRef(0);
+  // [v10.6.19] Cache do valor bruto (string) de cada esteira na ultima varredura — permite
+  // pular o JSON.parse + map(migrateTask) quando o conteudo nao mudou desde o ultimo ciclo
+  // de 5s, sem alterar o que e buscado do Supabase nem a frequencia da varredura.
+  var lastRawByEidRef = useRef({});
   var sessionRef = useRef(session);
   useEffect(function () {
     sessionRef.current = session;
@@ -7327,24 +7332,23 @@ function App() {
   var gerenteNames = distinct(gerenteUsers.map(function (u) {
     return u.name;
   }));
-  var userNames = distinct(users.map(function (u) {
-    return u.name;
-  }));
+  var userNames = useMemo(function () { return distinct(users.map(function (u) { return u.name; })); }, [users]);
   var myGerenteName = scope === "all" ? "" : ((_users$find = users.find(function (u) {
     return u.id === scope;
   })) === null || _users$find === void 0 ? void 0 : _users$find.name) || "";
-  var baseTasks = Object.values(tasks).flat().filter(function (t) {
-    return visTask(t);
-  });
-  var histCliente = distinct(baseTasks.map(function (t) {
-    return t.cliente;
-  }));
-  var histProcesso = distinct(baseTasks.map(function (t) {
-    return t.processo;
-  }));
-  var histSituacao = distinct(baseTasks.map(function (t) {
-    return t.situacao;
-  }));
+  // [v10.6.20] Estas listas (historico + sugestoes do formulario) antes eram recalculadas
+  // por completo a CADA TECLA digitada em qualquer campo — inclusive as de "Tarefa" e
+  // "Situação", que percorrem e reordenam o titulo/situacao de TODAS as tarefas do sistema
+  // (milhares, sem nenhum corte por data). Medido ao vivo: uma unica tecla chegou a travar
+  // a pagina por 3,3s. Com useMemo, so recalculam quando "tasks"/"formGerId" (ou users/
+  // groups) realmente mudam — nao mais a cada letra digitada em campos que nao afetam essas
+  // listas (Tarefa, Situação, Cliente, Processo, Solicitação Workflow, Descrição etc.).
+  var baseTasks = useMemo(function () {
+    return Object.values(tasks).flat().filter(function (t) { return visTask(t); });
+  }, [tasks, scope]);
+  var histCliente = useMemo(function () { return distinct(baseTasks.map(function (t) { return t.cliente; })); }, [baseTasks]);
+  var histProcesso = useMemo(function () { return distinct(baseTasks.map(function (t) { return t.processo; })); }, [baseTasks]);
+  var histSituacao = useMemo(function () { return distinct(baseTasks.map(function (t) { return t.situacao; })); }, [baseTasks]);
   var formGer = gerenteUsers.find(function (u) {
     return norm(u.name) === norm(form.gerente);
   });
@@ -7352,33 +7356,21 @@ function App() {
   var inLot = function inLot(u) {
     return u.gerenteId === formGerId;
   };
-  var memberNames = formGerId ? distinct(users.filter(inLot).map(function (u) {
-    return u.name;
-  })) : userNames;
-  var coordNames = formGerId ? distinct(users.filter(function (u) {
-    return inLot(u) && isCoordUser(u, groups);
-  }).map(function (u) {
-    return u.name;
-  })) : distinct(users.filter(function (u) {
-    return isCoordUser(u, groups);
-  }).map(function (u) {
-    return u.name;
-  }));
-  var formTasks = formGerId ? Object.values(tasks).flat().filter(function (t) {
-    return t.gerenteId === formGerId;
-  }) : baseTasks;
-  var fCliente = distinct(formTasks.map(function (t) {
-    return t.cliente;
-  }));
-  var fProcesso = distinct(formTasks.map(function (t) {
-    return t.processo;
-  }));
-  var fSituacao = distinct(formTasks.map(function (t) {
-    return t.situacao;
-  }));
-  var fTitle = distinct(formTasks.map(function (t) {
-    return t.title;
-  }));
+  var memberNames = useMemo(function () {
+    return formGerId ? distinct(users.filter(inLot).map(function (u) { return u.name; })) : userNames;
+  }, [users, formGerId, userNames]);
+  var coordNames = useMemo(function () {
+    return formGerId
+      ? distinct(users.filter(function (u) { return inLot(u) && isCoordUser(u, groups); }).map(function (u) { return u.name; }))
+      : distinct(users.filter(function (u) { return isCoordUser(u, groups); }).map(function (u) { return u.name; }));
+  }, [users, groups, formGerId]);
+  var formTasks = useMemo(function () {
+    return formGerId ? Object.values(tasks).flat().filter(function (t) { return t.gerenteId === formGerId; }) : baseTasks;
+  }, [tasks, formGerId, baseTasks]);
+  var fCliente = useMemo(function () { return distinct(formTasks.map(function (t) { return t.cliente; })); }, [formTasks]);
+  var fProcesso = useMemo(function () { return distinct(formTasks.map(function (t) { return t.processo; })); }, [formTasks]);
+  var fSituacao = useMemo(function () { return distinct(formTasks.map(function (t) { return t.situacao; })); }, [formTasks]);
+  var fTitle = useMemo(function () { return distinct(formTasks.map(function (t) { return t.title; })); }, [formTasks]);
   var saveEsteira = useCallback(function (eid, data) {
     savePendingRef.current[eid] = data;
     lastWriteRef.current = Date.now();
@@ -7511,7 +7503,14 @@ function App() {
           r = _context19.v;
           if (r) {
             eid = key.replace(TASKS_PREFIX, "");
-            loaded[eid] = JSON.parse(r.value).map(migrateTask);
+            // [v10.6.19] Conteudo identico ao da ultima varredura? Reaproveita o array ja
+            // mapeado em memoria em vez de reprocessar (JSON.parse + migrateTask) de novo.
+            if (lastRawByEidRef.current[eid] === r.value && tasksRef.current[eid]) {
+              loaded[eid] = tasksRef.current[eid];
+            } else {
+              loaded[eid] = JSON.parse(r.value).map(migrateTask);
+              lastRawByEidRef.current[eid] = r.value;
+            }
           }
           _context19.n = 9;
           break;
@@ -8950,25 +8949,34 @@ function App() {
       responsible: respStr(t)
     });
   };
-  var allActive = Object.entries(tasks).flatMap(function (_ref35) {
-    var _ref36 = _slicedToArray(_ref35, 2),
-      eid = _ref36[0],
-      ts = _ref36[1];
-    return ts.filter(function (t) {
-      return visTask(t) && visEsts.some(function (e) {
-        return e.id === eid;
+  // [v10.6.20] Mesmo problema do formulario: essa cadeia (todas as tarefas de todas as
+  // esteiras -> filtro -> agrupamento -> ordenacao) recalculava do zero a cada tecla
+  // digitada em QUALQUER lugar da tela, mesmo sem relacao com a lista (ex.: digitando no
+  // formulario de nova tarefa). Nenhum desses valores depende do formulario, so do que
+  // realmente muda a lista (tarefas, aba, filtros, ordenacao) — por isso useMemo aqui.
+  var allActive = useMemo(function () {
+    return Object.entries(tasks).flatMap(function (_ref35) {
+      var _ref36 = _slicedToArray(_ref35, 2),
+        eid = _ref36[0],
+        ts = _ref36[1];
+      return ts.filter(function (t) {
+        return visTask(t) && visEsts.some(function (e) {
+          return e.id === eid;
+        });
+      }).map(function (t) {
+        return decorate(t, eid);
       });
-    }).map(function (t) {
-      return decorate(t, eid);
     });
-  });
-  var cur = isWS ? allActive.filter(function (t) {
-    return t._resp.includes(session === null || session === void 0 ? void 0 : session.name);
-  }) : (tasks[tab] || []).filter(function (t) {
-    return visTask(t);
-  }).map(function (t) {
-    return decorate(t, tab);
-  });
+  }, [tasks, visEsts, scope]);
+  var cur = useMemo(function () {
+    return isWS ? allActive.filter(function (t) {
+      return t._resp.includes(session === null || session === void 0 ? void 0 : session.name);
+    }) : (tasks[tab] || []).filter(function (t) {
+      return visTask(t);
+    }).map(function (t) {
+      return decorate(t, tab);
+    });
+  }, [isWS, allActive, session, tasks, tab, scope]);
   var activeE = isWS ? {
     id: "workspace",
     label: "Minha Area",
@@ -8988,42 +8996,38 @@ function App() {
       return t[k];
     }).filter(Boolean))).sort(function (a, b) { return String(a).localeCompare(String(b), "pt-BR", { sensitivity: "base" }); });
   };
-  var respOpts = distinct(cur.flatMap(function (t) {
-    return t._resp;
-  }));
-  var filtered = cur.filter(function (t) {
-    var passFilters = Object.entries(filters).every(function (_ref37) {
-      var _ref38 = _slicedToArray(_ref37, 2),
-        k = _ref38[0],
-        v = _ref38[1];
-      if (k === "cliente") return !v.length || v.indexOf(t.cliente) !== -1;
-      if (v === "all") return true;
-      if (k === "responsible") return v === "__none__" ? t._resp.length === 0 : t._resp.includes(v);
-      if (k === "status" && v === "atrasado") return t.status !== "concluida" && !!t.deadline && t.deadline < new Date().toISOString().slice(0, 10);
-      if ((k === "coordenador" || k === "gerente") && v === "__none__") return !((t[k] || "").trim());
-      return t[k] === v;
+  var respOpts = useMemo(function () { return distinct(cur.flatMap(function (t) { return t._resp; })); }, [cur]);
+  var filtered = useMemo(function () {
+    return cur.filter(function (t) {
+      var passFilters = Object.entries(filters).every(function (_ref37) {
+        var _ref38 = _slicedToArray(_ref37, 2),
+          k = _ref38[0],
+          v = _ref38[1];
+        if (k === "cliente") return !v.length || v.indexOf(t.cliente) !== -1;
+        if (v === "all") return true;
+        if (k === "responsible") return v === "__none__" ? t._resp.length === 0 : t._resp.includes(v);
+        if (k === "status" && v === "atrasado") return t.status !== "concluida" && !!t.deadline && t.deadline < new Date().toISOString().slice(0, 10);
+        if ((k === "coordenador" || k === "gerente") && v === "__none__") return !((t[k] || "").trim());
+        return t[k] === v;
+      });
+      if (!passFilters) return false;
+      if (dateFrom && (!t.deadline || t.deadline < dateFrom)) return false;
+      if (dateTo && (!t.deadline || t.deadline > dateTo)) return false;
+      if (creditFrom && (!t.dataCredito || t.dataCredito < creditFrom)) return false;
+      if (creditTo && (!t.dataCredito || t.dataCredito > creditTo)) return false;
+      return true;
     });
-    if (!passFilters) return false;
-    if (dateFrom && (!t.deadline || t.deadline < dateFrom)) return false;
-    if (dateTo && (!t.deadline || t.deadline > dateTo)) return false;
-    if (creditFrom && (!t.dataCredito || t.dataCredito < creditFrom)) return false;
-    if (creditTo && (!t.dataCredito || t.dataCredito > creditTo)) return false;
-    return true;
-  });
+  }, [cur, filters, dateFrom, dateTo, creditFrom, creditTo]);
   var sortOpt = SORT_OPTIONS[sortIdx] || SORT_OPTIONS[0];
-  var sortFn = makeSortFn(sortOpt.field, sortOpt.dir);
-  var grouped = {
-    atraso: [],
-    andamento: [],
-    planejada: [],
-    feito: []
-  };
-  filtered.forEach(function (t) {
-    return grouped[getStatusGroup(t)].push(t);
-  });
-  Object.keys(grouped).forEach(function (k) {
-    return grouped[k].sort(sortFn);
-  });
+  // sortFn precisa ser memoizado pelo campo/direcao (nao pelo objeto sortOpt em si), senao
+  // makeSortFn geraria uma funcao nova a cada render e o useMemo do "grouped" nunca pegaria cache.
+  var sortFn = useMemo(function () { return makeSortFn(sortOpt.field, sortOpt.dir); }, [sortOpt.field, sortOpt.dir]);
+  var grouped = useMemo(function () {
+    var g = { atraso: [], andamento: [], planejada: [], feito: [] };
+    filtered.forEach(function (t) { return g[getStatusGroup(t)].push(t); });
+    Object.keys(g).forEach(function (k) { return g[k].sort(sortFn); });
+    return g;
+  }, [filtered, sortFn]);
   var scopedTrash = trash.filter(function (t) {
     return visTask(t);
   });
