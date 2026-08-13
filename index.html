@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.19)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.20)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.19-perf-skip-reprocess-poll-2026-08-12";
+window.OP2026_BUILD = "v10.6.20-perf-memo-2026-08-13";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.19-perf-skip-reprocess-poll-2026-08-12", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.20-perf-memo-2026-08-13", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -910,6 +910,12 @@ var TRASH_DAYS = 10,
 var TASKS_PREFIX = "sinergy_est_";
 var TRASH_KEY = "sinergy_trash_v1";
 var LEGACY_TASKS_KEY = "sinergy_op2026_v2";
+// [v10.6.21] Horários exibidos na linha do tempo do card "% Conclusão do Dia" — cobre o
+// horário de atendimento (9h-18h) a cada 2h, mais um checkpoint antes do expediente (6h)
+// e dois depois (20h e 23h — cobre quem trabalha até mais tarde). Ajustável aqui.
+// Calculados em tempo real a partir de completedAt (ja gravado em cada tarefa concluída) —
+// não precisa de nenhuma captura/gravação nova, só relê o que já existe.
+var PCTDIA_CHECKPOINTS = [6, 9, 11, 13, 15, 17, 18, 20, 23];
 var USERS_KEY = "sinergy_auth_v1",
   EST_KEY = "sinergy_esteiras_v1",
   GROUPS_KEY = "sinergy_groups_v1",
@@ -5335,6 +5341,31 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       if (uid) localStorage.setItem('sinergy_esocfilters_' + uid, JSON.stringify({ coord: coord, analista: analista, mes: mes, gerente: gerente }));
     } catch (_e) {}
   };
+  // [v10.6.21] Filtros proprios do card "% Conclusão do Dia" — mesma logica de persistencia
+  // por usuario/navegador do card eSocial. Gerência só para quem vê tudo (admin/diretor);
+  // Coordenação para admin+gerente; Analista e Esteira para todos que veem o card.
+  var _pctSaved = (function () {
+    try {
+      var raw = localStorage.getItem('sinergy_pctdiafilters_' + (session && session.id));
+      return raw ? JSON.parse(raw) : {};
+    } catch (_e) { return {}; }
+  })();
+  var _fPctG = useState(_pctSaved.gerente || "__all__"), fPctGerente = _fPctG[0], setFPctGerente = _fPctG[1];
+  var _fPctC = useState(_pctSaved.coord || "__all__"), fPctCoord = _fPctC[0], setFPctCoord = _fPctC[1];
+  var _fPctA = useState(_pctSaved.analista || "__all__"), fPctAnalista = _fPctA[0], setFPctAnalista = _fPctA[1];
+  var _fPctE = useState(_pctSaved.esteira || "__all__"), fPctEsteira = _fPctE[0], setFPctEsteira = _fPctE[1];
+  // [v10.6.22] Período do card — Ontem/Hoje/Amanhã, padrão "hoje".
+  var _fPctP = useState(_pctSaved.periodo || "hoje"), fPctPeriodo = _fPctP[0], setFPctPeriodo = _fPctP[1];
+  var savePctFilters = function (gerente, coord, analista, esteira, periodo) {
+    try {
+      var uid = session && session.id;
+      if (uid) localStorage.setItem('sinergy_pctdiafilters_' + uid, JSON.stringify({ gerente: gerente, coord: coord, analista: analista, esteira: esteira, periodo: periodo }));
+    } catch (_e) {}
+  };
+  // [v10.6.21] Linha do tempo: NÃO precisa buscar/gravar nada novo — cada tarefa concluída
+  // já guarda completedAt (data/hora exata) desde sempre. Basta, para cada checkpoint,
+  // contar quantas das tarefas do período selecionado já tinham completedAt <= aquele
+  // horário. [v10.6.22] Sempre visível (sem botão de ocultar/mostrar).
 
   // [v10.6-B] Ordem + LARGURA personalizada dos cards do Painel Gerencial, com um modo
   // "Organizar cards" que precisa ser ligado para poder arrastar/redimensionar — fora
@@ -5693,6 +5724,120 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     .filter(function (k) { return esocSitMap[k] > 0; })
     .map(function (k) { return { label: k, count: esocSitMap[k], color: ESOC_COLORS[k] }; });
   var esocTotal = esocialView.length;
+
+  // [v10.6.21] Card "% Conclusão do Dia": tarefas com PRAZO = hoje, dentro do escopo do
+  // usuário (scoped — já usa gerenteId/coordenador reais, sem aproximação por nome), com
+  // filtros próprios em cascata — gerência (admin) → coordenação (admin+gerente) →
+  // analista/esteira (todo mundo que vê o card).
+  var pctBase0 = scoped;
+  var pctGerenteOpts = canSeeAll ? distinct(pctBase0.map(function (t) { return t.gerente; }).filter(Boolean)) : [];
+  var pctBase1 = (canSeeAll && fPctGerente !== "__all__") ? pctBase0.filter(function (t) { return norm(t.gerente || "") === norm(fPctGerente); }) : pctBase0;
+  var pctCoordOpts = isManager ? distinct(pctBase1.map(function (t) { return t.coordenador; }).filter(Boolean)) : [];
+  var pctBase2 = (isManager && fPctCoord !== "__all__") ? pctBase1.filter(function (t) { return norm(t.coordenador || "") === norm(fPctCoord); }) : pctBase1;
+  var pctAnalistaOpts = distinct(pctBase2.flatMap(function (t) { return respsOf(t); }).filter(Boolean));
+  var pctBase3 = fPctAnalista !== "__all__" ? pctBase2.filter(function (t) { return respsOf(t).some(function (r) { return norm(r) === norm(fPctAnalista); }); }) : pctBase2;
+  var pctEsteiraOpts = distinct(pctBase3.map(function (t) { return t._eid; }).filter(Boolean))
+    .map(function (id) { return { id: id, label: (estMap[id] && estMap[id].label) || id }; })
+    .sort(function (a, b) { return a.label.localeCompare(b.label, "pt-BR", { sensitivity: "base" }); });
+  var pctBase4 = fPctEsteira !== "__all__" ? pctBase3.filter(function (t) { return t._eid === fPctEsteira; }) : pctBase3;
+  // [v10.6.22] Data de referência conforme o período escolhido (ontem/hoje/amanhã) — não usa
+  // o "todayStr" compartilhado pelos outros cards (esses continuam sempre em "hoje").
+  var pad4 = function (n) { return n < 10 ? "0" + n : "" + n; };
+  var pctRefDate = new Date();
+  if (fPctPeriodo === "ontem") pctRefDate.setDate(pctRefDate.getDate() - 1);
+  else if (fPctPeriodo === "amanha") pctRefDate.setDate(pctRefDate.getDate() + 1);
+  pctRefDate.setHours(0, 0, 0, 0);
+  var pctRefDateStr = pctRefDate.getFullYear() + "-" + pad4(pctRefDate.getMonth() + 1) + "-" + pad4(pctRefDate.getDate());
+  var PCTDIA_PERIODO_LABEL = { ontem: "Ontem", hoje: "Hoje", amanha: "Amanhã" };
+  var pctHojeTasks = pctBase4.filter(function (t) { return t.deadline === pctRefDateStr; });
+  var pctHojeTotal = pctHojeTasks.length;
+  var pctHojeDone = pctHojeTasks.filter(done_).length;
+  var pctHojePct = pctHojeTotal ? Math.round(pctHojeDone / pctHojeTotal * 100) : 0;
+  // [v10.6.23] Classifica cada conclusão pela DATA de completedAt vs. a data do prazo (mesma
+  // regra já usada no card SLA): antes do prazo = antecipada, no próprio dia = no prazo,
+  // depois = atrasada. Explica por que um checkpoint bem no início do dia (ex.: 6h) já pode
+  // aparecer com tarefas concluídas — são as antecipadas, feitas antes do prazo chegar.
+  var pctClassify = function (t) {
+    if (!t.completedAt) return null;
+    var cd = t.completedAt.slice(0, 10);
+    if (cd < t.deadline) return "antecipada";
+    if (cd > t.deadline) return "atrasada";
+    return "noPrazo";
+  };
+  var pctHojeAntecipadas = pctHojeTasks.filter(function (t) { return done_(t) && pctClassify(t) === "antecipada"; }).length;
+  var pctHojeAtrasadas = pctHojeTasks.filter(function (t) { return done_(t) && pctClassify(t) === "atrasada"; }).length;
+  var pctHojeNoPrazo = pctHojeDone - pctHojeAntecipadas - pctHojeAtrasadas;
+
+  // Linha do tempo: usa completedAt sobre o MESMO conjunto já filtrado (pctHojeTasks) — cada
+  // checkpoint conta quantas já estavam concluídas até aquele horário, separando quanto disso
+  // já vinha de antecipação (concluída antes do prazo chegar — por isso aparece igual em TODOS
+  // os checkpoints do dia, mesmo o mais cedo) do que foi concluído "no prazo" até aquele horário.
+  // Atrasadas (concluídas depois do prazo) nunca aparecem dentro da linha do tempo do PRÓPRIO
+  // dia do prazo — por definição elas só acontecem depois que esse dia já terminou — por isso
+  // ficam destacadas separadamente, fora da linha do tempo, no resumo acima.
+  var pctTimelineRows = PCTDIA_CHECKPOINTS.map(function (h) {
+    var cutoff = new Date(pctRefDate); cutoff.setHours(h, 0, 0, 0);
+    if (cutoff.getTime() > Date.now()) return null;
+    var doneTasksByThen = pctHojeTasks.filter(function (t) {
+      return t.completedAt && new Date(t.completedAt).getTime() <= cutoff.getTime();
+    });
+    var doneByThen = doneTasksByThen.length;
+    var antByThen = doneTasksByThen.filter(function (t) { return pctClassify(t) === "antecipada"; }).length;
+    var tot = pctHojeTotal;
+    return { hour: pad4(h) + "h", total: tot, done: doneByThen, antecipadas: antByThen, pct: tot ? Math.round(doneByThen / tot * 100) : 0 };
+  }).filter(Boolean);
+  function pctFilterChange(g, c, a, es, per) {
+    setFPctGerente(g); setFPctCoord(c); setFPctAnalista(a); setFPctEsteira(es); setFPctPeriodo(per);
+    savePctFilters(g, c, a, es, per);
+  }
+  // [v10.6.24] Excel do card "% Conclusão" — 100% client-side (mesma lib XLSX já usada em
+  // todo o painel), nada disso passa pelo servidor: só monta o arquivo com o que já está
+  // na tela (respeitando os filtros e o período selecionados) e baixa direto no navegador.
+  function exportPctDia() {
+    if (!window.XLSX || !pctHojeTotal) return;
+    var periodoAscii = { ontem: "Ontem", hoje: "Hoje", amanha: "Amanha" }[fPctPeriodo];
+    var resumo = [{
+      "Período": PCTDIA_PERIODO_LABEL[fPctPeriodo],
+      "Data": fmtDate(pctRefDateStr),
+      "Total": pctHojeTotal,
+      "Concluídas": pctHojeDone,
+      "% Concluído": pctHojePct + "%",
+      "No prazo": pctHojeNoPrazo,
+      "% No prazo": pctHojeTotal ? Math.round(pctHojeNoPrazo / pctHojeTotal * 100) + "%" : "0%",
+      "Antecipadas": pctHojeAntecipadas,
+      "% Antecipadas": pctHojeTotal ? Math.round(pctHojeAntecipadas / pctHojeTotal * 100) + "%" : "0%",
+      "Atrasadas": pctHojeAtrasadas,
+      "% Atrasadas": pctHojeTotal ? Math.round(pctHojeAtrasadas / pctHojeTotal * 100) + "%" : "0%"
+    }];
+    var timeline = pctTimelineRows.map(function (r) {
+      return { "Horário": r.hour, "Concluídas até então": r.done, "Total": r.total, "% Concluído": r.pct + "%", "Das quais antecipadas": r.antecipadas };
+    });
+    var tarefas = pctHojeTasks.map(function (t) {
+      var es = estMap[t._eid];
+      var classif = done_(t) ? ({ antecipada: "Antecipada", atrasada: "Atrasada", noPrazo: "No prazo" }[pctClassify(t)] || "Concluída") : "Pendente";
+      return {
+        "Esteira": (es && es.label) || t._eid || "",
+        "Código": t.code || "",
+        "Tarefa": t.title || "",
+        "Cliente": t.cliente || "",
+        "Gerente": t.gerente || "",
+        "Coordenador": t.coordenador || "",
+        "Responsáveis": respsOf(t).join(", "),
+        "Prazo": t.deadline ? fmtDate(t.deadline) : "",
+        "Status": done_(t) ? "Concluída" : "Pendente",
+        "Classificação": classif,
+        "Concluído por": t.completedBy || "",
+        "Concluído em": t.completedAt ? fmtDT(t.completedAt) : ""
+      };
+    });
+    var ordem = { "Atrasada": 0, "Pendente": 1, "Antecipada": 2, "No prazo": 3 };
+    tarefas.sort(function (a, b) { return (ordem[a.Classificação] - ordem[b.Classificação]) || a.Cliente.localeCompare(b.Cliente); });
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(resumo), "Resumo");
+    if (timeline.length) window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(timeline), "Linha do tempo");
+    window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(tarefas), "Tarefas");
+    window.XLSX.writeFile(wb, "Conclusao_" + periodoAscii + "_" + pctRefDateStr + ".xlsx");
+  }
 
   // Sem Recibo eSocial: dois processos novos, agrupados por cliente (Rescisão e Admissão)
   function buildSemRecibo(match) {
@@ -6301,9 +6446,96 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
         ? emptyMsg("Nenhuma tarefa no escopo atual.")
         : (function () {
             var CARD_DEFS = [
-              { id: "clientes", node: section("Pendências por cliente", Layers,
-              byCliente.length ? e("div", { style: scrollBox }, byCliente.map(clienteRow)) : emptyMsg("Sem dados de cliente."),
-              "top " + byCliente.length), },
+              // [v10.6.21] % de tarefas com PRAZO=hoje já concluídas, com filtros em cascata
+              // (gerência → coordenação → analista/esteira) e linha do tempo por checkpoint.
+              { id: "pctDia", node: e("div", {
+                style: { background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: 16, minWidth: 0 }
+              },
+                e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12, flexWrap: "wrap" } },
+                  e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                    e(Clock, { size: 15, color: T.textM }),
+                    e("div", { style: { fontSize: 13, fontWeight: 700, color: T.text } }, "% Conclusão — " + PCTDIA_PERIODO_LABEL[fPctPeriodo]),
+                    e("span", { style: { fontSize: 11, color: T.textD } }, pctHojeTotal + " tarefa" + (pctHojeTotal !== 1 ? "s" : "") + " com prazo " + PCTDIA_PERIODO_LABEL[fPctPeriodo].toLowerCase()),
+                    pctHojeTotal > 0 && e("button", {
+                      onClick: exportPctDia,
+                      title: "Excel com resumo, linha do tempo e a lista de tarefas desta visão",
+                      style: { fontSize: 10.5, fontWeight: 700, border: "1px solid rgba(16,185,129,0.35)", background: "rgba(16,185,129,0.08)", color: "#10b981", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }
+                    }, "⬇ Excel")
+                  ),
+                  e("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } },
+                    e("select", {
+                      value: fPctPeriodo, onChange: function (ev) { pctFilterChange(fPctGerente, fPctCoord, fPctAnalista, fPctEsteira, ev.target.value); },
+                      style: { fontSize: 11, fontWeight: 600, color: T.text, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                    }, e("option", { value: "ontem" }, "Ontem"),
+                      e("option", { value: "hoje" }, "Hoje"),
+                      e("option", { value: "amanha" }, "Amanhã")
+                    ),
+                    canSeeAll && pctGerenteOpts.length > 0 && e("select", {
+                      value: fPctGerente, onChange: function (ev) { pctFilterChange(ev.target.value, fPctCoord, fPctAnalista, fPctEsteira, fPctPeriodo); },
+                      style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                    }, e("option", { value: "__all__" }, "Todo gerente"),
+                      pctGerenteOpts.map(function (g) { return e("option", { key: g, value: g }, g); })
+                    ),
+                    isManager && pctCoordOpts.length > 0 && e("select", {
+                      value: fPctCoord, onChange: function (ev) { pctFilterChange(fPctGerente, ev.target.value, fPctAnalista, fPctEsteira, fPctPeriodo); },
+                      style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                    }, e("option", { value: "__all__" }, "Toda coord."),
+                      pctCoordOpts.map(function (c) { return e("option", { key: c, value: c }, c); })
+                    ),
+                    pctAnalistaOpts.length > 0 && e("select", {
+                      value: fPctAnalista, onChange: function (ev) { pctFilterChange(fPctGerente, fPctCoord, ev.target.value, fPctEsteira, fPctPeriodo); },
+                      style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                    }, e("option", { value: "__all__" }, "Todo analista"),
+                      pctAnalistaOpts.map(function (a) { return e("option", { key: a, value: a }, a); })
+                    ),
+                    pctEsteiraOpts.length > 0 && e("select", {
+                      value: fPctEsteira, onChange: function (ev) { pctFilterChange(fPctGerente, fPctCoord, fPctAnalista, ev.target.value, fPctPeriodo); },
+                      style: { fontSize: 11, color: T.textM, background: T.selBg, border: "1px solid " + T.borderL, borderRadius: 6, padding: "3px 7px", colorScheme: T.cs }
+                    }, e("option", { value: "__all__" }, "Toda esteira"),
+                      pctEsteiraOpts.map(function (es) { return e("option", { key: es.id, value: es.id }, es.label); })
+                    )
+                  )
+                ),
+                pctHojeTotal === 0
+                  ? emptyMsg("Nenhuma tarefa com prazo " + PCTDIA_PERIODO_LABEL[fPctPeriodo].toLowerCase() + " neste nível.")
+                  : e("div", null,
+                      e("div", { style: { display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 } },
+                        e("div", { style: { fontSize: 32, fontWeight: 800, color: pctHojePct >= 80 ? "#10b981" : pctHojePct >= 50 ? "#f59e0b" : "#ef4444" } }, pctHojePct + "%"),
+                        e("div", { style: { fontSize: 12, color: T.textM } }, pctHojeDone + " concluída" + (pctHojeDone !== 1 ? "s" : "") + " de " + pctHojeTotal)
+                      ),
+                      // [v10.6.23] Detalha a composição do "concluídas": quanto foi no prazo,
+                      // quanto veio de antecipação (concluída antes do prazo chegar) e quanto
+                      // veio com atraso (concluída depois do prazo) — sem isso, um checkpoint
+                      // bem no início do período (ex.: 6h) parecia "errado" quando na verdade
+                      // já refletia tarefas antecipadas.
+                      pctHojeDone > 0 && e("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, color: T.textM, marginBottom: 10 } },
+                        pctHojeNoPrazo > 0 && e("span", null, e("span", { style: { color: "#10b981", fontWeight: 700 } }, pctHojeNoPrazo + " (" + Math.round(pctHojeNoPrazo / pctHojeTotal * 100) + "%)"), " no prazo"),
+                        pctHojeAntecipadas > 0 && e("span", null, e("span", { style: { color: "#6366f1", fontWeight: 700 } }, pctHojeAntecipadas + " (" + Math.round(pctHojeAntecipadas / pctHojeTotal * 100) + "%)"), " antecipada" + (pctHojeAntecipadas !== 1 ? "s" : "")),
+                        pctHojeAtrasadas > 0 && e("span", null, e("span", { style: { color: "#ef4444", fontWeight: 700 } }, pctHojeAtrasadas + " (" + Math.round(pctHojeAtrasadas / pctHojeTotal * 100) + "%)"), " atrasada" + (pctHojeAtrasadas !== 1 ? "s" : "") + " (concluída" + (pctHojeAtrasadas !== 1 ? "s" : "") + " após o prazo)")
+                      ),
+                      e("div", { style: { height: 8, background: T.border, borderRadius: 4, overflow: "hidden", marginBottom: 10 } },
+                        e("div", { style: { width: pctHojePct + "%", height: "100%", background: pctHojePct >= 80 ? "#10b981" : pctHojePct >= 50 ? "#f59e0b" : "#ef4444" } })
+                      ),
+                      e("div", { style: { marginTop: 4, paddingTop: 10, borderTop: "1px solid " + T.borderL } },
+                        e("div", { style: { fontSize: 10.5, color: T.textM, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.05em" } }, "Linha do tempo do dia"),
+                        pctTimelineRows.length === 0
+                          ? emptyMsg(fPctPeriodo === "amanha" ? "Ainda não chegou — sem checkpoints para uma data futura." : "Expediente ainda não começou (checkpoints às " + PCTDIA_CHECKPOINTS.map(function (h) { return h + "h"; }).join(", ") + ").")
+                          : e("div", { style: { display: "flex", gap: 10, flexWrap: "wrap" } },
+                                pctTimelineRows.map(function (r) {
+                                  return e("div", {
+                                    key: r.hour, style: { textAlign: "center", minWidth: 52 },
+                                    title: r.antecipadas > 0 ? (r.antecipadas + " dessas já eram antecipadas (concluídas antes do prazo)") : undefined
+                                  },
+                                    e("div", { style: { fontSize: 14, fontWeight: 700, color: r.pct >= 80 ? "#10b981" : r.pct >= 50 ? "#f59e0b" : "#ef4444" } }, r.pct + "%"),
+                                    e("div", { style: { fontSize: 10, color: T.textD, marginTop: 2 } }, r.hour),
+                                    e("div", { style: { fontSize: 9.5, color: T.textM } }, r.done + "/" + r.total),
+                                    r.antecipadas > 0 && e("div", { style: { fontSize: 8.5, color: "#6366f1" } }, r.antecipadas + " antec.")
+                                  );
+                                })
+                              )
+                      )
+                    )
+              ), },
               { id: "esocial", node: esocialEid ? e("div", {
               style: { background: T.panelBg, border: "1px solid " + T.borderL, borderRadius: 12, padding: 16, minWidth: 0 }
             },
@@ -6381,6 +6613,9 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
               { id: "analista", node: section("Carga por analista", Users,
               byAnalista.length ? e("div", { style: scrollBox }, byAnalista.map(analistaRow)) : emptyMsg("Sem analistas atribuídos."),
               byAnalista.length + " pessoa(s)"), },
+              { id: "clientes", node: section("Pendências por cliente", Layers,
+              byCliente.length ? e("div", { style: scrollBox }, byCliente.map(clienteRow)) : emptyMsg("Sem dados de cliente."),
+              "top " + byCliente.length), },
               { id: "pendAnalista", node: section("Pendências por analista", AlertTriangle,
               byPendAnalista.length ? e("div", { style: scrollBox }, byPendAnalista.map(pendAnalistaRow)) : emptyMsg("Sem pendências por analista."),
               byPendAnalista.length + " pessoa(s)"), },
