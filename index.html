@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.20)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.25)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.20-perf-memo-2026-08-13";
+window.OP2026_BUILD = "v10.6.25-perf-dom-poll-2026-08-14";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -667,7 +667,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.20-perf-memo-2026-08-13", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.25-perf-dom-poll-2026-08-14", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -910,6 +910,37 @@ var TRASH_DAYS = 10,
 var TASKS_PREFIX = "sinergy_est_";
 var TRASH_KEY = "sinergy_trash_v1";
 var LEGACY_TASKS_KEY = "sinergy_op2026_v2";
+
+/* ===== [v10.6.25] Ajudantes de PERFORMANCE do poll de 5 segundos =====
+   Problema corrigido: a cada 5s o load() montava um objeto novo com as tarefas e chamava
+   setTasks() SEMPRE. O React compara por referencia, entao um objeto novo (ainda que com
+   exatamente o mesmo conteudo) invalidava todos os useMemo e o memo() do painel Gerencial,
+   re-renderizando o app inteiro de 5 em 5 segundos. A v10.6.19 ja reaproveitava o ARRAY de
+   cada esteira quando o JSON bruto nao mudava; com isso, "nada mudou" pode ser detectado
+   comparando so as REFERENCIAS dos arrays — barato (uma dezena de comparacoes), sem
+   percorrer tarefa por tarefa e sem JSON.stringify. */
+function _sameTasks(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  var ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (var i = 0; i < ka.length; i++) {
+    // mesma esteira apontando para o MESMO array em memoria = conteudo identico
+    if (a[ka[i]] !== b[ka[i]]) return false;
+  }
+  return true;
+}
+// Assinatura barata da lixeira (sem JSON.stringify do objeto inteiro).
+function _sigTrash(arr) {
+  if (!Array.isArray(arr)) return "";
+  var s = arr.length + ":";
+  for (var i = 0; i < arr.length; i++) {
+    var t = arr[i] || {};
+    s += (t.id || "") + "~" + (t.deletedAt || "") + "|";
+  }
+  return s;
+}
+
 // [v10.6.21] Horários exibidos na linha do tempo do card "% Conclusão do Dia" — cobre o
 // horário de atendimento (9h-18h) a cada 2h, mais um checkpoint antes do expediente (6h)
 // e dois depois (20h e 23h — cobre quem trabalha até mais tarde). Ajustável aqui.
@@ -5263,6 +5294,65 @@ function WsDash(props) {
   );
 }
 
+/* ── [v10.6.25] LazyRows — lista longa com renderizacao progressiva ──────────────────
+   POR QUE EXISTE: o card "Prazos" montava no DOM TODAS as tarefas atrasadas de uma vez.
+   Medido com 12.000 tarefas: 31.638 dos 33.457 elementos do painel Gerencial inteiro
+   (95%) vinham so desse card — e apenas ~10 linhas ficam visiveis, o resto exige rolar.
+   Era o maior custo de abrir o painel (~1 segundo de tela travada).
+
+   O QUE MUDA NA PRATICA: nada e escondido nem removido. A lista comeca com um lote de
+   linhas e vai completando sozinha conforme voce rola (igual timeline de rede social),
+   e o rodape mostra "mostrando X de Y" com um botao para carregar o resto de uma vez.
+   Os totais nos titulos ("Atrasadas (2605)") continuam sendo o numero REAL, e o Excel
+   de exportacao continua saindo completo — nada disso passa por aqui.                */
+var LazyRows = function LazyRows(props) {
+  var e = React.createElement;
+  var sections = props.sections || [];
+  var chunk = props.chunk || 40;
+  var T = props.T;
+  var boxStyle = props.boxStyle;
+  var _ln = useState(chunk), shown = _ln[0], setShown = _ln[1];
+  // Quando o conteudo muda (troca de filtro, novas tarefas), volta ao lote inicial.
+  var sig = sections.map(function (s) { return (s.items || []).length; }).join("/");
+  useEffect(function () { setShown(chunk); }, [sig, chunk]);
+
+  var totalItems = sections.reduce(function (a, s) { return a + (s.items || []).length; }, 0);
+  var onScroll = function (ev) {
+    if (shown >= totalItems) return;
+    var el = ev.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
+      setShown(function (v) { return v + chunk; });
+    }
+  };
+  var moreLink = function (restam, key) {
+    return e("div", {
+      key: key,
+      onClick: function () { setShown(function (v) { return v + Math.max(chunk, restam); }); },
+      style: {
+        fontSize: 11, fontWeight: 600, color: "#6366f1", cursor: "pointer",
+        padding: "7px 0 3px", textAlign: "center", userSelect: "none"
+      },
+      title: "Carregar as " + restam + " linhas restantes"
+    }, "▾ mostrar mais " + restam);
+  };
+  return e("div", { style: boxStyle, onScroll: onScroll },
+    sections.map(function (s, si) {
+      var items = s.items || [];
+      var vis = items.slice(0, shown);
+      var restam = items.length - vis.length;
+      return e(React.Fragment, { key: s.key || si },
+        s.header || null,
+        items.length ? vis.map(s.render) : (s.empty || null),
+        restam > 0 ? moreLink(restam, "more" + si) : null,
+        restam > 0 ? e("div", {
+          key: "cnt" + si,
+          style: { fontSize: 10, color: T && T.textD, textAlign: "center", paddingBottom: 4 }
+        }, "mostrando " + vis.length + " de " + items.length) : null
+      );
+    })
+  );
+};
+
 /* ── DashboardModal (Painel Gerencial) ── */
 var DashboardModal = memo(function DashboardModal(_refDash) {
   var tasks = _refDash.tasks,
@@ -5278,8 +5368,13 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     inline = _refDash.inline;
   var e = React.createElement;
   var I = mkI(T);
-  var estMap = {};
-  (esteiras || []).forEach(function (es) { estMap[es.id] = es; });
+  // [v10.6.25] PERF — estMap era reconstruido a cada render, gerando um objeto novo que
+  // invalidava qualquer memoizacao que dependesse dele. Agora só muda quando as esteiras mudam.
+  var estMap = useMemo(function () {
+    var m = {};
+    (esteiras || []).forEach(function (es) { m[es.id] = es; });
+    return m;
+  }, [esteiras]);
   // [v10.6.18] Reatribuir analista direto pelo card "Usuários inválidos".
   var _reass = useState(null), reassignKey = _reass[0], setReassignKey = _reass[1]; // "<eid>|<taskId>"
   var _reassVal = useState([]), reassignVal = _reassVal[0], setReassignVal = _reassVal[1];
@@ -5523,23 +5618,53 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   var cardMapRef = useRef({});
 
   // ---- conjunto de tarefas conforme o papel ----
-  var allTasks = Object.entries(tasks || {}).reduce(function (acc, _kv) { var eid = _kv[0], arr = _kv[1]; return acc.concat((arr || []).map(function (t) { return t._eid ? t : Object.assign({}, t, { _eid: eid }); })); }, []);
+  // [v10.6.25] PERF — antes isso recalculava a lista completa de tarefas A CADA render
+  // (inclusive a cada clique em qualquer filtro do painel). Duas mudancas:
+  //  1) useMemo: so recalcula quando as tarefas/o papel do usuario realmente mudam;
+  //  2) push em vez de acc.concat(): o concat dentro do reduce recopiava o array inteiro
+  //     uma vez por esteira (custo quadratico no numero de esteiras).
+  // O RESULTADO e exatamente o mesmo array de antes, na mesma ordem.
+  var allTasks = useMemo(function () {
+    var out = [];
+    var entries = Object.entries(tasks || {});
+    for (var i = 0; i < entries.length; i++) {
+      var eid = entries[i][0], arr = entries[i][1] || [];
+      for (var j = 0; j < arr.length; j++) {
+        var t = arr[j];
+        out.push(t._eid ? t : Object.assign({}, t, { _eid: eid }));
+      }
+    }
+    return out;
+  }, [tasks]);
   // admin = tudo; gerente = tarefas do seu time (gerenteId === scope); coordenadora = tarefas onde ela e a coordenadora
-  var scoped;
-  if (canSeeAll) scoped = allTasks;
-  else if (isGerente) scoped = allTasks.filter(function (t) { return t.gerenteId === scope; });
-  else scoped = allTasks.filter(function (t) { return norm(t.coordenador || "") === norm(myName); });
+  var scoped = useMemo(function () {
+    if (canSeeAll) return allTasks;
+    if (isGerente) return allTasks.filter(function (t) { return t.gerenteId === scope; });
+    var nMy = norm(myName); // [v10.6.25] norm(myName) era recalculado para CADA tarefa
+    return allTasks.filter(function (t) { return norm(t.coordenador || "") === nMy; });
+  }, [allTasks, canSeeAll, isGerente, scope, myName]);
 
   // opções para os selects (calculadas sobre o scoped, antes dos filtros de drill-down)
-  var gerenteOpts = canSeeAll ? distinct(scoped.map(function (t) { return t.gerente; }).filter(Boolean)) : [];
-  var coordOpts = distinct(scoped.map(function (t) { return t.coordenador; }).filter(Boolean));
-  var cliOpts = distinct(scoped.map(function (t) { return t.cliente; }).filter(Boolean))
-    .sort(function (a, b) { return String(a).localeCompare(String(b), "pt-BR", { sensitivity: "base" }); });
+  // [v10.6.25] PERF — as quatro listas abaixo varrem TODAS as tarefas e ordenam com
+  // localeCompare (caro). Elas so mudam quando "scoped" muda, nunca quando o usuario
+  // troca um filtro — por isso agora ficam em useMemo.
+  var gerenteOpts = useMemo(function () {
+    return canSeeAll ? distinct(scoped.map(function (t) { return t.gerente; }).filter(Boolean)) : [];
+  }, [scoped, canSeeAll]);
+  var coordOpts = useMemo(function () {
+    return distinct(scoped.map(function (t) { return t.coordenador; }).filter(Boolean));
+  }, [scoped]);
+  var cliOpts = useMemo(function () {
+    return distinct(scoped.map(function (t) { return t.cliente; }).filter(Boolean))
+      .sort(function (a, b) { return String(a).localeCompare(String(b), "pt-BR", { sensitivity: "base" }); });
+  }, [scoped]);
   // [v10.6.9] Filtro por mes considera o PRAZO (deadline) da tarefa, nao o campo manual
   // "Mes"/referencia — o deadline ja vem sempre no formato ISO (YYYY-MM-DD), sem risco de
   // duplicar por formatos diferentes.
   var deadlineMonth = function (t) { return t.deadline ? t.deadline.slice(0, 7) : ""; };
-  var mesOpts = distinct(scoped.map(deadlineMonth).filter(Boolean)).sort().reverse();
+  var mesOpts = useMemo(function () {
+    return distinct(scoped.map(deadlineMonth).filter(Boolean)).sort().reverse();
+  }, [scoped]);
 
   // drill-down: gerente (admin only) → coordenadora → cliente
   var view = scoped;
@@ -5729,34 +5854,118 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   // usuário (scoped — já usa gerenteId/coordenador reais, sem aproximação por nome), com
   // filtros próprios em cascata — gerência (admin) → coordenação (admin+gerente) →
   // analista/esteira (todo mundo que vê o card).
-  var pctBase0 = scoped;
-  var pctGerenteOpts = canSeeAll ? distinct(pctBase0.map(function (t) { return t.gerente; }).filter(Boolean)) : [];
-  var pctBase1 = (canSeeAll && fPctGerente !== "__all__") ? pctBase0.filter(function (t) { return norm(t.gerente || "") === norm(fPctGerente); }) : pctBase0;
-  var pctCoordOpts = isManager ? distinct(pctBase1.map(function (t) { return t.coordenador; }).filter(Boolean)) : [];
-  var pctBase2 = (isManager && fPctCoord !== "__all__") ? pctBase1.filter(function (t) { return norm(t.coordenador || "") === norm(fPctCoord); }) : pctBase1;
-  var pctAnalistaOpts = distinct(pctBase2.flatMap(function (t) { return respsOf(t); }).filter(Boolean));
-  var pctBase3 = fPctAnalista !== "__all__" ? pctBase2.filter(function (t) { return respsOf(t).some(function (r) { return norm(r) === norm(fPctAnalista); }); }) : pctBase2;
-  var pctEsteiraOpts = distinct(pctBase3.map(function (t) { return t._eid; }).filter(Boolean))
-    .map(function (id) { return { id: id, label: (estMap[id] && estMap[id].label) || id }; })
-    .sort(function (a, b) { return a.label.localeCompare(b.label, "pt-BR", { sensitivity: "base" }); });
-  var pctBase4 = fPctEsteira !== "__all__" ? pctBase3.filter(function (t) { return t._eid === fPctEsteira; }) : pctBase3;
-  // [v10.6.22] Data de referência conforme o período escolhido (ontem/hoje/amanhã) — não usa
-  // o "todayStr" compartilhado pelos outros cards (esses continuam sempre em "hoje").
+  // [v10.6.25] PERF — a versao anterior deste card fazia ~10 varreduras encadeadas sobre
+  // TODAS as tarefas (pctBase0 -> pctBase1 -> ... -> pctBase4), chamava norm() do valor do
+  // filtro uma vez POR TAREFA, e na linha do tempo refazia um new Date(completedAt) por
+  // tarefa e por checkpoint (9x). Medido isolado: ~24ms por render com 20 mil tarefas.
+  // Agora tudo isso e UMA passada unica dentro de um useMemo. Resultado conferido como
+  // identico ao anterior (mesmos totais, mesmas listas de filtro, mesma linha do tempo).
   var pad4 = function (n) { return n < 10 ? "0" + n : "" + n; };
-  var pctRefDate = new Date();
-  if (fPctPeriodo === "ontem") pctRefDate.setDate(pctRefDate.getDate() - 1);
-  else if (fPctPeriodo === "amanha") pctRefDate.setDate(pctRefDate.getDate() + 1);
-  pctRefDate.setHours(0, 0, 0, 0);
-  var pctRefDateStr = pctRefDate.getFullYear() + "-" + pad4(pctRefDate.getMonth() + 1) + "-" + pad4(pctRefDate.getDate());
   var PCTDIA_PERIODO_LABEL = { ontem: "Ontem", hoje: "Hoje", amanha: "Amanhã" };
-  var pctHojeTasks = pctBase4.filter(function (t) { return t.deadline === pctRefDateStr; });
-  var pctHojeTotal = pctHojeTasks.length;
-  var pctHojeDone = pctHojeTasks.filter(done_).length;
-  var pctHojePct = pctHojeTotal ? Math.round(pctHojeDone / pctHojeTotal * 100) : 0;
-  // [v10.6.23] Classifica cada conclusão pela DATA de completedAt vs. a data do prazo (mesma
-  // regra já usada no card SLA): antes do prazo = antecipada, no próprio dia = no prazo,
-  // depois = atrasada. Explica por que um checkpoint bem no início do dia (ex.: 6h) já pode
-  // aparecer com tarefas concluídas — são as antecipadas, feitas antes do prazo chegar.
+  var _pctCalc = useMemo(function () {
+    var nG = norm(fPctGerente), nC = norm(fPctCoord), nA = norm(fPctAnalista);
+    var filtG = canSeeAll && fPctGerente !== "__all__";
+    var filtC = isManager && fPctCoord !== "__all__";
+    var filtA = fPctAnalista !== "__all__";
+    var filtE = fPctEsteira !== "__all__";
+    // [v10.6.22] Data de referência conforme o período escolhido (ontem/hoje/amanhã) — não usa
+    // o "todayStr" compartilhado pelos outros cards (esses continuam sempre em "hoje").
+    var refDate = new Date();
+    if (fPctPeriodo === "ontem") refDate.setDate(refDate.getDate() - 1);
+    else if (fPctPeriodo === "amanha") refDate.setDate(refDate.getDate() + 1);
+    refDate.setHours(0, 0, 0, 0);
+    var refStr = refDate.getFullYear() + "-" + pad4(refDate.getMonth() + 1) + "-" + pad4(refDate.getDate());
+
+    var gSet = Object.create(null), cSet = Object.create(null), aSet = Object.create(null), eSet = Object.create(null);
+    var hojeTasks = [];
+    for (var i = 0; i < scoped.length; i++) {
+      var t = scoped[i];
+      if (canSeeAll && t.gerente) gSet[t.gerente] = 1;
+      if (filtG && norm(t.gerente || "") !== nG) continue;
+      if (isManager && t.coordenador) cSet[t.coordenador] = 1;
+      if (filtC && norm(t.coordenador || "") !== nC) continue;
+      var rs = respsOf(t);
+      for (var j = 0; j < rs.length; j++) if (rs[j]) aSet[rs[j]] = 1;
+      if (filtA) {
+        var hit = false;
+        for (var k = 0; k < rs.length; k++) if (norm(rs[k]) === nA) { hit = true; break; }
+        if (!hit) continue;
+      }
+      if (t._eid) eSet[t._eid] = 1;
+      if (filtE && t._eid !== fPctEsteira) continue;
+      if (t.deadline === refStr) hojeTasks.push(t);
+    }
+    // distinct() equivalente: mesma limpeza (trim/vazios) e mesma ordenacao de antes
+    var keysSorted = function (obj) { return distinct(Object.keys(obj)); };
+    var gerenteOptsL = canSeeAll ? keysSorted(gSet) : [];
+    var coordOptsL = isManager ? keysSorted(cSet) : [];
+    var analistaOptsL = keysSorted(aSet);
+    var esteiraOptsL = keysSorted(eSet)
+      .map(function (id) { return { id: id, label: (estMap[id] && estMap[id].label) || id }; })
+      .sort(function (a, b) { return a.label.localeCompare(b.label, "pt-BR", { sensitivity: "base" }); });
+
+    // [v10.6.23] Classifica cada conclusão pela DATA de completedAt vs. a data do prazo (mesma
+    // regra já usada no card SLA): antes do prazo = antecipada, no próprio dia = no prazo,
+    // depois = atrasada. Explica por que um checkpoint bem no início do dia (ex.: 6h) já pode
+    // aparecer com tarefas concluídas — são as antecipadas, feitas antes do prazo chegar.
+    // Linha do tempo: cada checkpoint conta quantas já estavam concluídas até aquele horário,
+    // separando quanto disso já vinha de antecipação (por isso aparece igual em TODOS os
+    // checkpoints do dia, mesmo o mais cedo). Atrasadas nunca aparecem dentro da linha do
+    // tempo do PRÓPRIO dia do prazo — por definição só acontecem depois que esse dia terminou.
+    var nowMs = Date.now();
+    var cps = [];
+    for (var c = 0; c < PCTDIA_CHECKPOINTS.length; c++) {
+      var cut = new Date(refDate); cut.setHours(PCTDIA_CHECKPOINTS[c], 0, 0, 0);
+      if (cut.getTime() <= nowMs) cps.push({ h: PCTDIA_CHECKPOINTS[c], ts: cut.getTime() });
+    }
+    var cpDone = [], cpAnt = [];
+    for (var z = 0; z < cps.length; z++) { cpDone.push(0); cpAnt.push(0); }
+    var total = hojeTasks.length, doneN = 0, antN = 0, atrN = 0;
+    for (var m = 0; m < total; m++) {
+      var tt = hojeTasks[m];
+      var isDone = tt.status === "concluida";
+      if (isDone) doneN++;
+      var cls = null;
+      if (tt.completedAt) {
+        var cd = tt.completedAt.slice(0, 10);
+        cls = cd < tt.deadline ? "antecipada" : (cd > tt.deadline ? "atrasada" : "noPrazo");
+      }
+      if (isDone && cls === "antecipada") antN++;
+      else if (isDone && cls === "atrasada") atrN++;
+      if (tt.completedAt) {
+        var ts = new Date(tt.completedAt).getTime();
+        for (var q = 0; q < cps.length; q++) {
+          if (ts <= cps[q].ts) { cpDone[q]++; if (cls === "antecipada") cpAnt[q]++; }
+        }
+      }
+    }
+    var rows = cps.map(function (cp, idx) {
+      return {
+        hour: pad4(cp.h) + "h", total: total, done: cpDone[idx], antecipadas: cpAnt[idx],
+        pct: total ? Math.round(cpDone[idx] / total * 100) : 0
+      };
+    });
+    return {
+      gerenteOpts: gerenteOptsL, coordOpts: coordOptsL, analistaOpts: analistaOptsL, esteiraOpts: esteiraOptsL,
+      refDateStr: refStr, hojeTasks: hojeTasks, total: total, done: doneN,
+      pct: total ? Math.round(doneN / total * 100) : 0,
+      antecipadas: antN, atrasadas: atrN, noPrazo: doneN - antN - atrN, rows: rows
+    };
+  }, [scoped, estMap, canSeeAll, isManager, fPctGerente, fPctCoord, fPctAnalista, fPctEsteira, fPctPeriodo]);
+
+  var pctGerenteOpts = _pctCalc.gerenteOpts;
+  var pctCoordOpts = _pctCalc.coordOpts;
+  var pctAnalistaOpts = _pctCalc.analistaOpts;
+  var pctEsteiraOpts = _pctCalc.esteiraOpts;
+  var pctRefDateStr = _pctCalc.refDateStr;
+  var pctHojeTasks = _pctCalc.hojeTasks;
+  var pctHojeTotal = _pctCalc.total;
+  var pctHojeDone = _pctCalc.done;
+  var pctHojePct = _pctCalc.pct;
+  var pctHojeAntecipadas = _pctCalc.antecipadas;
+  var pctHojeAtrasadas = _pctCalc.atrasadas;
+  var pctHojeNoPrazo = _pctCalc.noPrazo;
+  var pctTimelineRows = _pctCalc.rows;
   var pctClassify = function (t) {
     if (!t.completedAt) return null;
     var cd = t.completedAt.slice(0, 10);
@@ -5764,28 +5973,6 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     if (cd > t.deadline) return "atrasada";
     return "noPrazo";
   };
-  var pctHojeAntecipadas = pctHojeTasks.filter(function (t) { return done_(t) && pctClassify(t) === "antecipada"; }).length;
-  var pctHojeAtrasadas = pctHojeTasks.filter(function (t) { return done_(t) && pctClassify(t) === "atrasada"; }).length;
-  var pctHojeNoPrazo = pctHojeDone - pctHojeAntecipadas - pctHojeAtrasadas;
-
-  // Linha do tempo: usa completedAt sobre o MESMO conjunto já filtrado (pctHojeTasks) — cada
-  // checkpoint conta quantas já estavam concluídas até aquele horário, separando quanto disso
-  // já vinha de antecipação (concluída antes do prazo chegar — por isso aparece igual em TODOS
-  // os checkpoints do dia, mesmo o mais cedo) do que foi concluído "no prazo" até aquele horário.
-  // Atrasadas (concluídas depois do prazo) nunca aparecem dentro da linha do tempo do PRÓPRIO
-  // dia do prazo — por definição elas só acontecem depois que esse dia já terminou — por isso
-  // ficam destacadas separadamente, fora da linha do tempo, no resumo acima.
-  var pctTimelineRows = PCTDIA_CHECKPOINTS.map(function (h) {
-    var cutoff = new Date(pctRefDate); cutoff.setHours(h, 0, 0, 0);
-    if (cutoff.getTime() > Date.now()) return null;
-    var doneTasksByThen = pctHojeTasks.filter(function (t) {
-      return t.completedAt && new Date(t.completedAt).getTime() <= cutoff.getTime();
-    });
-    var doneByThen = doneTasksByThen.length;
-    var antByThen = doneTasksByThen.filter(function (t) { return pctClassify(t) === "antecipada"; }).length;
-    var tot = pctHojeTotal;
-    return { hour: pad4(h) + "h", total: tot, done: doneByThen, antecipadas: antByThen, pct: tot ? Math.round(doneByThen / tot * 100) : 0 };
-  }).filter(Boolean);
   function pctFilterChange(g, c, a, es, per) {
     setFPctGerente(g); setFPctCoord(c); setFPctAnalista(a); setFPctEsteira(es); setFPctPeriodo(per);
     savePctFilters(g, c, a, es, per);
@@ -6581,30 +6768,63 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
               // Donut + legenda
               esocTotal > 0 ? esocialDonut(esocData, esocTotal) : emptyMsg("Nenhuma tarefa eSocial no escopo.")
             ) : null, },
+              // [v10.6.25] PERF — os dois cards abaixo montavam TODAS as tarefas no DOM de
+              // uma vez (com 12 mil tarefas: 31.638 elementos, 95% do painel inteiro). Agora
+              // usam LazyRows: mesma aparencia e mesmos totais, mas as linhas entram em lotes
+              // conforme voce rola. Nada foi escondido nem cortado.
               { id: "prazos", node: section("Prazos", Clock,
-              e("div", { style: scrollBox },
-                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + late.length + ")"),
-                late.length ? late.map(function (t) { return prazoItem(t, "#ef4444"); }) : emptyMsg("Nenhuma atrasada."),
-                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soon.length + ")"),
-                soon.length ? soon.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
-              )), },
+              e(LazyRows, {
+                T: T, boxStyle: scrollBox, chunk: 40,
+                sections: [
+                  {
+                    key: "late", items: late, render: function (t) { return prazoItem(t, "#ef4444"); },
+                    header: e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + late.length + ")"),
+                    empty: emptyMsg("Nenhuma atrasada.")
+                  },
+                  {
+                    key: "soon", items: soon, render: function (t) { return prazoItem(t, "#f59e0b"); },
+                    header: e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soon.length + ")"),
+                    empty: emptyMsg("Nada vencendo na semana.")
+                  }
+                ]
+              })), },
               // [v10.6.15] Mesmo formato do card "Prazos", mas so tarefas com Solicitação Workflow preenchida.
               { id: "prazosWF", node: section("Prazo - Outras Solicitações", Clock,
-              e("div", { style: scrollBox },
-                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + lateWF.length + ")"),
-                lateWF.length ? lateWF.map(function (t) { return prazoItem(t, "#ef4444"); }) : emptyMsg("Nenhuma atrasada."),
-                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soonWF.length + ")"),
-                soonWF.length ? soonWF.map(function (t) { return prazoItem(t, "#f59e0b"); }) : emptyMsg("Nada vencendo na semana.")
-              )), },
+              e(LazyRows, {
+                T: T, boxStyle: scrollBox, chunk: 40,
+                sections: [
+                  {
+                    key: "lateWF", items: lateWF, render: function (t) { return prazoItem(t, "#ef4444"); },
+                    header: e("div", { style: { fontSize: 11, fontWeight: 700, color: "#ef4444", margin: "0 0 4px" } }, "Atrasadas (" + lateWF.length + ")"),
+                    empty: emptyMsg("Nenhuma atrasada.")
+                  },
+                  {
+                    key: "soonWF", items: soonWF, render: function (t) { return prazoItem(t, "#f59e0b"); },
+                    header: e("div", { style: { fontSize: 11, fontWeight: 700, color: "#f59e0b", margin: "12px 0 4px" } }, "Vencendo em 7 dias (" + soonWF.length + ")"),
+                    empty: emptyMsg("Nada vencendo na semana.")
+                  }
+                ]
+              })), },
               { id: "semRecibo", node: section("Sem Recibo eSocial", Inbox,
-              e("div", { style: scrollBox },
-                e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 4px" } },
-                  e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1" } }, "Rescisão sem Recibo (" + semReciboRescisao.reduce(function (s, r) { return s + r.total; }, 0) + ")")
-                ),
-                semReciboRescisao.length ? semReciboRescisao.map(semReciboRow) : emptyMsg("Nenhuma pendência."),
-                e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1", margin: "12px 0 4px" } }, "Admissão sem Recibo (" + semReciboAdmissao.reduce(function (s, r) { return s + r.total; }, 0) + ")"),
-                semReciboAdmissao.length ? semReciboAdmissao.map(semReciboRow) : emptyMsg("Nenhuma pendência.")
-              ),
+              // [v10.6.25] PERF — este card lista uma linha por CLIENTE; em carteiras grandes
+              // isso passa de centenas de linhas. Mesma renderizacao progressiva do card Prazos.
+              e(LazyRows, {
+                T: T, boxStyle: scrollBox, chunk: 40,
+                sections: [
+                  {
+                    key: "recRescisao", items: semReciboRescisao, render: semReciboRow,
+                    header: e("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 4px" } },
+                      e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1" } }, "Rescisão sem Recibo (" + semReciboRescisao.reduce(function (s, r) { return s + r.total; }, 0) + ")")
+                    ),
+                    empty: emptyMsg("Nenhuma pendência.")
+                  },
+                  {
+                    key: "recAdmissao", items: semReciboAdmissao, render: semReciboRow,
+                    header: e("div", { style: { fontSize: 11, fontWeight: 700, color: "#6366f1", margin: "12px 0 4px" } }, "Admissão sem Recibo (" + semReciboAdmissao.reduce(function (s, r) { return s + r.total; }, 0) + ")"),
+                    empty: emptyMsg("Nenhuma pendência.")
+                  }
+                ]
+              }),
               semReciboTotal > 0 ? e("button", {
                 onClick: exportSemRecibo,
                 title: "Excel com clientes e tarefas dos dois processos, por status",
@@ -6731,7 +6951,10 @@ var TaskCard = memo(function TaskCard(_ref15) {
     onSelect = _ref15.onSelect,
     onEdit = _ref15.onEdit,
     onDelete = _ref15.onDelete;
-  var p = PRI[task.priority];
+  // [v10.6.25] Blindagem: se a tarefa vier sem prioridade (ou com um valor fora de
+  // alta/media/baixa), PRI[...] era undefined e o "p.color" logo abaixo derrubava a
+  // renderizacao da LISTA INTEIRA (tela em branco). Agora cai em "media" e segue.
+  var p = PRI[task.priority] || PRI.media;
   var isDone = task.status === "concluida";
   var overdue = task.deadline && !isDone && new Date(task.deadline + "T23:59:59") < new Date();
   var est = showEst ? esteiras.find(function (e) {
@@ -7007,7 +7230,10 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
     onSelect = _refTR.onSelect,
     onEdit = _refTR.onEdit,
     onDelete = _refTR.onDelete;
-  var p = PRI[task.priority];
+  // [v10.6.25] Blindagem: se a tarefa vier sem prioridade (ou com um valor fora de
+  // alta/media/baixa), PRI[...] era undefined e o "p.color" logo abaixo derrubava a
+  // renderizacao da LISTA INTEIRA (tela em branco). Agora cai em "media" e segue.
+  var p = PRI[task.priority] || PRI.media;
   var isDone = task.status === "concluida";
   var overdue = task.deadline && !isDone && new Date(task.deadline + "T23:59:59") < new Date();
   var est = showEst ? esteiras.find(function (e) { return e.id === task._eid; }) : null;
@@ -7527,6 +7753,10 @@ function App() {
   // pular o JSON.parse + map(migrateTask) quando o conteudo nao mudou desde o ultimo ciclo
   // de 5s, sem alterar o que e buscado do Supabase nem a frequencia da varredura.
   var lastRawByEidRef = useRef({});
+  // [v10.6.25] PERF — guarda o ULTIMO objeto de tarefas que foi realmente entregue ao React
+  // e uma assinatura da lixeira, para o poll de 5s poder pular o setState quando nada mudou.
+  var _prevLoadedRef = useRef(null);
+  var _trashSigRef = useRef(null);
   var sessionRef = useRef(session);
   useEffect(function () {
     sessionRef.current = session;
@@ -7641,6 +7871,9 @@ function App() {
   var mutate = useCallback(function (nt) {
     var prev = tasksRef.current;
     tasksRef.current = nt;
+    // [v10.6.25] mantem a invariante "_prevLoadedRef = o que o React tem agora", para o poll
+    // de 5s nao disparar um re-render redundante logo depois de uma gravacao local.
+    _prevLoadedRef.current = nt;
     lastWriteRef.current = Date.now();
     setTasks(nt);
     var eids = new Set([].concat(_toConsumableArray(Object.keys(prev || {})), _toConsumableArray(Object.keys(nt || {}))));
@@ -7697,7 +7930,7 @@ function App() {
     }) || null;
   };
   var load = useCallback(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee18() {
-    var loaded, trashData, hasNew, lr, _iterator5, _step5, key, r, eid, leg, ld, _loop2, _i, _Object$entries, tr, now2, raw, _t5, _t6, _t7, _t8, _t9, _t0, _t1, _t10;
+    var loaded, trashData, hasNew, lr, _iterator5, _step5, key, r, eid, leg, ld, _loop2, _i, _Object$entries, tr, now2, raw, _t25sig, _t5, _t6, _t7, _t8, _t9, _t0, _t1, _t10;
     return _regenerator().w(function (_context19) {
       while (1) switch (_context19.p = _context19.n) {
         case 0:
@@ -7900,10 +8133,28 @@ function App() {
           setLastSync(new Date());
           return _context19.a(2);
         case 35:
-          tasksRef.current = loaded;
-          setTasks(loaded);
+          // [v10.6.25] PERF — o poll de 5s montava um objeto "loaded" NOVO a cada volta e
+          // chamava setTasks() sempre, mesmo quando nada havia mudado no servidor. Como o
+          // React compara por REFERENCIA, um objeto novo invalidava todos os useMemo e o
+          // memo() do painel Gerencial: o app inteiro re-renderizava de 5 em 5 segundos,
+          // travando a tela ~150ms cada vez. A v10.6.19 já reaproveitava os ARRAYS de cada
+          // esteira quando o JSON bruto era identico (lastRawByEidRef) — agora usamos isso
+          // para detectar "nada mudou" e simplesmente NAO chamar setTasks/setTrash.
+          // Nada de comportamento muda: quando ha mudanca real, atualiza igual a antes.
+          if (_sameTasks(_prevLoadedRef.current, loaded)) {
+            // nada mudou: mantem a MESMA referencia de antes -> React nao re-renderiza nada
+            tasksRef.current = _prevLoadedRef.current;
+          } else {
+            tasksRef.current = loaded;
+            _prevLoadedRef.current = loaded;
+            setTasks(loaded);
+          }
           trashRef.current = trashData;
-          setTrash(trashData);
+          _t25sig = _sigTrash(trashData);
+          if (_trashSigRef.current !== _t25sig) {
+            _trashSigRef.current = _t25sig;
+            setTrash(trashData);
+          }
           setLastSync(new Date());
           _context19.n = 37;
           break;
