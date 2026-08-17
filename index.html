@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.25)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.26)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.25-perf-dom-poll-2026-08-14";
+window.OP2026_BUILD = "v10.6.26-canon-json-2026-08-17";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -293,6 +293,31 @@ async function _detectCompat() {
   return _sync.compat;
 }
 
+/* ===== [v10.6.26] JSON CANONICO — a correcao do "salvei e voltou" =====
+   O PROBLEMA (confirmado em 17/08/2026): o Postgres guarda task_data como jsonb e REORDENA
+   as chaves. O objeto que sobe do navegador tem a ordem de insercao do JavaScript; o que
+   volta do banco tem a ordem do jsonb. Como o _tasksSet decidia "esta tarefa mudou?"
+   comparando as duas STRINGS (prev[id] !== x.json), a resposta era SEMPRE "mudou" — para
+   TODAS as tarefas da esteira, inclusive as que ninguem tocou.
+   Consequencia: cada clique em Salvar relia e regravava a esteira INTEIRA (com ~6 mil
+   tarefas sao ~30 GETs + ~30 POSTs sequenciais, dezenas de segundos). Isso (a) deixava o
+   salvamento lento, (b) abria uma janela enorme para o poll de 5s e para outros
+   navegadores e (c) se QUALQUER um daqueles GETs falhasse, o codigo caia no fallback
+   "gravar copia local completa" e devolvia a esteira inteira ao estado que aquele
+   navegador tinha em memoria — desfazendo a edicao que outra pessoa acabara de fazer.
+   Foi o que aconteceu com a tarefa T-1338D-DWU0Z: a Natalia gravou a Situacao as 15:00 e
+   precisou refazer as 15:41.
+   A CORRECAO: comparar sempre com as chaves ORDENADAS. "Mudou" volta a significar mudou de
+   verdade, e um Salvar normal grava 1 tarefa em vez de 6 mil. */
+function _canon(v) {
+  if (v === null || typeof v !== "object") return v;
+  if (Array.isArray(v)) return v.map(_canon);
+  var out = {}, ks = Object.keys(v).sort();
+  for (var i = 0; i < ks.length; i++) out[ks[i]] = _canon(v[ks[i]]);
+  return out;
+}
+function _canonJson(v) { try { return JSON.stringify(_canon(v)); } catch (_) { return JSON.stringify(v); } }
+
 /* v10.3: fila de eventos de mudanca (alimenta as notificacoes in-app).
    _selfWrites evita auto-notificacao: gravacoes deste navegador nos ultimos 30s sao ignoradas
    (necessario porque o jsonb do Postgres reordena as chaves e o JSON volta "diferente"). */
@@ -318,7 +343,7 @@ async function _fullLoad() {
     if (!t || t.id == null || r.esteira == null) return;
     const eid = String(r.esteira);
     if (!fresh[eid]) fresh[eid] = {};
-    fresh[eid][String(t.id)] = JSON.stringify(t);
+    fresh[eid][String(t.id)] = _canonJson(t); // [v10.6.26] chaves ordenadas — ver _canon
     _advanceCursor(r.updated_at);
   });
   _taskCache = fresh;
@@ -347,7 +372,7 @@ async function _deltaPull() {
       const t = _taskRowData(r);
       if (!t) return;
       if (!_taskCache[eid]) _taskCache[eid] = {};
-      var newJson = JSON.stringify(t);
+      var newJson = _canonJson(t); // [v10.6.26] chaves ordenadas — ver _canon
       var prevJson = _taskCache[eid][id];
       if (prevJson !== newJson) {
         _taskCache[eid][id] = newJson;
@@ -437,7 +462,7 @@ async function _tasksSet(eid, arr) {
     if (!t) return;
     const id = (t.id != null && t.id !== "") ? String(t.id) : _newId();
     const data = (t.id !== id) ? Object.assign({}, t, { id: id }) : t;
-    const json = JSON.stringify(data);
+    const json = _canonJson(data); // [v10.6.26] mesma forma canonica do cache — ver _canon
     incoming[id] = json;
     rows.push({ id: id, esteira: eid, task_data: data, json: json });
   });
@@ -460,18 +485,31 @@ async function _tasksSet(eid, arr) {
   // (nao a esteira inteira) — 1 requisicao em lote, nao 1 por tarefa.
   var serverRows = {};
   if (candidateChanged.length) {
-    try {
-      var idsToCheck = candidateChanged.map(function (x) { return x.id; });
-      var checkChunks = _chunk(idsToCheck, 200);
-      for (var ci = 0; ci < checkChunks.length; ci++) {
-        var qs = "tasks?id=in.(" + checkChunks[ci].map(encodeURIComponent).join(",") + ")&select=id,task_data";
-        var found = await sbFetch("GET", qs);
-        (found || []).forEach(function (r) { serverRows[String(r.id)] = r.task_data; });
+    // [v10.6.26] Antes, um unico GET que falhasse abortava o laco INTEIRO: todos os lotes
+    // seguintes ficavam sem estado do servidor e cada uma dessas tarefas era gravada como
+    // "copia local completa", sem merge — desfazendo em silencio o que outra pessoa tinha
+    // acabado de salvar. Agora cada lote e independente e tem 1 nova tentativa; o que ainda
+    // assim nao puder ser conferido fica registrado para nao ser sobrescrito as cegas.
+    var idsToCheck = candidateChanged.map(function (x) { return x.id; });
+    var checkChunks = _chunk(idsToCheck, 200);
+    var naoConferidos = 0;
+    for (var ci = 0; ci < checkChunks.length; ci++) {
+      var qs = "tasks?id=in.(" + checkChunks[ci].map(encodeURIComponent).join(",") + ")&select=id,task_data";
+      var found = null;
+      for (var tent = 0; tent < 2 && found === null; tent++) {
+        try { found = await sbFetch("GET", qs); }
+        catch (eMerge) {
+          if (tent === 0) { await new Promise(function (r) { setTimeout(r, 400); }); continue; }
+          naoConferidos += checkChunks[ci].length;
+          console.warn("[tasks.set] Lote " + (ci + 1) + "/" + checkChunks.length +
+            " nao pode ser conferido antes de gravar.", eMerge && (eMerge.message || eMerge));
+        }
       }
-    } catch (eMerge) {
-      // Falha na leitura previa nao deve travar o salvamento — cai para o comportamento
-      // anterior (grava a copia local completa) neste ciclo.
-      console.warn("[tasks.set] Nao foi possivel checar estado atual antes de gravar — gravando copia local.", eMerge && (eMerge.message || eMerge));
+      (found || []).forEach(function (r) { serverRows[String(r.id)] = r.task_data; });
+    }
+    if (naoConferidos) {
+      showError("Atenção: " + naoConferidos + " tarefa(s) foram gravadas sem conferência " +
+        "prévia (falha de rede). Se alguém editou essas tarefas agora, confira o valor.");
     }
   }
 
@@ -491,7 +529,7 @@ async function _tasksSet(eid, arr) {
                             }
                           });
                         }
-                        incoming[x.id] = JSON.stringify(mergedData); // reflete o merge no cache local
+                        incoming[x.id] = _canonJson(mergedData); // [v10.6.26] reflete o merge no cache local, ja canonico
                         return compat
                           ? { id: x.id, esteira: x.esteira, task_data: mergedData, updated_at: new Date().toISOString() }
                           : { id: x.id, esteira: x.esteira, task_data: mergedData, deleted_at: null };
@@ -667,7 +705,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.25-perf-dom-poll-2026-08-14", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.26-canon-json-2026-08-17", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
