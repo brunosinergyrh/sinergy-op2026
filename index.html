@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.26)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.27)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -216,6 +216,10 @@ var _taskCache = {};
 // com "eu removi" — evita apagar (soft-delete) tarefas que outros usuarios adicionaram
 // entre a leitura e a gravacao deste navegador.
 var _taskCacheSnapshot = {};
+// [v10.6.27] Teto de exclusao POR OMISSAO num unico salvamento. Exclusao real feita
+// na tela e de uma ou duas tarefas; um save que queira apagar dezenas nao e exclusao,
+// e uma visao desatualizada. Ver o freio em _tasksSet.
+var MAX_EXCLUSAO_POR_OMISSAO = 5;
 
 function _chunk(a, n) { var o = []; for (var i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; }
 function _newId() { return "T-AUTO-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase(); }
@@ -470,6 +474,27 @@ async function _tasksSet(eid, arr) {
   // cache ao vivo, que pode ja ter sido atualizado por um sync em segundo plano com
   // tarefas que outros usuarios adicionaram/moveram DEPOIS da ultima leitura deste navegador.
   const prev = _taskCacheSnapshot[eid] || _taskCache[eid] || {};
+  // ══════════════════════════════════════════════════════════════════════════
+  // [v10.6.27] A base da EXCLUSAO passa a ser SOMENTE o snapshot congelado.
+  //
+  // O fallback "|| _taskCache[eid]" da linha acima e correto para o diff de
+  // gravacao, mas era fatal para a exclusao: quando este navegador nunca leu
+  // esta esteira via _tasksGet (snapshot undefined), o `prev` virava o CACHE AO
+  // VIVO — que o sync incremental mantem atualizado com tudo que os robos
+  // acabaram de criar. Como essas tarefas nao estao no `arr` que a tela esta
+  // salvando, caiam todas no `toDelete` e eram marcadas como excluidas.
+  //
+  // Incidente que provou isso: 17/08/2026 14:24:02.937Z, um unico
+  // PATCH tasks?id=in.(29 ids) com deleted_at, disparado 0,3s depois de um
+  // POST do mesmo navegador (Edge 151). Entre os 29 estavam as 19 tarefas que o
+  // importador havia criado as 13:24 do mesmo dia. Antes, 14/08: 13 tarefas.
+  // Nenhuma delas apareceu na Lixeira nem no Log do painel — porque ninguem
+  // clicou em excluir: a exclusao foi DEDUZIDA de uma ausencia.
+  //
+  // Sem snapshot, este navegador nao leu nada e portanto nao tem base para
+  // concluir que algo foi removido: a base de exclusao e vazia.
+  // ══════════════════════════════════════════════════════════════════════════
+  const prevDel = _taskCacheSnapshot[eid] || {};
   // grava apenas linhas novas ou alteradas.
   // deleted_at:null explicito revive tarefas restauradas da lixeira (upsert merge-duplicates).
   // updated_at NAO e mais enviado: o trigger do banco carimba com o relogio do servidor.
@@ -537,7 +562,23 @@ async function _tasksSet(eid, arr) {
   // v10: exclusao virou soft-delete — marca deleted_at em vez de DELETE fisico.
   // Em modo compatibilidade (sem a coluna), mantem o DELETE fisico da v9.
   // Continua apagando (marcando) apenas ids que ESTE navegador conhecia.
-  const toDelete = Object.keys(prev).filter(function (id) { return !(id in incoming); });
+  var toDelete = Object.keys(prevDel).filter(function (id) { return !(id in incoming); });
+
+  // [v10.6.27] FREIO DE EXCLUSAO EM LOTE. Segunda linha de defesa, independente
+  // da correcao do prevDel: se por qualquer outro caminho o toDelete vier grande,
+  // nao apaga. Prefere deixar tarefa a mais na tela (visivel, corrigivel) do que
+  // apagar dezenas em silencio (invisivel, e sem passar pela Lixeira).
+  if (toDelete.length > MAX_EXCLUSAO_POR_OMISSAO) {
+    console.error("[tasks.set] EXCLUSAO EM LOTE BLOQUEADA na esteira '" + eid + "': " +
+      toDelete.length + " tarefa(s) seriam marcadas como excluidas apenas por nao " +
+      "estarem neste salvamento. NADA foi apagado. ids:", toDelete.slice(0, 100));
+    try {
+      _banner("\u26A0 O salvamento bloqueou a exclusao de " + toDelete.length +
+              " tarefa(s) da esteira '" + eid + "': esta tela esta desatualizada. " +
+              "Recarregue a pagina (F5) e salve de novo. Nada foi perdido.", '#f59e0b');
+    } catch (_eB) {}
+    toDelete = [];
+  }
 
   changed.forEach(function (x) { _markSelfWrite(x.id); });
   toDelete.forEach(function (id2) { _markSelfWrite(id2); });
