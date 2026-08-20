@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.28)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.30)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.28-exclusao-explicita-2026-08-19";
+window.OP2026_BUILD = "v10.6.30-data-no-produto-2026-08-20";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -816,7 +816,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.28-exclusao-explicita-2026-08-19", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.30-data-no-produto-2026-08-20", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -7084,6 +7084,103 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   );
 });
 
+/* ── [v10.6.29] slaOrigem — origem do prazo (somente exibicao) ──────────────
+   O importador de rescisao grava `slaOrigem` na tarefa quando o prazo NAO saiu
+   da regra vigente (Data no Produto + 1 dia util antes das 13:00 / + 2 dias
+   uteis a partir das 13:00) e sim do fallback legado da consulta: a coluna
+   "SLA Entrega" do SQL, que e Data Credito - 48h.
+
+   Isso acontece na rescisao em previa lancada direto no produto, cujo
+   nu_solicitacao e nulo: o LEFT JOIN com FOL_WKFL_SOLICITACAO nao casa, a
+   "Data no Produto" chega vazia e nao ha como aplicar a regra de dias uteis.
+   O prazo resultante costuma ser mais FOLGADO que o da regra vigente (caso
+   434 - CAROLINA DA CUNHA BORBA: dias uteis daria 21/08, o fallback deu 25/08).
+
+   Campo vazio ou ausente = prazo pela regra vigente. Nada e exibido nesse caso,
+   que e a maioria — o aviso so aparece na excecao. Nenhuma logica de gravacao,
+   dedup, exclusao ou merge foi tocada; isto e apenas leitura de um campo. */
+var SLA_ORIGEM_TITULO = "Prazo NAO calculado pela regra de dias uteis. Veio do fallback da consulta (Data Credito - 48h), porque a linha chegou sem \"Data no Produto\" (rescisao em previa, sem solicitacao de workflow). Confira o prazo antes de trabalhar a tarefa.";
+
+function slaOrigemTxt(task) {
+  return task && typeof task.slaOrigem === "string" ? task.slaOrigem.trim() : "";
+}
+
+/* Chip completo — usado no card e no detalhe expandido. */
+function SlaOrigemTag(task) {
+  var txt = slaOrigemTxt(task);
+  if (!txt) return null;
+  return /*#__PURE__*/React.createElement("span", {
+    title: SLA_ORIGEM_TITULO,
+    style: {
+      display: "inline-flex", alignItems: "center", gap: 4, cursor: "help",
+      padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+      color: "#fbbf24", background: "rgba(245,158,11,0.14)",
+      border: "1px solid rgba(245,158,11,0.35)", whiteSpace: "nowrap"
+    }
+  }, /*#__PURE__*/React.createElement(AlertTriangle, { size: 11, strokeWidth: 2.5 }),
+     "SLA " + txt);
+}
+
+/* Marca compacta — usada na celula de prazo da visao em tabela, onde nao cabe
+   texto: o "!" carrega o mesmo tooltip do chip. */
+function SlaOrigemMarca(task) {
+  var txt = slaOrigemTxt(task);
+  if (!txt) return null;
+  return /*#__PURE__*/React.createElement("span", {
+    title: SLA_ORIGEM_TITULO + " [" + txt + "]",
+    style: {
+      marginLeft: 4, cursor: "help", color: "#fbbf24",
+      fontWeight: 900, fontSize: 12
+    }
+  }, "⚠");
+}
+
+/* ── [v10.6.30] Data no Produto — a base do prazo, com hora ─────────────────
+   O importador grava `dataNoProduto` (ISO local, "YYYY-MM-DDTHH:MM:SS") com o
+   MESMO valor que alimentou o calculo do prazo. Serve para conferir o prazo sem
+   abrir a consulta: a regra e Data no Produto + 1 dia util antes das 13:00 ou
+   + 2 dias uteis a partir das 13:00 — logo a HORA muda o resultado, e e ela que
+   costuma explicar um prazo que parece errado.
+
+   Vazio = a linha chegou sem Data no Produto, que e exatamente quando o prazo
+   cai no fallback credito-48h (ver slaOrigem acima). Nesse caso exibimos
+   "sem Data no Produto", porque a ausencia AQUI e a causa do aviso AO LADO.
+
+   Formatacao por fatiamento de string, sem `new Date()`: nao passa por
+   timezone nenhum, entao a hora exibida e byte a byte a que veio do SQL. */
+function dataProdutoTxt(task) {
+  return task && typeof task.dataNoProduto === "string" ? task.dataNoProduto.trim() : "";
+}
+
+function fmtDataProduto(iso) {
+  var s = String(iso || "").trim();
+  var m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(s);
+  if (m) return m[3] + "/" + m[2] + "/" + m[1] + " " + m[4] + ":" + m[5];
+  var d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);      /* tolera data sem hora */
+  if (d) return d[3] + "/" + d[2] + "/" + d[1];
+  return s;                                          /* formato inesperado: mostra cru */
+}
+
+function DataProdutoTag(task) {
+  var iso = dataProdutoTxt(task);
+  var semData = !iso && !!slaOrigemTxt(task);
+  if (!iso && !semData) return null;                 /* tarefa sem o campo: nada muda */
+  return /*#__PURE__*/React.createElement("span", {
+    title: iso
+      ? "Data no Produto (base do calculo do prazo): " + fmtDataProduto(iso)
+      : "A linha chegou sem Data no Produto, por isso o prazo veio do fallback Data Credito - 48h.",
+    style: {
+      display: "inline-flex", alignItems: "center", gap: 4, cursor: "help",
+      padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 600,
+      color: semData ? "#fbbf24" : "#93c5fd",
+      background: semData ? "rgba(245,158,11,0.10)" : "rgba(147,197,253,0.10)",
+      border: "1px solid " + (semData ? "rgba(245,158,11,0.30)" : "rgba(147,197,253,0.28)"),
+      whiteSpace: "nowrap"
+    }
+  }, /*#__PURE__*/React.createElement(Clock, { size: 11, strokeWidth: 2.5 }),
+     semData ? "sem Data no Produto" : "No produto " + fmtDataProduto(iso));
+}
+
 /* ── TaskCard ── */
 var TaskCard = memo(function TaskCard(_ref15) {
   var task = _ref15.task,
@@ -7207,6 +7304,10 @@ var TaskCard = memo(function TaskCard(_ref15) {
       /*#__PURE__*/React.createElement(overdue ? AlertTriangle : Clock, { size: 11, strokeWidth: 2.5 }),
       overdue ? "Venceu " + fmtDate(task.deadline) : isDone ? "Prazo " + fmtDate(task.deadline) : "Prazo " + fmtDate(task.deadline)
     ),
+    /* [v10.6.30] Data no Produto (base do prazo, com hora) */
+    DataProdutoTag(task),
+    /* [v10.6.29] origem do prazo — so aparece no fallback credito-48h */
+    SlaOrigemTag(task),
     /* prioridade */
     /*#__PURE__*/React.createElement("div", {
       style: {
@@ -7437,7 +7538,9 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
     /* prazo */
     task.deadline ? /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 12, fontWeight: 700, color: overdue ? "#ef4444" : isDone ? "#22c55e" : T.textM, whiteSpace: "nowrap" }
-    }, overdue ? fmtDate(task.deadline) : fmtDate(task.deadline)) : /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: T.textD } }, "\u2014"),
+    }, overdue ? fmtDate(task.deadline) : fmtDate(task.deadline),
+       /* [v10.6.29] marca de origem do prazo (fallback credito-48h) */
+       SlaOrigemMarca(task)) : /*#__PURE__*/React.createElement("div", { style: { fontSize: 12, color: T.textD } }, "\u2014"),
     /* titulo + processo */
     /*#__PURE__*/React.createElement("div", { style: { minWidth: 0, overflow: "hidden" } },
       /*#__PURE__*/React.createElement("div", {
@@ -7521,13 +7624,16 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
       display: "flex", flexDirection: "column", gap: 8
     }
   },
-    (task.processo || task.mes || task.solicitacaoWorkflow || task.code) && /*#__PURE__*/React.createElement("div", {
+    (task.processo || task.mes || task.solicitacaoWorkflow || task.code || slaOrigemTxt(task) || dataProdutoTxt(task)) && /*#__PURE__*/React.createElement("div", {
       style: { fontSize: 12, color: T.textM, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }
     },
       task.code && /*#__PURE__*/React.createElement("span", { style: { fontFamily: "monospace", fontSize: 10.5, color: T.textD, background: T.panelBg, padding: "1px 6px", borderRadius: 5 } }, task.code),
       task.processo && /*#__PURE__*/React.createElement("span", null, task.processo),
       task.mes && /*#__PURE__*/React.createElement("span", null, fmtMonth(task.mes)),
-      task.solicitacaoWorkflow && /*#__PURE__*/React.createElement("span", null, "WF ", task.solicitacaoWorkflow)
+      task.solicitacaoWorkflow && /*#__PURE__*/React.createElement("span", null, "WF ", task.solicitacaoWorkflow),
+      /* [v10.6.30] Data no Produto + [v10.6.29] origem do prazo */
+      DataProdutoTag(task),
+      SlaOrigemTag(task)
     ),
     task.descricaoSolicitacao && /*#__PURE__*/React.createElement("div", {
       style: {
