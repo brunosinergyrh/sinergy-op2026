@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.31-import-sem-duplicata-2026-08-25";
+window.OP2026_BUILD = "v10.6.32-porteiro-da-baixa-2026-08-25";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -261,6 +261,101 @@ function _exclusaoAutorizada(id) {
 window.autorizarExclusao = autorizarExclusao;
 // Diagnostico: window.__exclusoesBloqueadas guarda o que o freio impediu nesta aba.
 window.__exclusoesBloqueadas = [];
+
+// ══════════════════════════════════════════════════════════════════════════════
+// [FIX v10.6.32 P-BAIXA-NAO-VOLTA] PORTEIRO DA BAIXA
+//
+// Mesmo desenho do porteiro da exclusao (v10.6.28), aplicado ao campo `status`.
+//
+// Sintoma: a operacao conclui a tarefa e ela volta para "em andamento" sozinha,
+// sem nenhum "Reabriu" no Log de Atividades. Provado em 25/08/2026 com a tarefa
+// T-W0H2QHY5 (duas conclusoes registradas, nenhuma reabertura) e no banco: uma
+// unica linha por WF (36708, 36720, 11391, 239227) — ou seja, nao e duplicata
+// nem recriacao pelo robo; e a MESMA linha sendo revertida.
+//
+// Causa: o snapshot de diff (_taskCacheSnapshot) e renovado a cada _tasksGet, no
+// ciclo de 5s, enquanto o estado do React pode ficar atras (o load() aborta no
+// guard de 8s DEPOIS de o snapshot ja ter avancado). Quando isso acontece, o
+// merge de 3 vias compara "copia local (pendente)" contra "base ja atualizada
+// (concluida)", conclui que ESTE navegador mudou o status, e grava `pendente`
+// por cima da baixa que outra pessoa acabou de dar.
+//
+// Regra nova: `status` concluida NO SERVIDOR so pode virar pendente se alguem
+// clicou em reabrir NESTA aba (doToggle registra a autorizacao aqui). Sem
+// registro, a baixa do servidor e preservada e o resto do merge segue valendo.
+// ══════════════════════════════════════════════════════════════════════════════
+var _reaberturaOK = Object.create(null);        // id -> timestamp ms da autorizacao
+var REABERTURA_TTL_MS = 5 * 60 * 1000;          // autorizacao expira em 5 min
+function autorizarReabertura(ids) {
+  var t = Date.now();
+  (Array.isArray(ids) ? ids : [ids]).forEach(function (id) {
+    if (id !== null && id !== undefined && id !== "") _reaberturaOK[String(id)] = t;
+  });
+}
+function _reaberturaAutorizada(id) {
+  var t = _reaberturaOK[String(id)];
+  if (!t) return false;
+  if (Date.now() - t > REABERTURA_TTL_MS) { delete _reaberturaOK[String(id)]; return false; }
+  return true;
+}
+window.autorizarReabertura = autorizarReabertura;
+// Diagnostico desta aba: o que o porteiro da baixa impediu, e o que nao foi
+// gravado por falta de base confiavel. Digite no console para conferir.
+window.__reversoesBloqueadas = [];
+window.__gravacoesBarradas = [];
+
+function _statusConcluida32(v) {
+  var x = String(v == null ? "" : v);
+  try { x = x.normalize("NFD").replace(/[\u0300-\u036f]/g, ""); } catch (_) {}
+  return x.trim().toLowerCase() === "concluida";
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// [FIX v10.6.32 P-ABA-ANTIGA] Aba com versao velha do painel nao grava.
+//
+// Uma aba aberta antes da publicacao continua rodando o codigo antigo, com os
+// defeitos antigos, e desfaz o trabalho de quem esta na versao nova. Aqui a aba
+// compara o proprio carimbo com o do arquivo publicado e, se estiver ATRAS,
+// bloqueia a gravacao e avisa na tela. So bloqueia quando a versao remota e
+// comprovadamente MAIOR — assim uma resposta velha de cache nunca trava a
+// operacao por engano.
+// ══════════════════════════════════════════════════════════════════════════════
+function _verNum32(x) {
+  var m = /v(\d+)\.(\d+)\.(\d+)/.exec(String(x || ""));
+  return m ? ((+m[1]) * 1000000 + (+m[2]) * 1000 + (+m[3])) : null;
+}
+var _build32 = { remoto: null, atrasada: false, checadoEm: 0, INTERVALO: 10 * 60 * 1000 };
+async function _checarBuildPublicado(force) {
+  var agora = Date.now();
+  if (_build32.atrasada) return true;                       // uma vez atrasada, continua
+  if (!force && agora - _build32.checadoEm < _build32.INTERVALO) return false;
+  _build32.checadoEm = agora;
+  try {
+    var r = await fetch(location.pathname + "?_b=" + agora, { cache: "no-store" });
+    if (!r || !r.ok) return false;
+    var txt = await r.text();
+    var m = /OP2026_BUILD\s*=\s*"([^"]+)"/.exec(txt);
+    if (!m) return false;
+    _build32.remoto = m[1];
+    var vLocal = _verNum32(window.OP2026_BUILD), vRemoto = _verNum32(m[1]);
+    if (vLocal === null || vRemoto === null || vRemoto <= vLocal) return false;
+    _build32.atrasada = true;
+    console.error("[OP2026][v10.6.32] Esta aba esta na build " + window.OP2026_BUILD +
+      " e o servidor ja publicou " + m[1] + ". Gravacao BLOQUEADA nesta aba.");
+    try {
+      _banner("⚠ Esta aba esta com uma versao ANTIGA do painel (" +
+              window.OP2026_BUILD + "). Publicada: " + m[1] + ". Recarregue com " +
+              "Ctrl+Shift+R — nada sera salvo por esta aba ate recarregar.", '#ef4444');
+    } catch (_) {}
+  } catch (_) {}
+  return _build32.atrasada;
+}
+window.__checarBuild = function () { return _checarBuildPublicado(true); };
+try {
+  setInterval(function () {
+    if (document.visibilityState !== "hidden") _checarBuildPublicado(false);
+  }, _build32.INTERVALO);
+} catch (_) {}
 
 function _chunk(a, n) { var o = []; for (var i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; }
 function _newId() { return "T-AUTO-" + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase(); }
@@ -502,6 +597,12 @@ async function _tasksListEsteiras() {
 
 async function _tasksSet(eid, arr) {
   arr = Array.isArray(arr) ? arr : [];
+  // [FIX v10.6.32 P-ABA-ANTIGA] aba desatualizada nao grava nada.
+  if (await _checarBuildPublicado(false)) {
+    showError("Esta aba esta com uma versao ANTIGA do painel. Recarregue com " +
+              "Ctrl+Shift+R. NADA foi salvo — refaca a alteracao depois de recarregar.");
+    return;
+  }
   const incoming = {}, rows = [];
   arr.forEach(function (t) {
     if (!t) return;
@@ -550,6 +651,11 @@ async function _tasksSet(eid, arr) {
   // So busca no servidor as tarefas que este navegador esta de fato tentando gravar
   // (nao a esteira inteira) — 1 requisicao em lote, nao 1 por tarefa.
   var serverRows = {};
+  // [FIX v10.6.32] ids cuja versao do servidor foi REALMENTE conferida nesta
+  // gravacao. Sem isso nao ha como distinguir "a linha nao existe no servidor"
+  // (insercao legitima) de "o GET falhou" — e gravar as cegas no segundo caso e
+  // exatamente o que apagava a baixa e a edicao de outra pessoa.
+  var conferidos = Object.create(null);
   if (candidateChanged.length) {
     // [v10.6.26] Antes, um unico GET que falhasse abortava o laco INTEIRO: todos os lotes
     // seguintes ficavam sem estado do servidor e cada uma dessas tarefas era gravada como
@@ -571,6 +677,9 @@ async function _tasksSet(eid, arr) {
             " nao pode ser conferido antes de gravar.", eMerge && (eMerge.message || eMerge));
         }
       }
+      if (found !== null) {
+        checkChunks[ci].forEach(function (idc) { conferidos[String(idc)] = true; });
+      }
       (found || []).forEach(function (r) { serverRows[String(r.id)] = r.task_data; });
     }
     if (naoConferidos) {
@@ -579,12 +688,38 @@ async function _tasksSet(eid, arr) {
     }
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // [FIX v10.6.32] Tres caminhos, e nenhum deles grava copia local as cegas:
+  //   1. conferida + base local  -> merge de 3 vias por campo (como antes)
+  //   2. conferida e sem linha no servidor -> insercao (tarefa nova de verdade)
+  //   3. NAO conferida (o GET falhou) -> nao grava. A alteracao e descartada com
+  //      aviso na tela, em vez de sobrescrever em silencio o que outra pessoa
+  //      salvou. O cache local recebe a versao do servidor para que o proximo
+  //      save recalcule o diff de verdade e a alteracao possa ser refeita.
+  // Em todos, `status` concluida no servidor so cai com reabertura autorizada.
+  // ══════════════════════════════════════════════════════════════════════════
+  var _barradas32 = [], _reversoes32 = [], _semBase32 = 0;
+  function _naoGravar32(x, motivo) {
+    _barradas32.push({ id: x.id, motivo: motivo });
+    var sv = serverRows[x.id];
+    if (sv) incoming[x.id] = _canonJson(sv);
+    else if (prev[x.id] != null) incoming[x.id] = prev[x.id];
+    else delete incoming[x.id];
+    return null;
+  }
   const changed = candidateChanged.map(function (x) {
                         var baseObj = null;
                         try { baseObj = JSON.parse(prev[x.id] || "null"); } catch (_) { baseObj = null; }
                         var serverObj = serverRows[x.id];
+                        if (!conferidos[x.id]) {
+                          return _naoGravar32(x, "versao do servidor nao pudo ser conferida");
+                        }
                         var mergedData = x.task_data;
-                        if (baseObj && serverObj) {
+                        if (serverObj) {
+                          // Sem base local (esta aba nunca leu esta tarefa), a propria
+                          // versao do servidor e a base: ainda grava, mas so o que
+                          // difere dela — e a baixa segue protegida pelo porteiro.
+                          if (!baseObj) { baseObj = serverObj; _semBase32++; }
                           // Parte da verdade atual do servidor e aplica por cima somente os
                           // campos que ESTE navegador realmente alterou (diferentes do que ele
                           // viu por ultimo) — preserva mudancas concorrentes de outros campos.
@@ -594,12 +729,54 @@ async function _tasksSet(eid, arr) {
                               mergedData[k] = x.task_data[k];
                             }
                           });
+                          // [FIX v10.6.32 P-BAIXA-NAO-VOLTA] PORTEIRO DA BAIXA
+                          if (_statusConcluida32(serverObj.status) &&
+                              !_statusConcluida32(mergedData.status) &&
+                              !_reaberturaAutorizada(x.id)) {
+                            mergedData.status      = serverObj.status;
+                            mergedData.completedBy = serverObj.completedBy;
+                            mergedData.completedAt = serverObj.completedAt;
+                            _reversoes32.push({ id: x.id, concluidaPor: serverObj.completedBy || "(sem nome)" });
+                          }
                         }
                         incoming[x.id] = _canonJson(mergedData); // [v10.6.26] reflete o merge no cache local, ja canonico
                         return compat
                           ? { id: x.id, esteira: x.esteira, task_data: mergedData, updated_at: new Date().toISOString() }
                           : { id: x.id, esteira: x.esteira, task_data: mergedData, deleted_at: null };
-                      });
+                      }).filter(Boolean);
+  if (_reversoes32.length) {
+    console.warn("[tasks.set][v10.6.32] PORTEIRO DA BAIXA na esteira '" + eid + "': " +
+      _reversoes32.length + " tarefa(s) iam voltar para 'em andamento' sem ninguem ter " +
+      "reaberto. A baixa foi PRESERVADA.", _reversoes32.slice(0, 50));
+    try {
+      window.__reversoesBloqueadas.push({ ts: new Date().toISOString(), esteira: eid, itens: _reversoes32.slice(0, 50) });
+      if (window.__reversoesBloqueadas.length > 50) window.__reversoesBloqueadas.shift();
+    } catch (_eRv) {}
+    try {
+      _banner("✓ Esta tela estava desatualizada: " + _reversoes32.length +
+              " baixa(s) dada(s) por outra pessoa foram PRESERVADAS (nao voltaram para " +
+              "em andamento). Recarregue a pagina (F5) para ver a versao atual.", '#10b981');
+    } catch (_eB3) {}
+  }
+  if (_barradas32.length) {
+    console.warn("[tasks.set][v10.6.32] esteira '" + eid + "': " + _barradas32.length +
+      " alteracao(oes) NAO gravada(s) para nao sobrescrever a versao do servidor.",
+      _barradas32.slice(0, 100));
+    try {
+      window.__gravacoesBarradas.push({ ts: new Date().toISOString(), esteira: eid, itens: _barradas32.slice(0, 100) });
+      if (window.__gravacoesBarradas.length > 50) window.__gravacoesBarradas.shift();
+    } catch (_eGb) {}
+    try {
+      _banner("⚠ " + _barradas32.length + " alteracao(oes) nao foram salvas: a rede " +
+              "falhou na conferencia e gravar assim apagaria o trabalho de outra pessoa. " +
+              "Recarregue (F5) e refaca.", '#f59e0b');
+    } catch (_eB4) {}
+  }
+  if (_semBase32) {
+    console.warn("[tasks.set][v10.6.32] esteira '" + eid + "': " + _semBase32 +
+      " tarefa(s) gravadas sem base local (esta aba nunca as leu). Merge feito sobre a " +
+      "versao do servidor, com a baixa protegida.");
+  }
   // v10: exclusao virou soft-delete — marca deleted_at em vez de DELETE fisico.
   // Em modo compatibilidade (sem a coluna), mantem o DELETE fisico da v9.
   // Continua apagando (marcando) apenas ids que ESTE navegador conhecia.
@@ -816,7 +993,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.31-import-sem-duplicata-2026-08-25", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.32-porteiro-da-baixa-2026-08-25", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -10019,6 +10196,10 @@ function App() {
             return _context38.a(2);
           case 1:
             bd = task.status !== "concluida";
+            // [FIX v10.6.32] Reabertura EXPLICITA: autoriza o porteiro da baixa a
+            // deixar o status voltar para "pendente" neste salvamento. Sem isto,
+            // toda queda de "concluida" e tratada como acidente e barrada.
+            if (!bd && window.autorizarReabertura) window.autorizarReabertura(id);
             oldResp = respStr(task);
             nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, eid, tasksRef.current[eid].map(function (t) {
               if (t.id !== id) return t;
