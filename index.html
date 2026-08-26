@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.32-porteiro-da-baixa-2026-08-25";
+window.OP2026_BUILD = "v10.6.33-trava-edicao-manual-2026-08-26";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -303,6 +303,96 @@ window.autorizarReabertura = autorizarReabertura;
 // gravado por falta de base confiavel. Digite no console para conferir.
 window.__reversoesBloqueadas = [];
 window.__gravacoesBarradas = [];
+
+// ══════════════════════════════════════════════════════════════════════════════
+// [FIX v10.6.33 P-EDICAO-QUE-VOLTA] Carimbo de EDICAO MANUAL
+//
+// SINTOMA (26/08/2026): 20 rescisoes tiveram o coordenador trocado em lote
+// (Edson -> Natalia) as 11:58; a rodada do importador das 12:20 devolveu tudo
+// para Edson. Refeito as 13:36, desfeito de novo as 14:20.
+//
+// NAO era o defeito de 17/08 (fotografia velha) nem o de 20/08 (releitura na
+// base errada) — os dois continuam corrigidos. O importador de rescisao tem uma
+// regra deliberada, de 07/07/2026: "coordenador divergente do de-para" e
+// reescrito com o valor do de-para, em toda tarefa aberta, em toda rodada. Ele
+// nao tinha como saber que aquele "Natalia" tinha sido posto por uma PESSOA e
+// nao por ele mesmo.
+//
+// A CORRECAO mora nos dois lados. Aqui, o painel passa a carimbar em
+// task_data.edicaoManual quais campos foram alterados por gente, com quem e
+// quando. Do outro lado, os dois importadores nao sobrescrevem campo
+// carimbado (ver o bloco P-EDICAO-QUE-VOLTA em importar_rescisao_op2026.py).
+//
+//   "edicaoManual": {
+//     "coordenador": { "por": "Bruno", "em": "2026-08-26T16:36:00.000Z",
+//                      "valor": "Natalia Koritar" }
+//   }
+//
+// O carimbo so aparece para campo que REALMENTE mudou de valor: abrir a tarefa,
+// nao mexer em nada e salvar nao trava campo nenhum.
+//
+// O merge de 3 vias do _tasksSet preserva isso naturalmente — ele parte da
+// versao do servidor e aplica so os campos que esta aba mudou. E a trava de aba
+// antiga (v10.6.32) garante que nenhuma aba sem este codigo esteja gravando.
+var CAMPOS_TRAVAVEIS_MANUAL = ["coordenador", "responsibles", "responsible",
+                               "gerente", "gerenteId", "processo",
+                               "deadline", "title"];
+
+function _mesmoValor33(a, b) {
+  try {
+    return JSON.stringify(a === undefined ? null : a) ===
+           JSON.stringify(b === undefined ? null : b);
+  } catch (_) { return String(a) === String(b); }
+}
+
+// Devolve o objeto edicaoManual atualizado, ou null se nenhum campo travavel
+// mudou de valor. `antes` e a tarefa como estava; `depois`, so os campos novos.
+function _carimbarEdicaoManual(antes, depois, quem) {
+  if (!depois) return null;
+  var base = (antes && antes.edicaoManual && typeof antes.edicaoManual === "object")
+             ? antes.edicaoManual : null;
+  var marca = null, agora = new Date().toISOString();
+  for (var i = 0; i < CAMPOS_TRAVAVEIS_MANUAL.length; i++) {
+    var k = CAMPOS_TRAVAVEIS_MANUAL[i];
+    if (!Object.prototype.hasOwnProperty.call(depois, k)) continue;
+    if (_mesmoValor33(antes ? antes[k] : null, depois[k])) continue;
+    if (!marca) marca = Object.assign({}, base);
+    marca[k] = { por: quem || "(desconhecido)", em: agora, valor: depois[k] };
+  }
+  return marca;
+}
+
+// Destrava um campo: o robo volta a corrigi-lo pelo de-para na proxima rodada.
+// Uso no console:  await destravarCampo("<id da tarefa>", "coordenador")
+//                  await destravarCampo("<id da tarefa>")   // remove todas
+window.destravarCampo = async function (taskId, campo) {
+  var rows = await sbFetch("GET", "tasks?id=eq." + encodeURIComponent(taskId) +
+                                  "&select=task_data");
+  if (!rows || !rows.length) { console.warn("[destravar] tarefa nao encontrada: " + taskId); return false; }
+  var td = rows[0].task_data || {};
+  if (!td.edicaoManual) { console.log("[destravar] esta tarefa nao tem trava."); return false; }
+  var novo = Object.assign({}, td);
+  if (!campo) {
+    delete novo.edicaoManual;
+  } else {
+    if (!td.edicaoManual[campo]) { console.log("[destravar] nao havia trava em '" + campo + "'."); return false; }
+    var em = Object.assign({}, td.edicaoManual);
+    delete em[campo];
+    if (Object.keys(em).length) novo.edicaoManual = em; else delete novo.edicaoManual;
+  }
+  await sbFetch("PATCH", "tasks?id=eq." + encodeURIComponent(taskId), { task_data: novo });
+  console.log("[destravar] OK — " + (campo || "todos os campos") +
+              ". O importador volta a corrigir isso na proxima rodada.");
+  return true;
+};
+
+// Diagnostico: mostra as travas de uma tarefa.
+window.verTravas = async function (taskId) {
+  var rows = await sbFetch("GET", "tasks?id=eq." + encodeURIComponent(taskId) + "&select=task_data");
+  var td = (rows && rows[0] && rows[0].task_data) || {};
+  console.log(td.edicaoManual || "(sem trava)");
+  return td.edicaoManual || null;
+};
 
 function _statusConcluida32(v) {
   var x = String(v == null ? "" : v);
@@ -993,7 +1083,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.32-porteiro-da-baixa-2026-08-25", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.33-trava-edicao-manual-2026-08-26", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -8347,9 +8437,15 @@ function App() {
   var reassignResponsibles = useCallback(function (eid, taskId, newResponsibles) {
     var old = (tasksRef.current[eid] || []).find(function (t) { return t.id === taskId; });
     if (!old) return;
+    // [FIX v10.6.33 P-EDICAO-QUE-VOLTA] reatribuicao rapida tambem e edicao de
+    // gente: carimba, senao o de-para repovoa os analistas na proxima rodada.
+    var _updR33 = { responsibles: newResponsibles, responsible: newResponsibles[0] || "" };
+    var _marcaR33 = _carimbarEdicaoManual(old, _updR33,
+                      (sessionRef.current && sessionRef.current.name) || "");
+    if (_marcaR33) _updR33.edicaoManual = _marcaR33;
     var nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, eid, (tasksRef.current[eid] || []).map(function (t) {
       if (t.id !== taskId) return t;
-      return _objectSpread(_objectSpread({}, t), {}, { responsibles: newResponsibles, responsible: newResponsibles[0] || "" });
+      return _objectSpread(_objectSpread({}, t), _updR33);
     })));
     mutate(nt);
     var oldResp = respStr(old);
@@ -10056,8 +10152,11 @@ function App() {
             addTaskLockRef.current = false;
             return _context37.a(2);
           case 2:
-            nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, tab, (tasksRef.current[tab] || []).map(function (t) {
-              return t.id === editId ? _objectSpread(_objectSpread({}, t), {}, {
+            // [FIX v10.6.33 P-EDICAO-QUE-VOLTA] Os campos saem para uma variavel
+            // para poderem ser comparados com `old` antes de gravar: so campo
+            // que REALMENTE mudou recebe carimbo de edicao manual. Abrir a
+            // tarefa e salvar sem mexer em nada nao trava campo nenhum.
+            var _upd33 = {
                 title: form.title.trim(),
                 responsibles: form.responsibles,
                 coordenador: form.coordenador,
@@ -10072,7 +10171,12 @@ function App() {
                 solicitacaoWorkflow: form.solicitacaoWorkflow,
                 descricaoSolicitacao: form.descricaoSolicitacao,
                 mes: form.mes
-              }) : t;
+            };
+            var _marca33 = _carimbarEdicaoManual(old, _upd33,
+                             (sessionRef.current && sessionRef.current.name) || "");
+            if (_marca33) _upd33.edicaoManual = _marca33;
+            nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, tab, (tasksRef.current[tab] || []).map(function (t) {
+              return t.id === editId ? _objectSpread(_objectSpread({}, t), _upd33) : t;
             })));
             mutate(nt);
             _context37.n = 3;
@@ -10556,7 +10660,17 @@ function App() {
                   updates[k] = v;
                 }
               });
-              if (Object.keys(updates).length) count++;
+              if (Object.keys(updates).length) {
+                count++;
+                // [FIX v10.6.33 P-EDICAO-QUE-VOLTA] Este e o caminho da edicao
+                // em lote — o mesmo do incidente de 26/08 ("20 tarefas -
+                // campos: coordenador"). Carimba quem mudou o que, para o
+                // importador nao devolver ao valor do de-para na rodada
+                // seguinte.
+                var _mm33 = _carimbarEdicaoManual(t, updates,
+                              (sessionRef.current && sessionRef.current.name) || "");
+                if (_mm33) updates.edicaoManual = _mm33;
+              }
               return Object.keys(updates).length ? _objectSpread(_objectSpread({}, t), updates) : t;
             });
           });
