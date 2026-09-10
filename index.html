@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.31)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.36)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.34-carimbo-recorrente-2026-08-28";
+window.OP2026_BUILD = "v10.6.36-base-do-merge-2026-09-10";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -207,6 +207,10 @@ var _kv = {
 
 // Prefixo das esteiras de tarefas (mesmo usado pelo app).
 var TASKS_PREFIX_SB = "sinergy_est_";
+// [v10.6.36] Marca interna com a base do merge. Prefixo reservado: nenhuma chave
+// que comece com ele e persistida (ver _canon / _semMarcas).
+var OP26_PREFIXO = "__op26";
+var OP26_BASE    = "__op26Base";
 // Cache por esteira: { eid: { taskId: jsonString } }. Fonte de leitura do app apos o sync.
 // Continua sendo a base para (1) gravar somente o que mudou e (2) nunca apagar tarefa
 // criada por outro usuario — so apaga ids que ESTE navegador conhecia.
@@ -336,7 +340,13 @@ window.__gravacoesBarradas = [];
 // antiga (v10.6.32) garante que nenhuma aba sem este codigo esteja gravando.
 var CAMPOS_TRAVAVEIS_MANUAL = ["coordenador", "responsibles", "responsible",
                                "gerente", "gerenteId", "processo",
-                               "deadline", "title"];
+                               "deadline", "title",
+                               // [v10.6.36] Situacao e o campo que a operacao mais
+                               // reclama de perder (80 casos so em setembro). Carimbar
+                               // da rastro de quem/quando e a poe sob o porteiro da
+                               // edicao manual. Os importadores nunca escrevem
+                               // `situacao`, entao isso nao muda nada do lado do robo.
+                               "situacao"];
 
 function _mesmoValor33(a, b) {
   try {
@@ -543,10 +553,55 @@ function _canon(v) {
   if (v === null || typeof v !== "object") return v;
   if (Array.isArray(v)) return v.map(_canon);
   var out = {}, ks = Object.keys(v).sort();
-  for (var i = 0; i < ks.length; i++) out[ks[i]] = _canon(v[ks[i]]);
+  for (var i = 0; i < ks.length; i++) {
+    // [v10.6.36] marcas internas (__op26*) nunca entram na forma canonica nem no banco.
+    if (ks[i].indexOf(OP26_PREFIXO) === 0) continue;
+    out[ks[i]] = _canon(v[ks[i]]);
+  }
   return out;
 }
 function _canonJson(v) { try { return JSON.stringify(_canon(v)); } catch (_) { return JSON.stringify(v); } }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// [FIX v10.6.36 P-BASE-DO-MERGE] A base do merge passa a viajar COM a tarefa.
+//
+// Sintoma (10/09/2026): campo editado por uma pessoa volta sozinho ao valor
+// anterior, sem ninguem desfazer e sem linha no Log de Atividades. Medido na
+// base viva: 121 tarefas com um campo carimbado em `edicaoManual` cujo valor
+// atual e OUTRO, e 80 tarefas cuja Situacao atual e mais velha que a ultima
+// edicao registrada no log. Prova do mecanismo: em 09/09 as 21:21:06.113377Z,
+// 52 linhas da esteira `folha` foram regravadas no MESMO instante (mesma
+// transacao) por UM clique de "concluir" de uma pessoa — 43 delas voltaram.
+//
+// Causa (a mesma que a v10.6.28 e a v10.6.32 ja tinham diagnosticado e
+// remendado campo a campo): `_tasksGet()` congela `_taskCacheSnapshot` a partir
+// do cache AO VIVO, e esse snapshot e renovado a cada leitura de fundo (ciclo
+// de 5s) — enquanto o array do React que o save envia continua sendo o de
+// antes. O merge de 3 vias entao compara "copia local velha" contra "base ja
+// atualizada", conclui que ESTE navegador mudou aqueles campos, e grava o valor
+// velho por cima do que outra pessoa acabou de salvar.
+//
+// A v10.6.28 resolveu isso so para EXCLUSAO (registro explicito) e a v10.6.32
+// so para `status` (porteiro da baixa). Todo o resto — analistas, coordenador,
+// prazo, titulo, Situacao, prioridade — continuou exposto. Remendar campo a
+// campo nao termina; o defeito e a base do diff nao estar presa ao array salvo.
+//
+// Regra nova: cada tarefa devolvida por `_tasksGet` carrega, num campo interno
+// `__op26Base`, o JSON canonico EXATO que este navegador leu. E esse campo —
+// nao o snapshot compartilhado — que serve de base para (a) decidir se a tarefa
+// mudou e (b) fazer o merge. Objeto que este navegador nao editou tem
+// `json === __op26Base` e simplesmente nao entra na gravacao, por mais velho
+// que esteja o array. `__op26Base` nunca chega ao banco (ver _canon e
+// _semMarcas) e sobrevive ao spread do React, que e como a tela edita.
+// ══════════════════════════════════════════════════════════════════════════════
+function _semMarcas(o) {
+  if (!o || typeof o !== "object") return o;
+  var out = {}, ks = Object.keys(o);
+  for (var i = 0; i < ks.length; i++) if (ks[i].indexOf(OP26_PREFIXO) !== 0) out[ks[i]] = o[ks[i]];
+  return out;
+}
+// Diagnostico desta aba: campos que o porteiro da edicao manual preservou.
+window.__edicoesPreservadas = [];
 
 /* v10.3: fila de eventos de mudanca (alimenta as notificacoes in-app).
    _selfWrites evita auto-notificacao: gravacoes deste navegador nos ultimos 30s sao ignoradas
@@ -663,7 +718,9 @@ async function _tasksGet(eid) {
     // [v10.5.1] Congela o que o navegador esta vendo agora — sera a base de diff no proximo save.
     _taskCacheSnapshot[eid] = Object.assign({}, cache);
     return Object.keys(cache).map(function (id) {
-      try { return JSON.parse(cache[id]); } catch (_) { return null; }
+      // [v10.6.36] cada tarefa sai daqui sabendo exatamente o que este navegador leu.
+      try { var t = JSON.parse(cache[id]); if (t) t[OP26_BASE] = cache[id]; return t; }
+      catch (_) { return null; }
     }).filter(Boolean);
   } catch (e) {
     console.error("[tasks.get] falha em " + eid + ":", e && (e.message || e));
@@ -694,13 +751,18 @@ async function _tasksSet(eid, arr) {
     return;
   }
   const incoming = {}, rows = [];
+  const _objPorId = Object.create(null);   // [v10.6.36] id -> objeto que a tela enviou
   arr.forEach(function (t) {
     if (!t) return;
     const id = (t.id != null && t.id !== "") ? String(t.id) : _newId();
     const data = (t.id !== id) ? Object.assign({}, t, { id: id }) : t;
     const json = _canonJson(data); // [v10.6.26] mesma forma canonica do cache — ver _canon
     incoming[id] = json;
-    rows.push({ id: id, esteira: eid, task_data: data, json: json });
+    _objPorId[id] = data;
+    // [v10.6.36] base PRESA A ESTA TAREFA (o que este navegador leu), nao ao snapshot
+    // compartilhado, que qualquer leitura de fundo desatualiza.
+    const baseDaTarefa = (typeof data[OP26_BASE] === "string") ? data[OP26_BASE] : null;
+    rows.push({ id: id, esteira: eid, task_data: data, json: json, base: baseDaTarefa });
   });
   // [v10.5.1] Usa o snapshot congelado (o que este navegador realmente viu) em vez do
   // cache ao vivo, que pode ja ter sido atualizado por um sync em segundo plano com
@@ -732,7 +794,16 @@ async function _tasksSet(eid, arr) {
   // updated_at NAO e mais enviado: o trigger do banco carimba com o relogio do servidor.
   await _detectCompat();
   const compat = !!_sync.compat;
-  const candidateChanged = rows.filter(function (x) { return prev[x.id] !== x.json; });
+  // [FIX v10.6.36 P-BASE-DO-MERGE] "mudou" = mudou em relacao ao que ESTA tarefa
+  // trouxe do banco. Sem isso, um array de React atrasado marcava como "alterada"
+  // toda tarefa que qualquer outra pessoa tivesse tocado desde a ultima leitura —
+  // e o merge, mais abaixo, gravava o valor velho por cima.
+  function _baseDe(x) { return (x.base != null) ? x.base : prev[x.id]; }
+  const candidateChanged = rows.filter(function (x) {
+    var b = _baseDe(x);
+    if (b == null) return true;   // sem base: adiante vira insercao (nova) ou recusa
+    return b !== x.json;
+  });
 
   // [v10.6.3] Merge de 3 vias por campo — evita que um navegador com copia local
   // desatualizada sobrescreva, com um "salvar" qualquer, campos que OUTRO usuario ja
@@ -789,6 +860,7 @@ async function _tasksSet(eid, arr) {
   // Em todos, `status` concluida no servidor so cai com reabertura autorizada.
   // ══════════════════════════════════════════════════════════════════════════
   var _barradas32 = [], _reversoes32 = [], _semBase32 = 0;
+  var _edicoesPreservadas36 = [];   // [v10.6.36] campos carimbados que nao foram sobrescritos
   function _naoGravar32(x, motivo) {
     _barradas32.push({ id: x.id, motivo: motivo });
     var sv = serverRows[x.id];
@@ -799,26 +871,62 @@ async function _tasksSet(eid, arr) {
   }
   const changed = candidateChanged.map(function (x) {
                         var baseObj = null;
-                        try { baseObj = JSON.parse(prev[x.id] || "null"); } catch (_) { baseObj = null; }
+                        try { baseObj = JSON.parse(_baseDe(x) || "null"); } catch (_) { baseObj = null; }
                         var serverObj = serverRows[x.id];
                         if (!conferidos[x.id]) {
                           return _naoGravar32(x, "versao do servidor nao pudo ser conferida");
                         }
                         var mergedData = x.task_data;
                         if (serverObj) {
-                          // Sem base local (esta aba nunca leu esta tarefa), a propria
-                          // versao do servidor e a base: ainda grava, mas so o que
-                          // difere dela — e a baixa segue protegida pelo porteiro.
-                          if (!baseObj) { baseObj = serverObj; _semBase32++; }
+                          // [FIX v10.6.36] Sem base local NAO se grava mais.
+                          //
+                          // Ate a v10.6.35 a base virava a propria versao do servidor
+                          // e "so o que difere dela" era gravado. Mas o que difere da
+                          // versao do servidor, quando esta aba nao tem base, e
+                          // exatamente o que OUTRAS pessoas mudaram desde que esta
+                          // copia foi lida — a regra escrevia o atraso desta aba por
+                          // cima do trabalho dos outros. Sem base nao ha como atribuir
+                          // a mudanca a ninguem, e o certo e nao gravar: a alteracao
+                          // volta a ser possivel no save seguinte, ja com base.
+                          if (!baseObj) { _semBase32++; return _naoGravar32(x, "sem base local desta tarefa"); }
                           // Parte da verdade atual do servidor e aplica por cima somente os
                           // campos que ESTE navegador realmente alterou (diferentes do que ele
                           // viu por ultimo) — preserva mudancas concorrentes de outros campos.
                           mergedData = Object.assign({}, serverObj);
                           Object.keys(x.task_data).forEach(function (k) {
+                            if (k.indexOf(OP26_PREFIXO) === 0) return;   // [v10.6.36] marca interna
                             if (JSON.stringify(x.task_data[k]) !== JSON.stringify(baseObj[k])) {
                               mergedData[k] = x.task_data[k];
                             }
                           });
+                          // ════════════════════════════════════════════════════
+                          // [FIX v10.6.36 P-EDICAO-DE-OUTRO] PORTEIRO DA EDICAO MANUAL.
+                          // Segunda barreira, generica por campo e no mesmo desenho
+                          // dos porteiros da exclusao (v10.6.28) e da baixa (v10.6.32):
+                          // campo que o servidor mostra CARIMBADO por uma pessoa so
+                          // pode ser mudado por uma aba cujo proprio carimbo seja mais
+                          // novo. Assim, mesmo que algum caminho de gravacao que eu nao
+                          // tenha previsto volte a montar um diff errado, a edicao
+                          // humana nao cai.
+                          var _emS = (serverObj.edicaoManual && typeof serverObj.edicaoManual === "object")
+                                     ? serverObj.edicaoManual : null;
+                          var _emL = (x.task_data.edicaoManual && typeof x.task_data.edicaoManual === "object")
+                                     ? x.task_data.edicaoManual : null;
+                          if (_emS) {
+                            var _mm36 = Object.assign({}, _emS);
+                            Object.keys(_emS).forEach(function (k) {
+                              var sM = _emS[k] || {}, lM = (_emL && _emL[k]) || null;
+                              var sEm = String(sM.em || ""), lEm = String((lM && lM.em) || "");
+                              if (lM && lEm >= sEm) { _mm36[k] = lM; return; }  // esta aba carimbou depois
+                              if (!Object.prototype.hasOwnProperty.call(serverObj, k)) return;
+                              if (JSON.stringify(mergedData[k]) === JSON.stringify(serverObj[k])) return;
+                              mergedData[k] = serverObj[k];
+                              _edicoesPreservadas36.push({ id: x.id, campo: k,
+                                                           por: sM.por || "(sem nome)", em: sEm });
+                            });
+                            if (_emL) Object.keys(_emL).forEach(function (k) { if (!(k in _mm36)) _mm36[k] = _emL[k]; });
+                            mergedData.edicaoManual = _mm36;
+                          }
                           // [FIX v10.6.32 P-BAIXA-NAO-VOLTA] PORTEIRO DA BAIXA
                           if (_statusConcluida32(serverObj.status) &&
                               !_statusConcluida32(mergedData.status) &&
@@ -830,9 +938,10 @@ async function _tasksSet(eid, arr) {
                           }
                         }
                         incoming[x.id] = _canonJson(mergedData); // [v10.6.26] reflete o merge no cache local, ja canonico
+                        var _grava36 = _semMarcas(mergedData);   // [v10.6.36] __op26* nunca vai ao banco
                         return compat
-                          ? { id: x.id, esteira: x.esteira, task_data: mergedData, updated_at: new Date().toISOString() }
-                          : { id: x.id, esteira: x.esteira, task_data: mergedData, deleted_at: null };
+                          ? { id: x.id, esteira: x.esteira, task_data: _grava36, updated_at: new Date().toISOString() }
+                          : { id: x.id, esteira: x.esteira, task_data: _grava36, deleted_at: null };
                       }).filter(Boolean);
   if (_reversoes32.length) {
     console.warn("[tasks.set][v10.6.32] PORTEIRO DA BAIXA na esteira '" + eid + "': " +
@@ -863,9 +972,24 @@ async function _tasksSet(eid, arr) {
     } catch (_eB4) {}
   }
   if (_semBase32) {
-    console.warn("[tasks.set][v10.6.32] esteira '" + eid + "': " + _semBase32 +
-      " tarefa(s) gravadas sem base local (esta aba nunca as leu). Merge feito sobre a " +
-      "versao do servidor, com a baixa protegida.");
+    console.warn("[tasks.set][v10.6.36] esteira '" + eid + "': " + _semBase32 +
+      " tarefa(s) NAO gravadas por nao terem base local nesta aba (recarregue com F5 e " +
+      "refaca, se a alteracao era sua).");
+  }
+  if (_edicoesPreservadas36.length) {
+    console.warn("[tasks.set][v10.6.36] PORTEIRO DA EDICAO MANUAL na esteira '" + eid + "': " +
+      _edicoesPreservadas36.length + " campo(s) editado(s) por outra pessoa foram PRESERVADOS.",
+      _edicoesPreservadas36.slice(0, 50));
+    try {
+      window.__edicoesPreservadas.push({ ts: new Date().toISOString(), esteira: eid,
+                                         itens: _edicoesPreservadas36.slice(0, 50) });
+      if (window.__edicoesPreservadas.length > 50) window.__edicoesPreservadas.shift();
+    } catch (_eEp) {}
+    try {
+      _banner("\u2713 Esta tela estava desatualizada: " + _edicoesPreservadas36.length +
+              " edicao(oes) feita(s) por outra pessoa foram PRESERVADAS. Recarregue (F5) " +
+              "para ver a versao atual.", '#10b981');
+    } catch (_eB5) {}
   }
   // v10: exclusao virou soft-delete — marca deleted_at em vez de DELETE fisico.
   // Em modo compatibilidade (sem a coluna), mantem o DELETE fisico da v9.
@@ -918,6 +1042,14 @@ async function _tasksSet(eid, arr) {
   toDelete.forEach(function (id2) { _markSelfWrite(id2); });
   const upChunks = _chunk(changed, 200);
   for (var i = 0; i < upChunks.length; i++) { await sbFetch("POST", "tasks", upChunks[i]); }
+  // [v10.6.36] Gravou: a base de cada objeto avanca para o que ficou valendo. Sem isso,
+  // um segundo Salvar sem releitura reaplicaria o mesmo diff antigo por cima do banco.
+  // Vale tambem para as tarefas recusadas: `incoming` ja recebeu a versao do servidor,
+  // entao o proximo save monta o diff certo e a alteracao pode ser refeita.
+  Object.keys(incoming).forEach(function (idb) {
+    var o = _objPorId[idb];
+    if (o) { try { o[OP26_BASE] = incoming[idb]; } catch (_eBs) {} }
+  });
   const delChunks = _chunk(toDelete, 100);
   for (var j = 0; j < delChunks.length; j++) {
     if (compat) {
@@ -1083,7 +1215,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.34-carimbo-recorrente-2026-08-28", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.36-base-do-merge-2026-09-10", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -10312,15 +10444,64 @@ function App() {
                 completedBy: bd ? session.name : null,
                 completedAt: bd ? new Date().toISOString() : null
               };
+              // ══════════════════════════════════════════════════════════
+              // [FIX v10.6.35 P-ASSUMIR-NA-BAIXA]
+              //
+              // SINTOMA (09-10/09/2026): tarefas com o analista de outro
+              // cliente. Caso relatado: T-07L1999B (FERIAS - Cancelamento
+              // Ferias, WF 204327, XIPP), cujo de-para manda Maria Eduarda em
+              // Analistas_Ferias e que estava com outra pessoa. Gerente e
+              // coordenador CORRETOS — os tres campos saem da mesma entrada do
+              // de-para, entao nao era casamento de cliente errado; e o
+              // responsibles tinha um nome so, que o de-para nunca produz.
+              //
+              // CAUSA: este bloco. Concluir uma tarefa de que voce nao e
+              // responsavel abre a pergunta "assumir a tarefa?"; dizendo que
+              // sim, o analista era trocado — e este era o UNICO dos cinco
+              // caminhos de troca de analista que nao carimbava edicaoManual
+              // (formulario, calendario, edicao em lote e recorrente carimbam).
+              // Pior: desfazer a baixa zerava completedBy/completedAt e NAO
+              // devolvia o analista anterior. A tarefa voltava a pendente com o
+              // dono trocado, sem rastro no proprio registro, e a correcao
+              // retroativa do importador nao desfaz (so preenche campo vazio).
+              //
+              // CORRECAO, nos dois sentidos:
+              //   ida   — carimba a troca e guarda quem estava na tarefa;
+              //   volta — a reabertura devolve o analista anterior e solta a
+              //           trava, para o de-para voltar a mandar.
+              // ══════════════════════════════════════════════════════════
               if (bd && reassign) {
                 updates.responsibles = [session.name];
                 updates.responsible = session.name;
+                // Quem estava na tarefa antes da baixa, para a reabertura
+                // devolver. Campo proprio: nao entra em CAMPOS_TRAVAVEIS_MANUAL
+                // e nao e lido por nenhum importador.
+                updates.respAntesDaBaixa = respArr(t);
+                var _mmBaixa35 = _carimbarEdicaoManual(t, updates,
+                                   (sessionRef.current && sessionRef.current.name) ||
+                                   session.name || "");
+                if (_mmBaixa35) updates.edicaoManual = _mmBaixa35;
+              }
+              if (!bd && Array.isArray(t.respAntesDaBaixa)) {
+                updates.responsibles = t.respAntesDaBaixa.slice();
+                updates.responsible = t.respAntesDaBaixa.join(", ");
+                updates.respAntesDaBaixa = null;
+                // Solta so a trava que a propria baixa criou. Carimbo de
+                // coordenador, prazo, titulo etc. feito por gente continua
+                // valendo — nao e assunto desta reabertura.
+                var _em35 = (t.edicaoManual && typeof t.edicaoManual === "object")
+                            ? Object.assign({}, t.edicaoManual) : null;
+                if (_em35) {
+                  delete _em35.responsibles;
+                  delete _em35.responsible;
+                  updates.edicaoManual = Object.keys(_em35).length ? _em35 : null;
+                }
               }
               return _objectSpread(_objectSpread({}, t), updates);
             })));
             mutate(nt);
             _context38.n = 2;
-            return logAction(bd ? "completed" : "uncompleted", "".concat(task.code ? task.code + " · " : "").concat(task.title).concat(bd && reassign ? " [analista alterado: " + (oldResp || "-") + " \u2192 " + session.name + "]" : ""));
+            return logAction(bd ? "completed" : "uncompleted", "".concat(task.code ? task.code + " · " : "").concat(task.title).concat(bd && reassign ? " [analista alterado: " + (oldResp || "-") + " \u2192 " + session.name + "]" : ((!bd && Array.isArray(task.respAntesDaBaixa)) ? " [analista devolvido: " + (oldResp || "-") + " \u2192 " + (task.respAntesDaBaixa.join(", ") || "-") + "]" : "")));
           case 2:
             return _context38.a(2);
         }
