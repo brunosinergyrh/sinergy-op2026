@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.36)</title>
+  <title>SinergyRH – Operação - 2026 (v10.6.37)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -181,7 +181,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.36-base-do-merge-2026-09-10";
+window.OP2026_BUILD = "v10.6.37-reload-automatico-2026-09-10";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -425,6 +425,40 @@ function _verNum32(x) {
   return m ? ((+m[1]) * 1000000 + (+m[2]) * 1000 + (+m[3])) : null;
 }
 var _build32 = { remoto: null, atrasada: false, checadoEm: 0, INTERVALO: 10 * 60 * 1000 };
+// [v10.6.37] Recarga automatica com contagem regressiva. Antes, uma aba atrasada so
+// bloqueava o salvamento e pedia pra pessoa apertar Ctrl+Shift+R — dependia de alguem
+// notar o aviso. Agora a propria aba se atualiza sozinha depois de alguns segundos,
+// dando tempo de terminar de digitar/clicar em algo antes do reload. Elemento proprio
+// (nao usa o id do _banner generico) para nunca ser silenciado por outro aviso na tela.
+function _iniciarRecargaAutomatica32(buildRemoto) {
+  // Jitter (20-50s) para varias abas nao recarregarem no mesmo segundo exato — espalha
+  // a rajada de recargas completas na tabela de tarefas em vez de tudo de uma vez.
+  var SEGUNDOS = 20 + Math.floor(Math.random() * 30), restante = SEGUNDOS, elId = 'sb-reload-auto';
+  function desenhar() {
+    var el = document.getElementById(elId);
+    var texto = "⚠ Nova versão publicada (" + buildRemoto + "). Esta aba vai atualizar em " +
+                restante + "s — clique aqui para atualizar agora.";
+    if (!el) {
+      el = document.createElement('div');
+      el.id = elId;
+      el.style.cssText = 'position:fixed;bottom:48px;right:10px;background:#ef4444;color:#fff;' +
+        'padding:10px 16px;border-radius:8px;font-size:13px;font-family:system-ui;z-index:99999;' +
+        'max-width:400px;cursor:pointer;line-height:1.4;';
+      el.onclick = function () { window.location.reload(); };
+      (document.body || document.documentElement).appendChild(el);
+    }
+    el.textContent = texto;
+  }
+  var go = function () {
+    desenhar();
+    var iv = setInterval(function () {
+      restante--;
+      if (restante <= 0) { clearInterval(iv); window.location.reload(); return; }
+      desenhar();
+    }, 1000);
+  };
+  if (document.body) go(); else window.addEventListener('DOMContentLoaded', go);
+}
 async function _checarBuildPublicado(force) {
   var agora = Date.now();
   if (_build32.atrasada) return true;                       // uma vez atrasada, continua
@@ -441,12 +475,8 @@ async function _checarBuildPublicado(force) {
     if (vLocal === null || vRemoto === null || vRemoto <= vLocal) return false;
     _build32.atrasada = true;
     console.error("[OP2026][v10.6.32] Esta aba esta na build " + window.OP2026_BUILD +
-      " e o servidor ja publicou " + m[1] + ". Gravacao BLOQUEADA nesta aba.");
-    try {
-      _banner("⚠ Esta aba esta com uma versao ANTIGA do painel (" +
-              window.OP2026_BUILD + "). Publicada: " + m[1] + ". Recarregue com " +
-              "Ctrl+Shift+R — nada sera salvo por esta aba ate recarregar.", '#ef4444');
-    } catch (_) {}
+      " e o servidor ja publicou " + m[1] + ". Gravacao BLOQUEADA nesta aba — recarga automatica em breve.");
+    try { _iniciarRecargaAutomatica32(m[1]); } catch (_) {}
   } catch (_) {}
   return _build32.atrasada;
 }
@@ -1215,7 +1245,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.36-base-do-merge-2026-09-10", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.6.37-reload-automatico-2026-09-10", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
