@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.6.37)</title>
+  <title>SinergyRH – Operação - 2026 (v10.7)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -153,11 +153,25 @@ window.addEventListener('unhandledrejection', function(e) {
   showBanner('✓ Supabase OK (GET+POST funcionando)', '#10b981', false);
 })();
 
+// [FIX v10.7.1] O aviso nunca era removido da tela (sem timer, sem botao de fechar) —
+// ficava permanente ate a pessoa recarregar a pagina. Passava despercebido porque os
+// usos antigos eram raros (aba desatualizada, falha de rede). A trava de "preencha
+// analista e coordenador" (v10.7) aparece com muito mais frequencia e expos o bug.
+var _errorBannerEl = null;
 function showError(msg) {
+  try { if (_errorBannerEl && _errorBannerEl.parentNode) _errorBannerEl.parentNode.removeChild(_errorBannerEl); } catch (_eRem) {}
   const div = document.createElement('div');
-  div.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#ef4444;color:#fff;padding:8px 14px;border-radius:8px;font-size:12px;font-family:system-ui;z-index:9999;max-width:300px;';
-  div.textContent = '✗ ' + msg;
+  div.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#ef4444;color:#fff;padding:8px 14px;border-radius:8px;font-size:12px;font-family:system-ui;z-index:9999;max-width:300px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,0.25);';
+  div.textContent = '✗ ' + msg + ' (clique para fechar)';
+  div.title = 'Clique para fechar';
+  var remove = function () {
+    try { if (div.parentNode) div.parentNode.removeChild(div); } catch (_eRem2) {}
+    if (_errorBannerEl === div) _errorBannerEl = null;
+  };
+  div.onclick = remove;
   document.body.appendChild(div);
+  _errorBannerEl = div;
+  setTimeout(remove, 6000);
 }
 
 async function sbFetch(method, path, body) {
@@ -181,7 +195,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.6.37-reload-automatico-2026-09-10";
+window.OP2026_BUILD = "v10.7-2026-09-15";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -265,6 +279,64 @@ function _exclusaoAutorizada(id) {
 window.autorizarExclusao = autorizarExclusao;
 // Diagnostico: window.__exclusoesBloqueadas guarda o que o freio impediu nesta aba.
 window.__exclusoesBloqueadas = [];
+
+// ══════════════════════════════════════════════════════════════════════════════
+// [v10.7] TROCA DE ESTEIRA DIRETA NO BANCO.
+//
+// A esteira e uma coluna a parte na tabela tasks, fora do task_data (JSONB). O
+// motor de "mudou de verdade" (base-do-merge, v10.6.36) so compara o conteudo de
+// task_data contra a base que esta aba leu — uma troca de esteira pura (sem mexer
+// em nenhum outro campo) nunca aparece nessa comparacao, entao a gravacao da
+// esteira nova nunca acontecia. Ao mesmo tempo, a remocao da esteira antiga
+// esbarrava no porteiro da exclusao (v10.6.28), que so libera saida de um array
+// se alguem autorizou via autorizarExclusao — e autorizar aqui seria pior:
+// tornaria a saida uma EXCLUSAO (deleted_at), nao uma mudanca de esteira, o que
+// mandaria a tarefa pra lixeira em vez de move-la (confirmado por simulacao antes
+// de publicar). A correcao e nao depender do motor de diff nem do porteiro da
+// exclusao para isso: grava a esteira nova direto por PATCH e atualiza os caches
+// locais na hora, antes do mutate()/saveEsteira normal rodar em cima do resultado.
+// ══════════════════════════════════════════════════════════════════════════════
+function _moverEsteiraDireto(ids, novaEsteira) {
+  ids = (Array.isArray(ids) ? ids : [ids]).map(String).filter(Boolean);
+  if (!ids.length || !novaEsteira) return Promise.resolve();
+  var dadosPorId = Object.create(null);
+  Object.keys(_taskCache).forEach(function (eidLoop) {
+    if (eidLoop === novaEsteira) return;
+    var cache = _taskCache[eidLoop];
+    if (!cache) return;
+    ids.forEach(function (id) {
+      if (Object.prototype.hasOwnProperty.call(cache, id)) {
+        dadosPorId[id] = cache[id];
+        delete cache[id];
+        if (_taskCacheSnapshot[eidLoop]) delete _taskCacheSnapshot[eidLoop][id];
+      }
+    });
+  });
+  var novoCache = _taskCache[novaEsteira] || (_taskCache[novaEsteira] = {});
+  var novoSnap  = _taskCacheSnapshot[novaEsteira] || (_taskCacheSnapshot[novaEsteira] = {});
+  ids.forEach(function (id) {
+    var json = dadosPorId[id];
+    if (json) { novoCache[id] = json; novoSnap[id] = json; }
+    try { _markSelfWrite(id); } catch (_eMs) {}
+  });
+  var chunks = _chunk(ids, 100);
+  var p = Promise.resolve();
+  chunks.forEach(function (grupo) {
+    p = p.then(function () {
+      return sbFetch("PATCH", "tasks?id=in.(" + grupo.map(encodeURIComponent).join(",") + ")",
+        { esteira: novaEsteira, deleted_at: null });
+    });
+  });
+  return p.catch(function (e) {
+    console.error("[esteira.mover][v10.7] falha ao gravar troca de esteira no banco:", e && (e.message || e));
+    try {
+      showError("Nao foi possivel confirmar a troca de esteira no banco para " + ids.length +
+        " tarefa(s). Recarregue a pagina (F5) e confira se a mudanca ficou salva antes de repetir.");
+    } catch (_eSe) {}
+    throw e;
+  });
+}
+window._moverEsteiraDireto = _moverEsteiraDireto;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // [FIX v10.6.32 P-BAIXA-NAO-VOLTA] PORTEIRO DA BAIXA
@@ -1245,7 +1317,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.6.37-reload-automatico-2026-09-10", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.7-2026-09-15", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -2141,6 +2213,17 @@ var getStatusGroup = function getStatusGroup(t) {
   if (diff < 0) return "atraso";
   if (diff <= 1) return "andamento";
   return "planejada";
+};
+// [v10.7] Diferenca em dias (local, nao UTC) entre hoje e o prazo da tarefa.
+// Mesmo padrao de getStatusGroup acima — positivo = prazo no futuro, negativo = atrasado.
+// Usado na dupla checagem de conclusao com prazo futuro distante.
+var _diffDiasPrazoLocal = function _diffDiasPrazoLocal(deadline) {
+  if (!deadline) return null;
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var d = new Date(deadline + "T00:00:00");
+  if (isNaN(d.getTime())) return null;
+  return Math.round((d - today) / (86400 * 1000));
 };
 var daysLeft = function daysLeft(da) {
   return da ? Math.max(0, Math.ceil((TRASH_MS - (Date.now() - new Date(da).getTime())) / (86400 * 1000))) : TRASH_DAYS;
@@ -3118,7 +3201,13 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
         padding: "4px 10px",
         fontSize: 11
       })
-    }, "PIN"), session.role === "admin" && u.id !== session.id && !lastActiveAd && /*#__PURE__*/React.createElement("button", { // [v10.6.15]
+    }, "PIN"),
+    // [FIX v10.7] Inativar agora tambem disponivel para gerente e coordenador, nao so
+    // admin — antes so checava session.role==="admin" (um campo binario admin/user,
+    // separado do papel de verdade que vem do grupo).
+    (session.role === "admin" ||
+     ((isGerenteUser(session, groups) || isCoordUser(session, groups)) && u.groupId !== "admin")) &&
+    u.id !== session.id && !lastActiveAd && /*#__PURE__*/React.createElement("button", { // [v10.6.15]
       onClick: function onClick() {
         return toggleUserActive(u);
       },
@@ -3128,7 +3217,10 @@ var AdminPanel = memo(function AdminPanel(_ref6) {
         fontSize: 11,
         color: u.active === false ? "#10b981" : "#f59e0b"
       })
-    }, u.active === false ? "Reativar" : "Inativar"), u.id !== session.id && !lastAd && /*#__PURE__*/React.createElement("button", {
+    }, u.active === false ? "Reativar" : "Inativar"),
+    // [FIX v10.7] Coordenador nao deve conseguir excluir usuario (so inativar) — gerente
+    // e admin continuam podendo.
+    !isCoordUser(session, groups) && u.id !== session.id && !lastAd && /*#__PURE__*/React.createElement("button", {
       onClick: function onClick() {
         return removeUser(u);
       },
@@ -4858,6 +4950,91 @@ var LogModal = memo(function LogModal(_ref12) {
   );
 });
 
+/* ═════ [v10.7] Historico de Situacao ═════
+   Reaproveita o log de auditoria ja existente (tabela "logs", gravado por logAction
+   toda vez que uma tarefa e editada). Em vez de mandar o usuario abrir o Log geral
+   e procurar manualmente, este modal ja busca so os registros daquela tarefa que
+   contem uma mudanca de Situacao, e mostra apenas esse trecho (data/hora, quem
+   mudou, de->para) numa lista limpa. Nao exige nenhuma mudanca de banco de dados -
+   e so uma nova forma de consultar o que ja e gravado hoje. */
+var SituacaoHistoryModal = memo(function SituacaoHistoryModal(_ref) {
+  var code = _ref.code,
+    title = _ref.title,
+    onClose = _ref.onClose,
+    T = _ref.T;
+  var _useState1 = useState([]),
+    rows = _useState1[0], setRows = _useState1[1];
+  var _useState2 = useState(true),
+    loading = _useState2[0], setLoading = _useState2[1];
+  var _useState3 = useState(""),
+    err = _useState3[0], setErr = _useState3[1];
+
+  useEffect(function () {
+    var cancelled = false;
+    setLoading(true);
+    setErr("");
+    var term = (code || title || "").trim();
+    if (!term) {
+      setRows([]);
+      setLoading(false);
+      return;
+    }
+    var q = "logs?action=eq.edited&target=ilike.*" + encodeURIComponent(term) +
+      "*&target=ilike.*" + encodeURIComponent("Sit.:") + "*&order=ts.desc&limit=200";
+    sbFetch("GET", q).then(function (data) {
+      if (cancelled) return;
+      setRows(Array.isArray(data) ? data : []);
+      setLoading(false);
+    }).catch(function () {
+      if (cancelled) return;
+      setErr("Nao foi possivel carregar o historico agora.");
+      setLoading(false);
+    });
+    return function () { cancelled = true; };
+  }, [code, title]);
+
+  // O log grava o diff inteiro da edicao (ex.: "Titulo: ... | Sit.: \"A\" -> \"B\" | Prazo: ...").
+  // Aqui isolamos so o pedaco de Situacao pra nao misturar com os outros campos.
+  function extractSit(target) {
+    var parts = String(target || "").split(" | ");
+    var hit = parts.filter(function (p) { return p.indexOf("Sit.:") === 0; });
+    return hit.length ? hit.join(" | ") : target;
+  }
+
+  return React.createElement("div", {
+    style: { width: "100%", maxWidth: 480, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden", position: "relative" }
+  },
+    React.createElement("div", { style: { position: "absolute", top: 14, right: 14, zIndex: 10 } },
+      React.createElement(CloseBtn, { onClick: onClose, T: T })
+    ),
+    React.createElement("div", {
+      style: { padding: "18px 56px 14px 24px", borderBottom: "1px solid " + T.borderL, display: "flex", alignItems: "center", gap: 8 }
+    },
+      React.createElement(Clock, { size: 16, color: T.textM }),
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Hist\xF3rico de Situa\xE7\xE3o"),
+        React.createElement("div", { style: { fontSize: 11, color: T.textM, marginTop: 2 } }, (code ? code + " \xB7 " : "") + (title || ""))
+      )
+    ),
+    React.createElement("div", { style: { maxHeight: 420, overflowY: "auto", padding: "8px 0" } },
+      loading ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: T.textM, fontSize: 12 } }, "Carregando...")
+      : err ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: "#ef4444", fontSize: 12 } }, err)
+      : rows.length === 0 ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: T.textM, fontSize: 12 } }, "Nenhuma mudan\xE7a de situa\xE7\xE3o registrada ainda.")
+      : rows.map(function (r, i) {
+          return React.createElement("div", {
+            key: r.id || i,
+            style: { padding: "10px 24px", borderBottom: i < rows.length - 1 ? "1px solid " + T.borderL : "none" }
+          },
+            React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 3 } },
+              fmtDT(r.ts) + "  \xB7  " + (r.user_name || "-")
+            ),
+            React.createElement("div", { style: { fontSize: 12.5, color: T.text, fontWeight: 500 } }, extractSit(r.target))
+          );
+        })
+    )
+  );
+});
+
 /* ═════ v10.3: NOTIFICACOES IN-APP + EXTRAS DO GERENCIAL ═════ */
 
 /* ── NotifBell: sino de notificacoes no cabecalho ──
@@ -5211,6 +5388,61 @@ function CalendarView(props) {
       return rank(a) - rank(b) || (a.title || "").localeCompare(b.title || "");
     }) : [];
 
+  // [v10.7] Export do mes inteiro visivel no calendario, respeitando os filtros e a
+  // visao (prazo/conclusao/esteira) atualmente aplicados na tela — mesmo escopo usado
+  // para montar o "mapa do mes" acima, só sem quebrar por dia.
+  var monthExportList = viewMode === "conclusao"
+    ? scoped.filter(function (t) { return t.status === "concluida" && t.completedAt && t.completedAt.slice(0, 7) === monthKey; })
+    : (viewMode === "esteira"
+        ? (selEsteira !== "__all__" ? scoped.filter(function (t) { return t._eid === selEsteira; }) : [])
+        : scoped
+      ).filter(function (t) { return t.deadline && t.deadline.slice(0, 7) === monthKey; });
+  function exportCalendarioMes() {
+    if (!window.XLSX || !monthExportList.length) return;
+    var estLbl = {};
+    (props.esteiras || []).forEach(function (es) { estLbl[es.id] = es.label; });
+    var _PRI = { alta: "Alta", media: "Média", baixa: "Baixa" };
+    var rows = monthExportList.slice().sort(function (a, b) {
+      var da = viewMode === "conclusao" ? (a.completedAt || "") : (a.deadline || "");
+      var db = viewMode === "conclusao" ? (b.completedAt || "") : (b.deadline || "");
+      return da.localeCompare(db) || (a.title || "").localeCompare(b.title || "");
+    }).map(function (t) {
+      var resp = Array.isArray(t.responsibles) ? t.responsibles.join(", ") : (t.responsibles || "");
+      var late = t.status !== "concluida" && t.deadline < todayStr;
+      return {
+        "Esteira": estLbl[t._eid] || t._eid || "",
+        "Codigo": t.code || "",
+        "Titulo": t.title || "",
+        "Cliente": t.cliente || "",
+        "Processo": t.processo || "",
+        "Responsaveis": resp,
+        "Coordenador": t.coordenador || "",
+        "Gerente": t.gerente || "",
+        "Prazo": t.deadline ? t.deadline.split("-").reverse().join("/") : "",
+        "Data Credito": t.dataCredito ? t.dataCredito.split("-").reverse().join("/") : "",
+        "Situacao": t.situacao || "",
+        "Prioridade": _PRI[t.priority] || t.priority || "",
+        "Status": t.status === "concluida" ? "Concluída" : late ? "Atrasada" : "Pendente",
+        "Concluido por": t.completedBy || "",
+        "Concluido em": t.completedAt ? fmtDT(t.completedAt) : ""
+      };
+    });
+    var resumo = [{
+      "Mes": monthNames[mm - 1] + "/" + yy,
+      "Visao": viewMode === "conclusao" ? "Por conclusão" : viewMode === "esteira" ? "Por esteira" : "Por prazo",
+      "Filtro": selAnalista !== "__all__" ? "Analista: " + selAnalista
+               : selCoord !== "__all__" ? "Coordenação: " + selCoord
+               : selGerente !== "__all__" ? "Gerente: " + selGerente
+               : "Sem filtro de pessoa",
+      "Esteira filtrada": viewMode === "esteira" ? (selEsteira !== "__all__" ? (estLbl[selEsteira] || selEsteira) : "(nenhuma selecionada)") : "-",
+      "Total de tarefas": rows.length
+    }];
+    var wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(resumo), "Resumo");
+    window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(rows), "Tarefas");
+    window.XLSX.writeFile(wb, "Calendario_" + monthKey + (viewMode === "conclusao" ? "_Conclusao" : viewMode === "esteira" ? "_Esteira" : "") + ".xlsx");
+  }
+
   var WK = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
 
   return e("div", { style: { marginBottom: 18 } },
@@ -5281,7 +5513,19 @@ function CalendarView(props) {
       },
         e("option", { value: "__all__", style: { background: T.selBg, color: T.text } }, "Selecione uma esteira"),
         (props.esteiras || []).map(function (es) { return e("option", { key: es.id, value: es.id, style: { background: T.selBg, color: T.text } }, es.label || es.name || es.id); })
-      )
+      ),
+      // [v10.7] Exporta todo o mes visivel no calendario (nao so o dia selecionado),
+      // respeitando a visao e os filtros de analista/coordenacao/gerente/esteira ativos.
+      e("button", {
+        onClick: exportCalendarioMes,
+        disabled: !monthExportList.length,
+        title: "Excel com todas as tarefas do mes visivel, conforme os filtros aplicados",
+        style: { fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 7,
+          cursor: monthExportList.length ? "pointer" : "default",
+          border: "1px solid rgba(16,185,129,0.35)",
+          background: "rgba(16,185,129,0.08)",
+          color: "#10b981", opacity: monthExportList.length ? 1 : 0.5 }
+      }, "⬇ Exportar mes (" + monthExportList.length + ")")
     ),
     // [v10.5.15] Barra de resumo do mes (estilo mockup de homologacao)
     (function () {
@@ -6286,6 +6530,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       return {
         "Esteira": (es && es.label) || t._eid || "", "Código": t.code || "", "Tarefa": t.title || "",
         "Cliente": t.cliente || "", "Processo": t.processo || "",
+        // [FIX v10.7.1] coluna pedida: analista responsavel pela tarefa criada na integracao.
+        "Analista responsável": respStr(t) || "",
         "Coordenador": t.coordenador || "", "Gerente": t.gerente || "",
         "Prazo": t.deadline ? fmtDate(t.deadline) : "", "Mês": t.mes ? fmtMonth(t.mes) : "",
         "Criada em": t.createdAt ? fmtDT(t.createdAt) : ""
@@ -7625,7 +7871,8 @@ var TaskCard = memo(function TaskCard(_ref15) {
     onToggle = _ref15.onToggle,
     onSelect = _ref15.onSelect,
     onEdit = _ref15.onEdit,
-    onDelete = _ref15.onDelete;
+    onDelete = _ref15.onDelete,
+    onShowHistory = _ref15.onShowHistory;
   // [v10.6.25] Blindagem: se a tarefa vier sem prioridade (ou com um valor fora de
   // alta/media/baixa), PRI[...] era undefined e o "p.color" logo abaixo derrubava a
   // renderizacao da LISTA INTEIRA (tela em branco). Agora cai em "media" e segue.
@@ -7748,8 +7995,15 @@ var TaskCard = memo(function TaskCard(_ref15) {
       /*#__PURE__*/React.createElement(Flame, { size: 11, strokeWidth: 2.5, color: p.color }),
       p.label
     ),
-    /* botões editar/excluir */
+    /* botões editar/excluir/historico */
     /*#__PURE__*/React.createElement("div", { style: { display: "flex", gap: 2 } },
+      /* [v10.7] "Ver historico" direto no card, sem precisar abrir a edicao -
+         disponivel independente de canEdit, pra quem so quer consultar a situacao. */
+      onShowHistory ? /*#__PURE__*/React.createElement("button", {
+        title: "Ver hist\xF3rico de situa\xE7\xE3o",
+        onClick: function onClick() { return onShowHistory(task); },
+        style: _objectSpread(_objectSpread({}, ICON_BTN), {}, { color: T.textD, padding: "3px 4px" })
+      }, /*#__PURE__*/React.createElement(Clock, { size: 14 })) : null,
       canEdit ? /*#__PURE__*/React.createElement("button", {
         onClick: function onClick() { return onEdit(task); },
         style: _objectSpread(_objectSpread({}, ICON_BTN), {}, { color: T.textD, padding: "3px 4px" })
@@ -7891,6 +8145,69 @@ var TaskCard = memo(function TaskCard(_ref15) {
   ));
 });
 
+/* ── ColHeaderCell (v10.6.39) ──
+   Celula de cabecalho da esteira com "handle" de arrastar para redimensionar a
+   coluna (estilo Excel). Componente PROPRIO (nao uma funcao interna do App) para
+   poder ter hover local via useState sem se recriar/remontar a cada render do App
+   (o que aconteceria — e perderia o hover, piscando — se fosse uma funcao definida
+   dentro do corpo do App e recriada a cada render). */
+var ColHeaderCell = function ColHeaderCell(props) {
+  var colKey = props.colKey, label = props.label, extraStyle = props.extraStyle,
+    dragging = props.dragging, onStartDrag = props.onStartDrag, T = props.T,
+    leftHandle = props.leftHandle; // [v10.7] ex.: coluna "Situacao" tambem pode ser
+                                    // redimensionada puxando a borda esquerda, ja que a
+                                    // coluna anterior ("Tarefa") e flexivel e nao tem handle proprio.
+  var _hov = useState(false),
+    hoverRight = _hov[0],
+    setHoverRight = _hov[1];
+  var _hovL = useState(false),
+    hoverLeft = _hovL[0],
+    setHoverLeft = _hovL[1];
+  var activeRight = dragging === "right" || hoverRight;
+  var activeLeft = dragging === "left" || hoverLeft;
+  return /*#__PURE__*/React.createElement("div", {
+    style: Object.assign({ position: "relative" }, extraStyle || {})
+  },
+    /*#__PURE__*/React.createElement("span", null, label),
+    leftHandle && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute", top: -5, bottom: -5, left: -6, width: activeLeft ? 3 : 1.5,
+        background: activeLeft ? "#6366f1" : T.border,
+        borderRadius: 1, pointerEvents: "none"
+      }
+    }),
+    leftHandle && /*#__PURE__*/React.createElement("div", {
+      onMouseDown: function onMouseDown(ev) { return onStartDrag(ev, colKey, true); },
+      onMouseEnter: function onMouseEnter() { return setHoverLeft(true); },
+      onMouseLeave: function onMouseLeave() { return setHoverLeft(false); },
+      title: "Arraste para redimensionar",
+      style: {
+        position: "absolute", top: -8, bottom: -8, left: -12, width: 22,
+        cursor: "col-resize", zIndex: 5
+      }
+    }),
+    /* linha visivel da borda entre as colunas — sempre visivel, destaca ao passar o mouse/arrastar */
+    /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute", top: -5, bottom: -5, right: -6, width: activeRight ? 3 : 1.5,
+        background: activeRight ? "#6366f1" : T.border,
+        borderRadius: 1, pointerEvents: "none"
+      }
+    }),
+    /* area de clique — bem mais larga que a linha, pra ser facil de acertar com o mouse */
+    /*#__PURE__*/React.createElement("div", {
+      onMouseDown: function onMouseDown(ev) { return onStartDrag(ev, colKey, false); },
+      onMouseEnter: function onMouseEnter() { return setHoverRight(true); },
+      onMouseLeave: function onMouseLeave() { return setHoverRight(false); },
+      title: "Arraste para redimensionar",
+      style: {
+        position: "absolute", top: -8, bottom: -8, right: -12, width: 22,
+        cursor: "col-resize", zIndex: 5
+      }
+    })
+  );
+};
+
 /* ── TaskTableRow (visao em tabela, expansivel) ── */
 var TaskTableRow = memo(function TaskTableRow(_refTR) {
   var task = _refTR.task,
@@ -7908,7 +8225,9 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
     onToggle = _refTR.onToggle,
     onSelect = _refTR.onSelect,
     onEdit = _refTR.onEdit,
-    onDelete = _refTR.onDelete;
+    onDelete = _refTR.onDelete,
+    onShowHistory = _refTR.onShowHistory,
+    gridCols = _refTR.gridCols; // [v10.7] largura de coluna ajustavel; cai no padrao se nao vier
   // [v10.6.25] Blindagem: se a tarefa vier sem prioridade (ou com um valor fora de
   // alta/media/baixa), PRI[...] era undefined e o "p.color" logo abaixo derrubava a
   // renderizacao da LISTA INTEIRA (tela em branco). Agora cai em "media" e segue.
@@ -7947,7 +8266,7 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
   /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "18px 90px 1fr 112px 100px 170px 90px 92px 56px",
+      gridTemplateColumns: gridCols || "18px 90px 1fr 112px 100px 170px 90px 92px 92px",
       alignItems: "center",
       gap: 10,
       padding: "9px 12px 2px 12px"
@@ -7992,7 +8311,10 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
     /* situacao */
     task.situacao ? /*#__PURE__*/React.createElement("span", {
       title: task.situacao,
-      style: { fontSize: 10.5, fontWeight: 600, color: "#6366f1", background: "rgba(99,102,241,0.1)", borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", justifySelf: "start", maxWidth: "100%" }
+      // [FIX v10.6.39] "justifySelf: stretch" (em vez de "start") faz o selo acompanhar
+      // visualmente a largura da coluna ao arrastar \u2014 antes ficava do tamanho do texto e
+      // parecia que redimensionar nao fazia nada.
+      style: { fontSize: 10.5, fontWeight: 600, color: "#6366f1", background: "rgba(99,102,241,0.1)", borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", justifySelf: "stretch", display: "inline-block" }
     }, task.situacao) : /*#__PURE__*/React.createElement("span", { title: "N\u00E3o informado", style: { display: "block", width: "100%", height: 18 } }, ""),
     /* credito */
     task.dataCredito ? /*#__PURE__*/React.createElement("div", {
@@ -8033,6 +8355,12 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
     }, p.label),
     /* acoes + chevron */
     /*#__PURE__*/React.createElement("div", { style: { display: "flex", gap: 2, justifyContent: "flex-end", alignItems: "center" } },
+      /* [v10.7] mesmo botao de historico da tabela, sem depender de canEdit */
+      onShowHistory ? /*#__PURE__*/React.createElement("button", {
+        title: "Ver hist\xF3rico de situa\xE7\xE3o",
+        onClick: function onClick(e) { e.stopPropagation(); return onShowHistory(task); },
+        style: _objectSpread(_objectSpread({}, ICON_BTN), {}, { color: T.textD, padding: "3px 4px" })
+      }, /*#__PURE__*/React.createElement(Clock, { size: 13 })) : null,
       canEdit ? /*#__PURE__*/React.createElement("button", {
         onClick: function onClick(e) { e.stopPropagation(); return onEdit(task); },
         style: _objectSpread(_objectSpread({}, ICON_BTN), {}, { color: T.textD, padding: "3px 4px" })
@@ -8309,6 +8637,18 @@ function App() {
     _useState112 = _slicedToArray(_useState111, 2),
     pendingToggle = _useState112[0],
     setPendingToggle = _useState112[1];
+  // [v10.7] Confirmacao simples ao concluir tarefa (evita baixa sem querer), com
+  // aviso extra quando o prazo ainda esta a mais de 5 dias no futuro.
+  var _useStateV39a = useState(null),
+    _useStateV39b = _slicedToArray(_useStateV39a, 2),
+    pendingComplete = _useStateV39b[0],
+    setPendingComplete = _useStateV39b[1];
+  // [v10.7] guarda {code, title} da tarefa cujo historico de campo Situacao esta
+  // sendo visualizado; null = modal fechado.
+  var _useStateV40a = useState(null),
+    _useStateV40b = _slicedToArray(_useStateV40a, 2),
+    situacaoHistFor = _useStateV40b[0],
+    setSituacaoHistFor = _useStateV40b[1];
   var _useState113 = useState(false),
     _useState114 = _slicedToArray(_useState113, 2),
     showImport = _useState114[0],
@@ -8415,6 +8755,86 @@ function App() {
         savePrefsFor(_uid2, filters, sortIdx, mode);
       }
     } catch (_e) {}
+  };
+  // [v10.7] Largura ajustavel das colunas da esteira (view "tabela"). Mesmo padrao
+  // das outras preferencias por usuario: localStorage para resposta imediata + blob
+  // compartilhado (PREFS_KEY) para acompanhar o usuario em qualquer computador.
+  var DEFAULT_COL_WIDTHS_ESTEIRA = { prazo: 90, situacao: 112, credito: 100, cliente: 170, equipe: 90, prioridade: 92 };
+  // [FIX v10.6.39] Limites ampliados — os originais (ex.: cliente ate 320px) travavam
+  // a tela em nomes de cliente compridos antes de mostrar o nome inteiro.
+  var COL_WIDTH_LIMITS_ESTEIRA = {
+    prazo: [70, 220], situacao: [80, 340], credito: [70, 240],
+    cliente: [100, 560], equipe: [70, 320], prioridade: [70, 220]
+  };
+  var _useStateCW = useState({}),
+    _useStateCW2 = _slicedToArray(_useStateCW, 2),
+    colWidths = _useStateCW2[0],
+    setColWidthsRaw = _useStateCW2[1];
+  var _useStateCWE = useState(null),
+    _useStateCWE2 = _slicedToArray(_useStateCWE, 2),
+    draggingCol = _useStateCWE2[0],
+    setDraggingCol = _useStateCWE2[1];
+  var _useStateCWS = useState(null),
+    _useStateCWS2 = _slicedToArray(_useStateCWS, 2),
+    draggingSide = _useStateCWS2[0],
+    setDraggingSide = _useStateCWS2[1];
+  var widthOfCol = function widthOfCol(key) {
+    return (colWidths && colWidths.hasOwnProperty(key)) ? colWidths[key] : DEFAULT_COL_WIDTHS_ESTEIRA[key];
+  };
+  var gridColsEsteira = function gridColsEsteira() {
+    // [FIX v10.7] coluna de acoes era fixa em 56px, pensada pra so 2 icones + chevron.
+    // Com o novo botao de historico (relogio) virou 3 icones + chevron, ficando
+    // espremido/descentralizado. Aumentada pra 80px pra caber com folga.
+    return "18px " + widthOfCol("prazo") + "px 1fr " + widthOfCol("situacao") + "px " +
+      widthOfCol("credito") + "px " + widthOfCol("cliente") + "px " + widthOfCol("equipe") + "px " +
+      widthOfCol("prioridade") + "px 92px";
+  };
+  var persistColWidths = function persistColWidths(widths) {
+    setColWidthsRaw(widths);
+    var uid = sessionRef.current && sessionRef.current.id;
+    if (!uid) return;
+    try { localStorage.setItem('sinergy_colwidths_' + uid, JSON.stringify(widths)); } catch (_e) {}
+    (function () {
+      window.storage.get(PREFS_KEY, true).then(function (r) {
+        var all3 = r ? JSON.parse(r.value) : {};
+        all3[uid] = Object.assign({}, all3[uid], { colWidths: widths });
+        return window.storage.set(PREFS_KEY, JSON.stringify(all3), true);
+      }).catch(function () {});
+    })();
+  };
+  var resetColWidths = function resetColWidths() { persistColWidths({}); };
+  // [v10.7] Arrastar a borda da coluna no cabecalho (estilo Excel) para redimensionar.
+  // So atualiza o state localmente durante o arraste (fluido, sem gravar a cada pixel);
+  // grava em disco/Supabase uma unica vez, no mouseup.
+  var startColDrag = function startColDrag(ev, key, invert) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    var lim = COL_WIDTH_LIMITS_ESTEIRA[key] || [60, 300];
+    var startX = ev.clientX;
+    var startW = widthOfCol(key);
+    var lastNext = startW;
+    setDraggingCol(key);
+    setDraggingSide(invert ? "left" : "right");
+    try { document.body.style.userSelect = "none"; document.body.style.cursor = "col-resize"; } catch (_e0) {}
+    var onMove = function onMove(e2) {
+      // [v10.7] handle esquerdo (ex.: borda entre "Tarefa" e "Situacao") inverte o
+      // sinal: arrastar pra direita ENCOLHE a coluna (o espaco vai para a coluna
+      // flexivel a esquerda), arrastar pra esquerda AUMENTA.
+      var dx = e2.clientX - startX;
+      if (invert) dx = -dx;
+      lastNext = Math.max(lim[0], Math.min(lim[1], startW + dx));
+      setColWidthsRaw(function (prev) { return Object.assign({}, prev, _defineProperty({}, key, lastNext)); });
+    };
+    var onUp = function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setDraggingCol(null);
+      setDraggingSide(null);
+      try { document.body.style.userSelect = ""; document.body.style.cursor = ""; } catch (_e1) {}
+      persistColWidths(Object.assign({}, colWidths, _defineProperty({}, key, lastNext)));
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   };
   var toggleRowExpand = function toggleRowExpand(id) {
     setExpandedRows(function (p) {
@@ -8901,11 +9321,15 @@ function App() {
             all = r ? JSON.parse(r.value) : {};
             // [v10.6.5] Preserva viewMode ja salvo quando esta chamada nao o informa
             // (ex.: mudanca de filtro/ordenacao nao deve apagar a preferencia de card/tabela).
-            all[uid] = {
+            // [FIX v10.6.39] Isto SUBSTITUIA all[uid] inteiro — qualquer mudanca de filtro/
+            // ordenacao apagava, sem querer, cardOrder/cardWidths (Painel Gerencial),
+            // calFilters (calendario) e colWidths (colunas da esteira), que sao gravados
+            // por outras funcoes no MESMO blob. Agora faz merge, preservando os demais campos.
+            all[uid] = Object.assign({}, all[uid], {
               filters: f,
               sortIdx: si,
               viewMode: vm !== undefined ? vm : (all[uid] && all[uid].viewMode)
-            };
+            });
             _context21.n = 3;
             return window.storage.set(PREFS_KEY, JSON.stringify(all), true);
           case 3:
@@ -9255,8 +9679,8 @@ function App() {
     }
   }, [load, session]);
   useEffect(function () {
-    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete || showDupModal) window.scrollTo(0, 0);
-  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, restoreConfirm, pendingDelete, showDupModal]);
+    if (showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || pendingComplete || restoreConfirm || pendingDelete || showDupModal || situacaoHistFor) window.scrollTo(0, 0);
+  }, [showAdmin, showLog, showImport, showTrash, showEst, showGrp, pendingToggle, pendingComplete, restoreConfirm, pendingDelete, showDupModal, situacaoHistFor]);
   useEffect(function () {
     function onKey(ev) {
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "k") {
@@ -9699,6 +10123,17 @@ function App() {
               var _vmFromServer = pr && pr.viewMode;
               var _savedVM = _vmFromServer || localStorage.getItem('sinergy_viewmode_' + user.id);
               setViewModeRaw(_savedVM === 'cards' ? 'cards' : 'tabela');
+            } catch(_e) {}
+            // [v10.7] Largura das colunas da esteira — mesmo criterio acima (Supabase
+            // primeiro, localStorage como reserva).
+            try {
+              var _cwFromServer = pr && pr.colWidths;
+              var _savedCW = _cwFromServer;
+              if (!_savedCW || typeof _savedCW !== "object") {
+                var _rawCW = localStorage.getItem('sinergy_colwidths_' + user.id);
+                _savedCW = _rawCW ? JSON.parse(_rawCW) : null;
+              }
+              if (_savedCW && typeof _savedCW === "object") setColWidthsRaw(_savedCW);
             } catch(_e) {}
             setTab("workspace");
             setSession({
@@ -10269,9 +10704,20 @@ function App() {
             // [v10.6.4] Trava contra duplo clique/duplo envio — evita criar duas tarefas
             // (dois codigos diferentes) para a mesma solicitacao.
             if (addTaskLockRef.current) return _context37.a(2);
-            if (!(!form.title.trim() || !has("create_task") || (isWS && !editId && !form.esteira))) {
+            // [v10.7] Analista nao pode criar tarefa orfa: precisa preencher analista
+            // responsavel E coordenador antes de salvar. So vale na CRIACAO (!editId) —
+            // editar uma tarefa ja existente nao passa por aqui.
+            var _grupoSessao39 = groupOf(session, groups);
+            var _souAnalista39 = !!_grupoSessao39 && !_grupoSessao39.fullAccess &&
+              !isGerenteUser(session, groups) && !isCoordUser(session, groups);
+            var _semAnalistaOuCoord39 = !editId && _souAnalista39 &&
+              (!(form.responsibles && form.responsibles.length) || !(form.coordenador && form.coordenador.trim()));
+            if (!(!form.title.trim() || !has("create_task") || (isWS && !editId && !form.esteira) || _semAnalistaOuCoord39)) {
               _context37.n = 1;
               break;
+            }
+            if (_semAnalistaOuCoord39) {
+              try { showError("Preencha Analista responsavel e Coordenador antes de criar a tarefa."); } catch (_eSaC39) {}
             }
             return _context37.a(2);
           case 1:
@@ -10554,20 +11000,42 @@ function App() {
     });
     if (!task) return;
     var completing = task.status !== "concluida";
-    if (completing && !respArr(task).includes(session.name)) {
+    // [v10.7] reabertura (desmarcar) nao passa por confirmacao nova — so a
+    // conclusao e que pode ser feita sem querer e precisa de checagem.
+    if (!completing) { doToggle(eid, id, false); return; }
+    // [v10.7] dupla checagem quando o prazo ainda esta a mais de 5 dias no
+    // futuro (ex.: concluir hoje uma demanda que so vence daqui a semanas).
+    var _diffPrazo39 = _diffDiasPrazoLocal(task.deadline);
+    var _prazoFuturoDistante39 = (_diffPrazo39 != null && _diffPrazo39 > 5);
+    if (!respArr(task).includes(session.name)) {
       setPendingToggle({
         eid: eid,
         id: id,
         title: task.title,
-        currentResp: respStr(task)
+        currentResp: respStr(task),
+        prazoFuturoDistante: _prazoFuturoDistante39,
+        deadline: task.deadline,
+        diffDias: _diffPrazo39
       });
       return;
     }
-    doToggle(eid, id, false);
+    // [v10.7] confirmacao simples antes de concluir, para evitar baixa sem querer.
+    setPendingComplete({
+      eid: eid,
+      id: id,
+      title: task.title,
+      prazoFuturoDistante: _prazoFuturoDistante39,
+      deadline: task.deadline,
+      diffDias: _diffPrazo39
+    });
   };
   var confirmToggle = function confirmToggle(reassign) {
     if (pendingToggle) doToggle(pendingToggle.eid, pendingToggle.id, !!reassign);
     setPendingToggle(null);
+  };
+  var confirmComplete = function confirmComplete() {
+    if (pendingComplete) doToggle(pendingComplete.eid, pendingComplete.id, false);
+    setPendingComplete(null);
   };
   var doSoftDelete = /*#__PURE__*/function () {
     var _doSoftDelete = _asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee38(id) {
@@ -10849,6 +11317,13 @@ function App() {
                 if (ids.has(t.id)) { moved.push(t); return false; } return true;
               });
             }
+            // [v10.7] A troca de esteira nao muda nada dentro de task_data (a esteira e uma
+            // coluna a parte), entao o motor de "mudou de verdade" (base-do-merge, v10.6.36) nunca
+            // considerava essas tarefas alteradas e a gravacao da esteira nova nunca acontecia — e a
+            // remocao da esteira antiga esbarrava no porteiro da exclusao. Resultado: a troca nao
+            // saia do lugar. Correcao: grava a mudanca de esteira direto no banco aqui, fora do motor
+            // de diff, ANTES do mutate() disparar os saves normais dessas duas esteiras.
+            if (window._moverEsteiraDireto) window._moverEsteiraDireto(moved.map(function (t) { return t.id; }), eKey);
             nt[eKey] = [].concat(_toConsumableArray(nt[eKey] || []), moved);
           }
           // Demais campos: atualiza in-place
@@ -11049,7 +11524,7 @@ function App() {
       ].some(function (v) { return v && norm(String(v)).includes(qNorm); });
     }).slice(0, 40);
   }
-  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || restoreConfirm || pendingDelete || showDupModal;
+  var anyModal = showAdmin || showLog || showImport || showTrash || showEst || showGrp || pendingToggle || pendingComplete || restoreConfirm || pendingDelete || showDupModal || situacaoHistFor;
   var myGroup = groups.find(function (g) {
     return g.id === (session === null || session === void 0 ? void 0 : session.groupId);
   });
@@ -11504,6 +11979,14 @@ function App() {
     users: users,
     onClose: closeLog,
     T: T
+  })), situacaoHistFor && /*#__PURE__*/React.createElement(OVL, {
+    zi: 59,
+    ov: T.ov
+  }, /*#__PURE__*/React.createElement(SituacaoHistoryModal, {
+    code: situacaoHistFor.code,
+    title: situacaoHistFor.title,
+    onClose: function onClose() { return setSituacaoHistFor(null); },
+    T: T
   })), showTrash && has("view_trash") && /*#__PURE__*/React.createElement(OVL, {
     zi: 57,
     ov: T.ov
@@ -11557,7 +12040,9 @@ function App() {
     }
   }, pendingToggle.title), pendingToggle.currentResp && /*#__PURE__*/React.createElement("div", {
     style: { marginTop: 4, fontSize: 12, color: T.textD }
-  }, "Analista atual: ", pendingToggle.currentResp)), /*#__PURE__*/React.createElement("div", {
+  }, "Analista atual: ", pendingToggle.currentResp), pendingToggle.prazoFuturoDistante && /*#__PURE__*/React.createElement("div", {
+    style: { marginTop: 8, fontSize: 12, color: "#f59e0b", fontWeight: 600 }
+  }, "⚠ Prazo desta tarefa: " + fmtDate(pendingToggle.deadline) + " (" + pendingToggle.diffDias + " dias a frente). Demanda futura, tem certeza?")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -11584,7 +12069,60 @@ function App() {
       return setPendingToggle(null);
     },
     style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { width: "100%", justifyContent: "center", color: T.textD, borderStyle: "dashed" })
-  }, "Cancelar")))), pendingRecurEdit && /*#__PURE__*/React.createElement(OVL, {
+  }, "Cancelar")))), pendingComplete && (function () {
+    // [FIX v10.7] O aviso de "prazo futuro distante" ficava parecido demais com a
+    // confirmacao normal de conclusao (so um icone amarelo e uma linha de texto a
+    // mais) — facil de clicar no automatico. Agora o visual inteiro muda: icone,
+    // titulo, cor de fundo/borda e o texto do botao (nao fica mais verde "de sempre").
+    var _pcAlerta = !!pendingComplete.prazoFuturoDistante;
+    var _pcCor = _pcAlerta ? "#f59e0b" : "#22c55e";
+    return /*#__PURE__*/React.createElement(OVL, {
+      zi: 70,
+      ov: T.ov
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: "100%",
+        maxWidth: 400,
+        // [FIX v10.7.2] O fundo do aviso usava so rgba(245,158,11,0.07) sem base solida,
+        // entao o card ficava quase transparente sobre o overlay escurecido por tras
+        // (efeito "lavado"/ilegivel). Agora usa a cor solida do tema (T.surface) como
+        // base e sobrepoe o tom amarelo por cima via backgroundImage, garantindo opacidade
+        // total e contraste em qualquer tema (claro ou escuro).
+        backgroundColor: T.surface,
+        backgroundImage: _pcAlerta ? "linear-gradient(rgba(245,158,11,0.14), rgba(245,158,11,0.14))" : "none",
+        borderRadius: 16,
+        border: "1px solid ".concat(_pcAlerta ? "rgba(245,158,11,0.5)" : T.border),
+        padding: 24
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }
+    }, /*#__PURE__*/React.createElement(_pcAlerta ? AlertTriangle : Check, {
+      size: 18,
+      color: _pcCor
+    }), /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 15, fontWeight: 700, color: _pcAlerta ? _pcCor : T.text }
+    }, _pcAlerta ? "Prazo ainda não chegou" : "Concluir tarefa?")), /*#__PURE__*/React.createElement("div", {
+      // [FIX v10.7.1] Texto quase ilegivel: T.textM (cor secundaria, baixo contraste
+      // por design) sobre o novo fundo amarelo-claro do aviso de prazo. Usa T.text
+      // (cor principal, alto contraste) e mais peso pra garantir leitura.
+      style: { fontSize: 13, color: T.text, fontWeight: _pcAlerta ? 600 : 400, marginBottom: 16, lineHeight: 1.4 }
+    },
+      _pcAlerta
+        ? "Esta tarefa só vence em " + fmtDate(pendingComplete.deadline) + " (" + pendingComplete.diffDias + " dias à frente). Tem certeza que quer concluir agora?"
+        : "Confirma a conclusão desta tarefa?",
+      /*#__PURE__*/React.createElement("div", {
+        style: { marginTop: 8, color: T.textS, fontWeight: 500, fontStyle: "italic" }
+      }, pendingComplete.title)
+    ), /*#__PURE__*/React.createElement("div", {
+      style: { display: "flex", gap: 8, justifyContent: "flex-end" }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: function onClick() { return setPendingComplete(null); },
+      style: mkB(null, true, T)
+    }, "Cancelar"), /*#__PURE__*/React.createElement("button", {
+      onClick: confirmComplete,
+      style: mkB(_pcCor, false, T)
+    }, /*#__PURE__*/React.createElement(_pcAlerta ? AlertTriangle : Check, { size: 13 }), _pcAlerta ? "Concluir mesmo assim" : "Concluir"))));
+  })(), pendingRecurEdit && /*#__PURE__*/React.createElement(OVL, {
     zi: 71,
     ov: T.ov
   }, /*#__PURE__*/React.createElement("div", {
@@ -12877,6 +13415,14 @@ function App() {
       }
     }, /*#__PURE__*/React.createElement(LayoutGrid, { size: 13 }), "Cards")
   ),
+  // [v10.7] Largura de coluna agora se ajusta arrastando a borda no cabecalho da
+  // tabela (estilo Excel) — ver os "handles" no cabecalho mais abaixo. Este botao so
+  // aparece quando ha alguma largura customizada, para poder voltar ao padrao.
+  viewMode === "tabela" && Object.keys(colWidths).length > 0 && /*#__PURE__*/React.createElement("button", {
+    title: "Restaurar largura padrao das colunas",
+    onClick: resetColWidths,
+    style: _objectSpread(_objectSpread({}, mkB(null, true, T)), {}, { padding: "6px 10px", fontSize: 12 })
+  }, "↺ Colunas"),
   /*#__PURE__*/React.createElement("select", {
     value: sortIdx,
     onChange: function onChange(ev) {
@@ -13234,7 +13780,9 @@ function App() {
     var isLate = t.deadline && t.deadline < new Date().toISOString().slice(0, 10) && t.status !== "concluida";
     return /*#__PURE__*/React.createElement("div", {
       key: t.id,
-      onClick: function onClick() { switchTab(t._eid); setShowSearch(false); setSearchQ(""); },
+      // [v10.7] clicar no resultado da busca ja abre a tarefa para edicao,
+      // em vez de so trocar de aba e deixar o usuario procurar de novo.
+      onClick: function onClick() { switchTab(t._eid); setShowSearch(false); setSearchQ(""); startEdit(t); },
       style: { display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid " + T.borderL, cursor: "pointer" },
       onMouseEnter: function onMouseEnter(ev) { ev.currentTarget.style.background = T.card; },
       onMouseLeave: function onMouseLeave(ev) { ev.currentTarget.style.background = "transparent"; }
@@ -13604,7 +14152,26 @@ function App() {
     suggestions: fSituacao,
     placeholder: "...",
     T: T
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }), editId ? /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: function onClick() {
+      return setSituacaoHistFor({ code: form.code, title: form.title });
+    },
+    style: {
+      marginTop: 6,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 4,
+      fontSize: 10.5,
+      fontWeight: 600,
+      color: T.textM,
+      background: "transparent",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      textDecoration: "underline"
+    }
+  }, /*#__PURE__*/React.createElement(Clock, { size: 11 }), "Ver hist\xF3rico") : null), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: T.textM,
@@ -13869,7 +14436,7 @@ function App() {
     }, viewMode === "tabela" && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "18px 90px 1fr 112px 100px 170px 90px 92px 56px",
+        gridTemplateColumns: gridColsEsteira(), // [v10.7] largura ajustavel por usuario
         gap: 10,
         padding: "0 12px 4px 12px",
         fontSize: 10.5,
@@ -13878,13 +14445,22 @@ function App() {
         textTransform: "uppercase",
         letterSpacing: "0.04em"
       }
-    }, /*#__PURE__*/React.createElement("span", null), /*#__PURE__*/React.createElement("span", null, "Prazo"), /*#__PURE__*/React.createElement("span", null, "Tarefa"), /*#__PURE__*/React.createElement("span", null, "Situa\xE7\xE3o"), /*#__PURE__*/React.createElement("span", null, "Cr\xE9dito"), /*#__PURE__*/React.createElement("span", null, "Cliente"), /*#__PURE__*/React.createElement("span", null, "Equipe"), /*#__PURE__*/React.createElement("span", { style: { textAlign: "center" } }, "Prioridade"), /*#__PURE__*/React.createElement("span", null)), list.map(function (task) {
+    }, /*#__PURE__*/React.createElement("span", null),
+       /*#__PURE__*/React.createElement(ColHeaderCell, { colKey: "prazo", label: "Prazo", T: T, dragging: draggingCol === "prazo" ? draggingSide : null, onStartDrag: startColDrag }),
+       /*#__PURE__*/React.createElement("span", null, "Tarefa"),
+       /*#__PURE__*/React.createElement(ColHeaderCell, { colKey: "situacao", label: "Situa\xE7\xE3o", T: T, dragging: draggingCol === "situacao" ? draggingSide : null, onStartDrag: startColDrag, leftHandle: true }),
+       /*#__PURE__*/React.createElement(ColHeaderCell, { colKey: "credito", label: "Cr\xE9dito", T: T, dragging: draggingCol === "credito" ? draggingSide : null, onStartDrag: startColDrag }),
+       /*#__PURE__*/React.createElement(ColHeaderCell, { colKey: "cliente", label: "Cliente", T: T, dragging: draggingCol === "cliente" ? draggingSide : null, onStartDrag: startColDrag }),
+       /*#__PURE__*/React.createElement(ColHeaderCell, { colKey: "equipe", label: "Equipe", T: T, dragging: draggingCol === "equipe" ? draggingSide : null, onStartDrag: startColDrag }),
+       /*#__PURE__*/React.createElement(ColHeaderCell, { colKey: "prioridade", label: "Prioridade", T: T, dragging: draggingCol === "prioridade" ? draggingSide : null, onStartDrag: startColDrag, extraStyle: { textAlign: "center" } }),
+       /*#__PURE__*/React.createElement("span", null)), list.map(function (task) {
       return viewMode === "tabela" ? /*#__PURE__*/React.createElement(TaskTableRow, {
         key: task.id,
         task: task,
         esteiras: esteiras,
         activeColor: activeE.color,
         showEst: isWS,
+        gridCols: gridColsEsteira(), // [v10.7] largura ajustavel por usuario
         canDelete: has("delete_task") && !bulkMode,
         canEdit: canTaskEdit(task),
         canComplete: has("complete_task"),
@@ -13896,7 +14472,8 @@ function App() {
         onToggle: toggle,
         onSelect: toggleSel,
         onEdit: startEdit,
-        onDelete: softDelete
+        onDelete: softDelete,
+        onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ code: t.code, title: t.title }); }
       }) : /*#__PURE__*/React.createElement(TaskCard, {
         key: task.id,
         task: task,
@@ -13912,7 +14489,8 @@ function App() {
         onToggle: toggle,
         onSelect: toggleSel,
         onEdit: startEdit,
-        onDelete: softDelete
+        onDelete: softDelete,
+        onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ code: t.code, title: t.title }); }
       });
     })));
   }))), showDupModal && renderDupModal()));
