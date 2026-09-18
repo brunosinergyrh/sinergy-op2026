@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.7)</title>
+  <title>SinergyRH – Operação - 2026 (v10.7.1)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -195,7 +195,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.7-2026-09-15";
+window.OP2026_BUILD = "v10.7.1";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -493,8 +493,18 @@ function _statusConcluida32(v) {
 // operacao por engano.
 // ══════════════════════════════════════════════════════════════════════════════
 function _verNum32(x) {
-  var m = /v(\d+)\.(\d+)\.(\d+)/.exec(String(x || ""));
-  return m ? ((+m[1]) * 1000000 + (+m[2]) * 1000 + (+m[3])) : null;
+  // [FIX v10.7.1 P-RECARGA-QUEBRADA] OP2026_BUILD tinha virado "v10.7-2026-09-15"
+  // (formato com data) durante uma publicacao anterior. Essa string nao bate com o
+  // padrao "vX.Y.Z" que esta funcao espera, entao _verNum32 devolvia null pros dois
+  // lados (local e remoto) e _checarBuildPublicado("vLocal === null...") desistia
+  // sempre, sem nunca detectar versao nova nem recarregar a aba sozinha. Agora aceita
+  // tambem "vX.Y" sem o terceiro numero (usa 0 como patch), pra nao quebrar de novo
+  // silenciosamente se o formato do build variar no futuro.
+  var s = String(x || "");
+  var m = /v(\d+)\.(\d+)\.(\d+)/.exec(s);
+  if (m) return (+m[1]) * 1000000 + (+m[2]) * 1000 + (+m[3]);
+  var m2 = /v(\d+)\.(\d+)/.exec(s);
+  return m2 ? (+m2[1]) * 1000000 + (+m2[2]) * 1000 : null;
 }
 var _build32 = { remoto: null, atrasada: false, checadoEm: 0, INTERVALO: 10 * 60 * 1000 };
 // [v10.6.37] Recarga automatica com contagem regressiva. Antes, uma aba atrasada so
@@ -1317,7 +1327,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.7-2026-09-15", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.7.1", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -6186,6 +6196,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
     isGerente = _refDash.isGerente,
     users = _refDash.users, // [v10.6.14]
     onReassign = _refDash.onReassign, // [v10.6.18]
+    onReassignCoord = _refDash.onReassignCoord, // [v10.7.1]
     memberNames = _refDash.memberNames || [], // [v10.6.18]
     inline = _refDash.inline;
   var e = React.createElement;
@@ -6200,6 +6211,8 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
   // [v10.6.18] Reatribuir analista direto pelo card "Usuários inválidos".
   var _reass = useState(null), reassignKey = _reass[0], setReassignKey = _reass[1]; // "<eid>|<taskId>"
   var _reassVal = useState([]), reassignVal = _reassVal[0], setReassignVal = _reassVal[1];
+  // [v10.7.1] valor em edicao pro card "Sem coordenador" (texto simples, nao array).
+  var _reassCoordVal = useState(""), reassignCoordVal = _reassCoordVal[0], setReassignCoordVal = _reassCoordVal[1];
 
   var canSeeAll = scope === "all";
   // Gerente: pode ver tudo do time (filtra por gerenteId) e ainda escolher coordenadora.
@@ -7239,23 +7252,86 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
       }, e(Pencil, { size: 11 }))
     );
   }
-  function unassignedItem(t) {
+  function unassignedItem(t, kind) {
     var es = estMap[t._eid];
     var missing = [];
     if (canSeeAll && noCoord(t)) missing.push("sem coordenador");
     if (canSeeAll && !t.gerenteId) missing.push("sem gerente");
     else if (isGerente && noCoord(t)) missing.push("sem coordenador");
     var ctx = [t.cliente, t.processo, t.coordenador].filter(Boolean).join(" · ");
-    return e("div", { key: t.id, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
-      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: "#f59e0b", flexShrink: 0 } }),
+    // [v10.7.1] mesmo padrao de reatribuicao rapida do card "Usuarios invalidos",
+    // agora tambem disponivel aqui: "analista" edita responsibles, "coord" edita
+    // o campo coordenador. Sem "kind" (ex.: card "Sem gerente"), comportamento
+    // permanece so leitura, como sempre foi.
+    var rKey = t._eid + "|" + t.id;
+    var canInlineEdit = kind === "analista" || kind === "coord";
+    var isReassigning = canInlineEdit && reassignKey === rKey;
+    return e("div", { key: t.id, style: { display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: "1px solid " + T.borderL } },
+      e("div", { style: { width: 6, height: 6, borderRadius: "50%", background: "#f59e0b", flexShrink: 0, marginTop: 5 } }),
       e("div", { style: { minWidth: 0, flex: 1 } },
         e("div", { style: { display: "flex", alignItems: "center", gap: 5, marginBottom: 1 } },
           es && e("span", { style: { fontSize: 9.5, fontWeight: 700, color: es.color, background: es.color + "1f", borderRadius: 20, padding: "0 6px", flexShrink: 0 } }, es.label),
           e("span", { style: { fontSize: 12, color: T.text, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, t.title || "(sem titulo)")
         ),
-        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ctx || "sem cliente/processo")
+        e("div", { style: { fontSize: 11, color: T.textD, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, ctx || "sem cliente/processo"),
+        isReassigning && kind === "analista" && e("div", { style: { marginTop: 6, display: "flex", flexDirection: "column", gap: 4, maxWidth: 260 } },
+          e(MultiAutoInput, {
+            values: reassignVal,
+            onChange: function (v) { return setReassignVal(v); },
+            suggestions: memberNames,
+            placeholder: "Adicionar analista",
+            T: T
+          }),
+          e("div", { style: { display: "flex", gap: 6 } },
+            e("button", {
+              onClick: function () {
+                if (onReassign) onReassign(t._eid, t.id, reassignVal);
+                setReassignKey(null);
+              },
+              style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 700, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+            }, e(Check, { size: 11 }), "Salvar"),
+            e("button", {
+              onClick: function () { return setReassignKey(null); },
+              style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 600, color: T.textM, background: "transparent", border: "1px solid " + T.borderL, borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+            }, e(X, { size: 11 }), "Cancelar")
+          )
+        ),
+        isReassigning && kind === "coord" && e("div", { style: { marginTop: 6, display: "flex", flexDirection: "column", gap: 4, maxWidth: 260 } },
+          e(AutoInput, {
+            value: reassignCoordVal,
+            onChange: function (v) { return setReassignCoordVal(v); },
+            suggestions: memberNames,
+            placeholder: "Nome do coordenador",
+            T: T
+          }),
+          e("div", { style: { display: "flex", gap: 6 } },
+            e("button", {
+              onClick: function () {
+                if (onReassignCoord) onReassignCoord(t._eid, t.id, reassignCoordVal);
+                setReassignKey(null);
+              },
+              style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 700, color: "#10b981", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+            }, e(Check, { size: 11 }), "Salvar"),
+            e("button", {
+              onClick: function () { return setReassignKey(null); },
+              style: { display: "flex", alignItems: "center", gap: 3, fontSize: 10.5, fontWeight: 600, color: T.textM, background: "transparent", border: "1px solid " + T.borderL, borderRadius: 6, padding: "2px 8px", cursor: "pointer" }
+            }, e(X, { size: 11 }), "Cancelar")
+          )
+        )
       ),
-      e("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#f59e0b", flexShrink: 0, whiteSpace: "nowrap" } }, missing.length ? missing.join(" · ") : "sem analista")
+      !isReassigning && e("span", { style: { fontSize: 10.5, fontWeight: 600, color: "#f59e0b", flexShrink: 0, whiteSpace: "nowrap" } }, missing.length ? missing.join(" · ") : "sem analista"),
+      !isReassigning && canInlineEdit && e("button", {
+        title: kind === "analista" ? "Atribuir analista" : "Atribuir coordenador",
+        onClick: function () {
+          if (kind === "analista") {
+            setReassignVal(Array.isArray(t.responsibles) ? t.responsibles.slice() : (t.responsibles ? [t.responsibles] : []));
+          } else {
+            setReassignCoordVal(t.coordenador || "");
+          }
+          setReassignKey(rKey);
+        },
+        style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, height: 18, border: "none", background: "transparent", color: T.textD, cursor: "pointer", flexShrink: 0, marginTop: 2 }
+      }, e(Pencil, { size: 11 }))
     );
   }
   function slaRow(r) {
@@ -7676,7 +7752,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 e("option", { value: "all" }, "Tudo")
               )), },
               { id: "semAnalista", node: section("Sem analista", AlertTriangle,
-              unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
+              unassigned.length ? e("div", { style: scrollBox }, unassigned.slice(0, 50).map(function (t) { return unassignedItem(t, "analista"); })) : emptyMsg("Nenhuma tarefa sem dono neste nível."),
               e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                 e("span", { style: { fontSize: 11, color: T.textD } }, unassigned.length + " tarefa" + (unassigned.length !== 1 ? "s" : "")),
                 unassigned.length > 0 && e("button", {
@@ -7685,7 +7761,7 @@ var DashboardModal = memo(function DashboardModal(_refDash) {
                 }, e(Download, { size: 11 }), "xlsx")
               )), },
               { id: "semCoord", node: unassignedCoord !== null && section("Sem coordenador", AlertTriangle,
-              unassignedCoord.length ? e("div", { style: scrollBox }, unassignedCoord.slice(0, 50).map(unassignedItem)) : emptyMsg("Nenhuma tarefa sem coordenador."),
+              unassignedCoord.length ? e("div", { style: scrollBox }, unassignedCoord.slice(0, 50).map(function (t) { return unassignedItem(t, "coord"); })) : emptyMsg("Nenhuma tarefa sem coordenador."),
               e("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
                 e("span", { style: { fontSize: 11, color: T.textD } }, unassignedCoord.length + " tarefa" + (unassignedCoord.length !== 1 ? "s" : "")),
                 unassignedCoord.length > 0 && e("button", {
@@ -9033,6 +9109,23 @@ function App() {
     var oldResp = respStr(old);
     var newResp = newResponsibles.join(", ");
     logAction("edited", (old.code || "") + " · " + (old.title || "") + " | Analista (reatribuição rápida): \"" + oldResp + "\" → \"" + newResp + "\"");
+  }, [mutate, logAction]);
+  // [v10.7.1] Reatribuir coordenador direto pelos cards "Sem coordenador" do painel
+  // gerencial (mesmo padrao ja usado em "Usuarios invalidos" e reassignResponsibles).
+  var reassignCoordenador = useCallback(function (eid, taskId, newCoordenador) {
+    var old = (tasksRef.current[eid] || []).find(function (t) { return t.id === taskId; });
+    if (!old) return;
+    var _valorRC = (newCoordenador || "").trim();
+    var _updRC = { coordenador: _valorRC };
+    var _marcaRC = _carimbarEdicaoManual(old, _updRC,
+                      (sessionRef.current && sessionRef.current.name) || "");
+    if (_marcaRC) _updRC.edicaoManual = _marcaRC;
+    var nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, eid, (tasksRef.current[eid] || []).map(function (t) {
+      if (t.id !== taskId) return t;
+      return _objectSpread(_objectSpread({}, t), _updRC);
+    })));
+    mutate(nt);
+    logAction("edited", (old.code || "") + " \u00B7 " + (old.title || "") + " | Coordenador (reatribui\u00E7\u00E3o r\u00E1pida): \"" + (old.coordenador || "-") + "\" \u2192 \"" + (_valorRC || "-") + "\"");
   }, [mutate, logAction]);
   var resolveGerente = function resolveGerente(name) {
     return usersRef.current.find(function (u) {
@@ -13290,6 +13383,7 @@ function App() {
     esteiras: esteiras,
     users: users, // [v10.6.14] para o card "Usuarios invalidos" (analista/coord sem cadastro)
     onReassign: reassignResponsibles, // [v10.6.18]
+    onReassignCoord: reassignCoordenador, // [v10.7.1]
     memberNames: userNames, // [v10.6.18]
     inline: true,
     T: T
