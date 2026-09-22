@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.7.2)</title>
+  <title>SinergyRH – Operação - 2026 (v10.7.3)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -195,7 +195,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.7.2";
+window.OP2026_BUILD = "v10.7.3";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -1342,7 +1342,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.7.2", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.7.3", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -4983,7 +4983,8 @@ var LogModal = memo(function LogModal(_ref12) {
    mudou, de->para) numa lista limpa. Nao exige nenhuma mudanca de banco de dados -
    e so uma nova forma de consultar o que ja e gravado hoje. */
 var SituacaoHistoryModal = memo(function SituacaoHistoryModal(_ref) {
-  var code = _ref.code,
+  var id = _ref.id,
+    code = _ref.code,
     title = _ref.title,
     onClose = _ref.onClose,
     T = _ref.T;
@@ -4998,14 +4999,30 @@ var SituacaoHistoryModal = memo(function SituacaoHistoryModal(_ref) {
     var cancelled = false;
     setLoading(true);
     setErr("");
-    var term = (code || title || "").trim();
-    if (!term) {
+    // [FIX v10.7.2 P-HISTORICO-MISTURADO] Antes, sem "code" (tarefas antigas/
+    // importadas pelo robo que nunca ganharam um codigo unico), a busca caia pro
+    // TITULO da tarefa — que nao e unico (tarefas de tipo rotineiro se repetem
+    // entre clientes) e misturava historico de tarefas diferentes.
+    // "id" e unico e existe desde a criacao de TODA tarefa (ao contrario de
+    // "codigo"), e agora fica gravado em cada log de edicao (marcador "[id:...]",
+    // ver logAction("edited", ...)). Por isso "id" e a chave PRIMARIA de busca.
+    // "code" entra como busca complementar so pra achar logs GRAVADOS ANTES dessa
+    // correcao (que tinham codigo mas nao tinham o marcador de id ainda). Nunca
+    // mais cai pro titulo sozinho — isso e o que causava a mistura.
+    var idMarker = id ? "[id:" + id + "]" : "";
+    if (!idMarker && !code) {
       setRows([]);
       setLoading(false);
       return;
     }
-    var q = "logs?action=eq.edited&target=ilike.*" + encodeURIComponent(term) +
-      "*&target=ilike.*" + encodeURIComponent("Sit.:") + "*&order=ts.desc&limit=200";
+    var ors = [];
+    if (idMarker) ors.push("target.ilike.*" + encodeURIComponent(idMarker) + "*");
+    if (code) ors.push("target.ilike.*" + encodeURIComponent(code) + "*");
+    // [v10.7.3] Virou historico de TODAS as alteracoes de campo, nao so Situacao —
+    // tira o filtro "Sit.:" da consulta; o filtro de quais entradas realmente tem
+    // mudanca de campo (ao inves de "sem alteracoes") fica a cargo de parseChanges,
+    // client-side, na hora de montar a lista.
+    var q = "logs?action=eq.edited&or=(" + ors.join(",") + ")&order=ts.desc&limit=200";
     sbFetch("GET", q).then(function (data) {
       if (cancelled) return;
       setRows(Array.isArray(data) ? data : []);
@@ -5016,15 +5033,23 @@ var SituacaoHistoryModal = memo(function SituacaoHistoryModal(_ref) {
       setLoading(false);
     });
     return function () { cancelled = true; };
-  }, [code, title]);
+  }, [id, code, title]);
 
-  // O log grava o diff inteiro da edicao (ex.: "Titulo: ... | Sit.: \"A\" -> \"B\" | Prazo: ...").
-  // Aqui isolamos so o pedaco de Situacao pra nao misturar com os outros campos.
-  function extractSit(target) {
+  // O log grava o diff inteiro da edicao num unico texto: primeiro pedaco e sempre
+  // o prefixo (codigo/titulo/marcador de id, ver logAction("edited", ...)) — nao e
+  // uma mudanca em si — seguido de zero ou mais "Campo: "de" -> "para"" separados
+  // por " | ". [v10.7.3] Antes isolava so o pedaco "Sit.:"; agora devolve TODOS os
+  // campos alterados naquele salvamento, pra virar um historico geral da tarefa.
+  function parseChanges(target) {
     var parts = String(target || "").split(" | ");
-    var hit = parts.filter(function (p) { return p.indexOf("Sit.:") === 0; });
-    return hit.length ? hit.join(" | ") : target;
+    return parts.slice(1); // pedaco 0 e sempre o prefixo, nunca uma mudanca
   }
+
+  // [v10.7.3] So entram entradas que de fato mudaram algum campo — um salvamento
+  // sem alteracao real (ex.: abriu e fechou sem editar nada) nao aparece na lista.
+  var visibleRows = rows
+    .map(function (r) { return { r: r, changes: parseChanges(r.target) }; })
+    .filter(function (x) { return x.changes.length > 0; });
 
   return React.createElement("div", {
     style: { width: "100%", maxWidth: 480, background: T.surface, borderRadius: 16, border: "1px solid " + T.border, overflow: "hidden", position: "relative" }
@@ -5037,23 +5062,27 @@ var SituacaoHistoryModal = memo(function SituacaoHistoryModal(_ref) {
     },
       React.createElement(Clock, { size: 16, color: T.textM }),
       React.createElement("div", null,
-        React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Hist\xF3rico de Situa\xE7\xE3o"),
+        React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: T.text } }, "Hist\xF3rico de Altera\xE7\xF5es"),
         React.createElement("div", { style: { fontSize: 11, color: T.textM, marginTop: 2 } }, (code ? code + " \xB7 " : "") + (title || ""))
       )
     ),
     React.createElement("div", { style: { maxHeight: 420, overflowY: "auto", padding: "8px 0" } },
       loading ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: T.textM, fontSize: 12 } }, "Carregando...")
       : err ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: "#ef4444", fontSize: 12 } }, err)
-      : rows.length === 0 ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: T.textM, fontSize: 12 } }, "Nenhuma mudan\xE7a de situa\xE7\xE3o registrada ainda.")
-      : rows.map(function (r, i) {
+      : (!id && !code) ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: T.textM, fontSize: 12, lineHeight: 1.5 } }, "N\xE3o foi poss\xEDvel identificar esta tarefa de forma \xFAnica para buscar o hist\xF3rico com seguran\xE7a.")
+      : visibleRows.length === 0 ? React.createElement("div", { style: { padding: 24, textAlign: "center", color: T.textM, fontSize: 12 } }, "Nenhuma altera\xE7\xE3o registrada ainda.")
+      : visibleRows.map(function (x, i) {
+          var r = x.r, changes = x.changes;
           return React.createElement("div", {
             key: r.id || i,
-            style: { padding: "10px 24px", borderBottom: i < rows.length - 1 ? "1px solid " + T.borderL : "none" }
+            style: { padding: "10px 24px", borderBottom: i < visibleRows.length - 1 ? "1px solid " + T.borderL : "none" }
           },
             React.createElement("div", { style: { fontSize: 11, color: T.textM, marginBottom: 3 } },
               fmtDT(r.ts) + "  \xB7  " + (r.user_name || "-")
             ),
-            React.createElement("div", { style: { fontSize: 12.5, color: T.text, fontWeight: 500 } }, extractSit(r.target))
+            changes.map(function (c, j) {
+              return React.createElement("div", { key: j, style: { fontSize: 12.5, color: T.text, fontWeight: 500, marginTop: j > 0 ? 3 : 0 } }, c);
+            })
           );
         })
     )
@@ -8091,7 +8120,7 @@ var TaskCard = memo(function TaskCard(_ref15) {
       /* [v10.7] "Ver historico" direto no card, sem precisar abrir a edicao -
          disponivel independente de canEdit, pra quem so quer consultar a situacao. */
       onShowHistory ? /*#__PURE__*/React.createElement("button", {
-        title: "Ver hist\xF3rico de situa\xE7\xE3o",
+        title: "Ver hist\xF3rico de altera\xE7\xF5es",
         onClick: function onClick() { return onShowHistory(task); },
         style: _objectSpread(_objectSpread({}, ICON_BTN), {}, { color: T.textD, padding: "3px 4px" })
       }, /*#__PURE__*/React.createElement(Clock, { size: 14 })) : null,
@@ -8448,7 +8477,7 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
     /*#__PURE__*/React.createElement("div", { style: { display: "flex", gap: 2, justifyContent: "flex-end", alignItems: "center" } },
       /* [v10.7] mesmo botao de historico da tabela, sem depender de canEdit */
       onShowHistory ? /*#__PURE__*/React.createElement("button", {
-        title: "Ver hist\xF3rico de situa\xE7\xE3o",
+        title: "Ver hist\xF3rico de altera\xE7\xF5es",
         onClick: function onClick(e) { e.stopPropagation(); return onShowHistory(task); },
         style: _objectSpread(_objectSpread({}, ICON_BTN), {}, { color: T.textD, padding: "3px 4px" })
       }, /*#__PURE__*/React.createElement(Clock, { size: 13 })) : null,
@@ -10918,7 +10947,14 @@ function App() {
               _diffs.push('Sit.: "' + (old.situacao || '-') + '" \u2192 "' + (form.situacao || '-') + '"');
             if ((old.dataCredito || '') !== (form.dataCredito || ''))
               _diffs.push('Credito: ' + (fmtDate(old.dataCredito) || '-') + ' \u2192 ' + (fmtDate(form.dataCredito) || '-'));
-            var _editPrefix = (old.code ? old.code + ' \xB7 ' : '') + old.title;
+            // [FIX v10.7.2 P-HISTORICO-MISTURADO] O log so guardava codigo (quando
+            // existia) + titulo em texto livre. Tarefa sem codigo (comum em
+            // importadas/antigas) so tinha o titulo — e titulo de tarefa rotineira se
+            // repete entre clientes, entao o Historico de Situacao acabava misturando
+            // tarefas diferentes. `id` e unico e existe desde a criacao de TODA tarefa
+            // (diferente de "codigo"), entao passa a ser gravado sempre, num marcador
+            // "[id:...]" que da pra buscar sem ambiguidade nenhuma.
+            var _editPrefix = (old.code ? old.code + ' \xB7 ' : '') + old.title + ' [id:' + old.id + ']';
             var _editDetail = _diffs.length > 0 ? _editPrefix + ' | ' + _diffs.join(' | ') : _editPrefix + ' (sem alteracoes)';
             return logAction("edited", _editDetail);
           case 3:
@@ -12093,6 +12129,7 @@ function App() {
     zi: 59,
     ov: T.ov
   }, /*#__PURE__*/React.createElement(SituacaoHistoryModal, {
+    id: situacaoHistFor.id,
     code: situacaoHistFor.code,
     title: situacaoHistFor.title,
     onClose: function onClose() { return setSituacaoHistFor(null); },
@@ -14273,7 +14310,9 @@ function App() {
   }), editId ? /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: function onClick() {
-      return setSituacaoHistFor({ code: form.code, title: form.title });
+      // [FIX v10.7.2] "form" nunca teve campo "code" (sempre vinha undefined aqui,
+      // um bug a parte); id da tarefa em edicao e o proprio editId, sempre presente.
+      return setSituacaoHistFor({ id: editId, title: form.title });
     },
     style: {
       marginTop: 6,
@@ -14591,7 +14630,7 @@ function App() {
         onSelect: toggleSel,
         onEdit: startEdit,
         onDelete: softDelete,
-        onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ code: t.code, title: t.title }); }
+        onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ id: t.id, code: t.code, title: t.title }); }
       }) : /*#__PURE__*/React.createElement(TaskCard, {
         key: task.id,
         task: task,
@@ -14608,7 +14647,7 @@ function App() {
         onSelect: toggleSel,
         onEdit: startEdit,
         onDelete: softDelete,
-        onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ code: t.code, title: t.title }); }
+        onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ id: t.id, code: t.code, title: t.title }); }
       });
     })));
   }))), showDupModal && renderDupModal()));
