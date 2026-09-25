@@ -8,12 +8,17 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root{ --bg:#0f172a; --panel:#ffffff; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0; --accent:#2563eb; --accent2:#0891b2; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; }
+  /* Cores e fonte padronizadas com o painel op2026 (tema claro): índigo #6366f1, fundo em degradê, Inter. */
+  :root{ --bg:#13131f; --panel:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --accent:#6366f1; --accent-escuro:#4f46e5; --accent-claro:#818cf8; --accent2:#0891b2; --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+    --surface:#ffffff; --surface2:#f8fafc; --surface3:#f1f5f9; --texto-sec:#475569; --card-borda:rgba(0,0,0,0.08);
+    --campo-bg:#ffffff; --perigo-bg:#fef2f2; --perigo-borda:#fecaca; --perigo-txt:#991b1b; --aviso-bg:#fffbeb; --aviso-borda:#fcd34d; --link:#6366f1; }
   *{box-sizing:border-box;}
-  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f1f5f9;color:var(--ink);}
+  body{margin:0;font-family:'Inter',system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(135deg,#f0f4ff,#f8fafc,#eef2ff) fixed;color:var(--ink);}
   #root{display:flex;min-height:100vh;}
-  .sidebar{width:280px;background:#0f172a;color:#e2e8f0;padding:16px;flex-shrink:0;}
+  .sidebar{width:280px;background:linear-gradient(180deg,#13131f,#0f0f1e);color:#e2e8f0;padding:16px;flex-shrink:0;}
   .sidebar h1{font-size:15px;margin:0 0 4px;color:#fff;}
   .sidebar .sub{font-size:11px;color:#94a3b8;margin-bottom:16px;}
   .side-search{width:100%;margin-bottom:6px;background:#1e293b !important;border:1px solid #334155 !important;color:#e2e8f0;}
@@ -22,24 +27,25 @@
   .client-item.active{background:var(--accent);color:#fff;}
   .client-item.arquivado{opacity:.55;}
   .client-item small{display:block;color:#94a3b8;font-size:10px;}
-  .client-item.active small{color:#dbeafe;}
+  .client-item.active small{color:#e0e7ff;}
   .client-item .dot{color:#fbbf24;font-size:16px;line-height:1;}
-  .btn{border:none;border-radius:6px;padding:7px 12px;font-size:12.5px;cursor:pointer;font-weight:600;font-family:inherit;}
+  .btn{border:none;border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer;font-weight:600;font-family:inherit;}
   .btn-primary{background:var(--accent);color:#fff;}
+  .btn-primary:hover:not(:disabled){background:var(--accent-escuro);}
   .btn-ghost{background:#1e293b;color:#e2e8f0;}
   .btn-outline{background:#fff;color:var(--accent);border:1px solid var(--accent);}
   .btn-danger{background:var(--bad);color:#fff;}
   .btn-sm{padding:4px 8px;font-size:11px;}
   .btn:disabled{opacity:.5;cursor:not-allowed;}
-  .link-btn{background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;padding:0;text-decoration:underline;font-family:inherit;}
+  .link-btn{background:none;border:none;color:var(--link);cursor:pointer;font-size:12px;padding:0;text-decoration:underline;font-family:inherit;}
   .link-btn.perigo{color:var(--bad);}
   .main{flex:1;padding:0 32px 24px;overflow:auto;min-width:0;}
-  .savebar{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f1f5f9;padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:14px;}
+  .savebar{position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f4f6ff;padding:10px 0;border-bottom:1px solid var(--line);margin-bottom:14px;}
   .dirty{color:var(--warn);font-weight:700;font-size:12.5px;}
   .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;gap:12px;flex-wrap:wrap;}
   .topbar h2{margin:0;font-size:19px;}
   .topbar .sub{font-size:12px;color:var(--muted);}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px;}
+  .card{background:var(--panel);border:1px solid var(--card-borda);border-radius:12px;padding:16px 18px;margin-bottom:16px;}
   .card h3{margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;}
   .badge{display:inline-block;font-size:10.5px;padding:2px 8px;border-radius:999px;font-weight:700;}
   .badge-on{background:#dcfce7;color:#166534;}
@@ -63,7 +69,7 @@
   .grid-preview table{min-width:1200px;}
   .note{background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:12px;padding:8px 12px;border-radius:8px;margin-bottom:14px;}
   .note-lock{background:#f0fdf4;border-color:#bbf7d0;color:#166534;}
-  .note-info{background:#eff6ff;border-color:#bfdbfe;color:#1e3a8a;}
+  .note-info{background:#eef2ff;border-color:#c7d2fe;color:#3730a3;}
   .status-pill{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:700;}
   .status-em_desenvolvimento{background:#f1f5f9;color:#475569;}
   .status-aguardando_cliente{background:#fef3c7;color:#92400e;}
@@ -168,10 +174,19 @@
   .indice-nome:hover{color:var(--accent);text-decoration:underline;}
   .faixa-competencia{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 14px;}
   .proc-toggle{background:#f1f5f9;border:1px solid var(--line);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:13px;flex-shrink:0;}
-  .login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;background:#f1f5f9;}
-  .login-box{width:100%;max-width:380px;padding:24px;}
-  .login-campo{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);margin-bottom:12px;}
-  .login-campo select,.login-campo input{font-size:14px;padding:8px;}
+  .login-wrap{flex:1;width:100%;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:linear-gradient(135deg,#f0f4ff,#f8fafc,#eef2ff);}
+  .login-col{width:100%;max-width:360px;}
+  .login-topo{text-align:center;margin-bottom:32px;}
+  .login-selo{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:14px;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);margin-bottom:16px;font-size:24px;font-weight:700;color:#818cf8;}
+  .login-marca{font-size:11px;font-weight:600;letter-spacing:.15em;color:var(--muted);text-transform:uppercase;margin-bottom:6px;}
+  .login-topo h1{margin:0;font-size:22px;font-weight:700;color:var(--ink);}
+  .login-topo p{margin:6px 0 0;font-size:13px;color:var(--muted);}
+  .login-box{background:#fff;border-radius:16px;border:1px solid rgba(0,0,0,0.08);padding:24px;}
+  .login-campo{display:block;margin-bottom:16px;}
+  .login-campo span{display:block;font-size:11px;color:var(--muted);margin-bottom:6px;}
+  .login-campo select,.login-campo input{width:100%;font-size:13px;padding:9px 12px;border-radius:8px;border:1px solid rgba(0,0,0,0.12);background:#f8fafc;color:var(--ink);font-family:inherit;}
+  .login-erro{font-size:12px;color:#ef4444;margin-bottom:14px;text-align:center;padding:8px;background:rgba(239,68,68,0.08);border-radius:6px;}
+  .login-entrar{width:100%;padding:10px;font-size:14px;border-radius:8px;}
   .usuario-logado{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#e2e8f0;font-size:13px;}
   .usuario-logado .muted-claro{color:#94a3b8;font-size:11px;}
   .nome-editavel{border:1px dashed transparent;border-radius:6px;background:transparent;color:var(--ink);font-family:inherit;}
@@ -186,16 +201,16 @@
   .linha-destaque td{animation:piscar 2.4s ease;}
   @keyframes piscar{0%,40%{background:#fde68a;}100%{background:transparent;}}
   /* ===== v4: versões por ano ===== */
-  .chip-ano{display:inline-block;background:#1e3a8a;color:#fff;border-radius:6px;padding:1px 8px;font-size:.8em;font-weight:700;vertical-align:middle;margin-right:4px;text-decoration:none;}
-  .chip-link{background:#e0e7ff;color:#1e3a8a;}
+  .chip-ano{display:inline-block;background:var(--accent);color:#fff;border-radius:6px;padding:1px 8px;font-size:.8em;font-weight:700;vertical-align:middle;margin-right:4px;text-decoration:none;}
+  .chip-link{background:#e0e7ff;color:#3730a3;}
   .chip-link:hover{background:#c7d2fe;}
-  .chip-link.on{background:#1e3a8a;color:#fff;}
+  .chip-link.on{background:var(--accent);color:#fff;}
   .anos-crono{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0 4px;}
-  .editando-ano{font-size:13px;color:#1e3a8a;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:2px 8px;margin-right:4px;}
+  .editando-ano{font-size:13px;color:#3730a3;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:2px 8px;margin-right:4px;}
   .sem-versao{border:1px dashed #93c5fd;background:#f8fbff;}
   .kpi-botao{cursor:pointer;text-align:left;font-family:inherit;border:1px dashed #93c5fd;}
   .kpi-botao:hover{background:#eff6ff;}
-  .vig-rotulo{font-weight:700;color:#1e3a8a;margin-right:4px;}
+  .vig-rotulo{font-weight:700;color:#3730a3;margin-right:4px;}
   .vig-linha{margin-top:4px;padding-top:4px;border-top:1px dotted var(--line);}
   .vig-nova{margin-top:6px;}
   .vig-nova select{font-size:12px;padding:2px 6px;color:var(--accent);border-color:#bfdbfe;}
@@ -226,6 +241,88 @@
   .legenda-cor{width:12px;height:12px;border-radius:3px;display:inline-block;}
   .lista-atencao{list-style:none;margin:0;padding:0;}
   .lista-atencao li{padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:13px;}
+  /* ===== Campos seguem o tema ===== */
+  select,input[type=text],input[type=number],input[type=date],input[type=search],input[type=password],textarea{background:var(--campo-bg);color:var(--ink);}
+  /* ===== MODO ESCURO — mesma paleta do painel op2026 (preferência em localStorage "sinergy_theme_<usuário>") ===== */
+  :root[data-tema="escuro"]{ color-scheme:dark;
+    --panel:#13131f; --ink:#f1f5f9; --muted:#94a3b8; --line:rgba(255,255,255,0.09); --accent-claro:#a5b4fc;
+    --surface:#13131f; --surface2:#181826; --surface3:#1d1d2c; --texto-sec:#cbd5e1; --card-borda:rgba(255,255,255,0.08);
+    --campo-bg:rgba(255,255,255,0.05); --perigo-bg:rgba(239,68,68,0.10); --perigo-borda:rgba(239,68,68,0.35); --perigo-txt:#fca5a5;
+    --aviso-bg:rgba(245,158,11,0.10); --aviso-borda:rgba(245,158,11,0.40); --link:#a5b4fc; --warn:#fbbf24; }
+  [data-tema="escuro"] body{background:linear-gradient(135deg,#0d0d1a,#12101f,#0a1525) fixed;}
+  [data-tema="escuro"] select option{background:#0f0f1e;color:#f1f5f9;}
+  [data-tema="escuro"] th{background:#181826;color:#cbd5e1;}
+  [data-tema="escuro"] .muted{color:#94a3b8;}
+  [data-tema="escuro"] .month-chip,[data-tema="escuro"] .status-step,[data-tema="escuro"] .cal-cell,[data-tema="escuro"] .cal-leg-item,
+  [data-tema="escuro"] .contador,[data-tema="escuro"] .barra-status,[data-tema="escuro"] .indice-proc,[data-tema="escuro"] .kpi,
+  [data-tema="escuro"] .empilhada,[data-tema="escuro"] .modal-box{background:#13131f;color:var(--ink);}
+  [data-tema="escuro"] .modal-overlay{background:rgba(0,0,0,0.72);}
+  [data-tema="escuro"] .savebar{background:#11111d;}
+  [data-tema="escuro"] .btn-outline{background:transparent;color:#a5b4fc;border-color:#6366f1;}
+  [data-tema="escuro"] .aba.on{color:#a5b4fc;border-bottom-color:#818cf8;}
+  [data-tema="escuro"] .note{background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.35);color:#fcd34d;}
+  [data-tema="escuro"] .note-lock{background:rgba(34,197,94,0.12);border-color:rgba(34,197,94,0.35);color:#86efac;}
+  [data-tema="escuro"] .note-info{background:rgba(99,102,241,0.14);border-color:rgba(99,102,241,0.4);color:#c7d2fe;}
+  [data-tema="escuro"] .status-em_desenvolvimento{background:rgba(148,163,184,0.15);color:#cbd5e1;}
+  [data-tema="escuro"] .status-aguardando_cliente{background:rgba(245,158,11,0.15);color:#fcd34d;}
+  [data-tema="escuro"] .status-aprovado_analista{background:rgba(99,102,241,0.2);color:#c7d2fe;}
+  [data-tema="escuro"] .status-aguardando_aprovacao_superior{background:rgba(245,158,11,0.25);color:#fde68a;}
+  [data-tema="escuro"] .status-aprovado{background:rgba(34,197,94,0.15);color:#86efac;}
+  [data-tema="escuro"] .status-desfeito{background:rgba(239,68,68,0.15);color:#fca5a5;}
+  [data-tema="escuro"] .status-step.done{background:rgba(99,102,241,0.2);color:#c7d2fe;border-color:rgba(99,102,241,0.4);}
+  [data-tema="escuro"] .cal-cell.off{background:#1a1a28;}
+  [data-tema="escuro"] .cal-cell.feriado{background:rgba(239,68,68,0.10);border-color:rgba(239,68,68,0.3);}
+  [data-tema="escuro"] .cal-feriado-nome{color:#fca5a5;}
+  [data-tema="escuro"] .cal-item{filter:brightness(1.45) saturate(1.1);}
+  [data-tema="escuro"] .contador.on{box-shadow:0 0 0 2px rgba(99,102,241,0.4);}
+  [data-tema="escuro"] .linha-clicavel:hover td{background:rgba(255,255,255,0.04);}
+  [data-tema="escuro"] .linha-clicavel.sel td{background:rgba(99,102,241,0.15);}
+  [data-tema="escuro"] .trilha-ponto{background:rgba(255,255,255,0.12);}
+  [data-tema="escuro"] .trilha-ponto.on{background:var(--accent);}
+  [data-tema="escuro"] .btn-alerta{background:rgba(245,158,11,0.15);color:#fcd34d;border-color:rgba(245,158,11,0.4);}
+  [data-tema="escuro"] .indice-item{border-bottom-color:rgba(255,255,255,0.06);}
+  [data-tema="escuro"] .proc-toggle{background:#1d1d2c;color:var(--ink);}
+  [data-tema="escuro"] .nome-editavel:hover{background:#181826;}
+  [data-tema="escuro"] .nome-editavel:focus{background:#13131f;}
+  [data-tema="escuro"] .proc-resumo{color:#cbd5e1;}
+  [data-tema="escuro"] .badge-on{background:rgba(34,197,94,0.15);color:#86efac;}
+  [data-tema="escuro"] .badge-off{background:rgba(148,163,184,0.15);color:#94a3b8;}
+  [data-tema="escuro"] .badge-months{background:rgba(99,102,241,0.2);color:#c7d2fe;}
+  [data-tema="escuro"] .badge-padrao,[data-tema="escuro"] .badge-alerta{background:rgba(245,158,11,0.15);color:#fcd34d;}
+  [data-tema="escuro"] .badge-extra{background:rgba(139,92,246,0.18);color:#c4b5fd;}
+  [data-tema="escuro"] .linha-alerta{background:rgba(245,158,11,0.10);color:#fcd34d;}
+  [data-tema="escuro"] .chip-link{background:rgba(99,102,241,0.2);color:#c7d2fe;}
+  [data-tema="escuro"] .chip-link:hover{background:rgba(99,102,241,0.32);}
+  [data-tema="escuro"] .chip-link.on{background:var(--accent);color:#fff;}
+  [data-tema="escuro"] .editando-ano{background:rgba(99,102,241,0.15);color:#c7d2fe;border-color:rgba(99,102,241,0.4);}
+  [data-tema="escuro"] .sem-versao{border-color:#6366f1;background:rgba(99,102,241,0.06);}
+  [data-tema="escuro"] .kpi-botao:hover{background:rgba(99,102,241,0.12);}
+  [data-tema="escuro"] .vig-rotulo{color:#c7d2fe;}
+  [data-tema="escuro"] .vig-nova select{border-color:rgba(99,102,241,0.5);color:#a5b4fc;}
+  [data-tema="escuro"] .kpi-l{color:#cbd5e1;}
+  [data-tema="escuro"] .serie-trilho{background:rgba(255,255,255,0.08);}
+  [data-tema="escuro"] .lista-atencao li{border-bottom-color:rgba(255,255,255,0.06);}
+  [data-tema="escuro"] .resp-cliente{color:#22d3ee;}
+  [data-tema="escuro"] .resp-sinergy{color:#a78bfa;}
+  [data-tema="escuro"] .resp-bpo{color:#2dd4bf;}
+  [data-tema="escuro"] .login-wrap{background:linear-gradient(135deg,#0d0d1a,#12101f,#0a1525);}
+  [data-tema="escuro"] .login-box{background:#13131f;border-color:rgba(255,255,255,0.08);}
+  [data-tema="escuro"] .login-campo select,[data-tema="escuro"] .login-campo input{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.1);color:#f1f5f9;}
+  .menu-dados{margin-top:14px;font-size:12.5px;}
+  .menu-dados summary{cursor:pointer;list-style:none;color:#94a3b8;padding:6px 8px;border-radius:8px;user-select:none;}
+  .menu-dados summary::-webkit-details-marker{display:none;}
+  .menu-dados summary:hover{background:rgba(255,255,255,0.06);color:#e2e8f0;}
+  .menu-dados[open] summary{color:#e2e8f0;}
+  .menu-dados-corpo{display:flex;flex-direction:column;gap:2px;padding:6px;margin-top:4px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(255,255,255,0.03);}
+  .menu-dados-info{font-size:11px;color:#94a3b8;padding:2px 6px 6px;}
+  .menu-dados-item{background:transparent;border:none;color:#e2e8f0;text-align:left;padding:7px 8px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12.5px;}
+  .menu-dados-item:hover{background:rgba(255,255,255,0.08);}
+  .menu-dados-item.perigo{color:#fca5a5;}
+  .menu-dados-local summary{color:#fde68a;}
+  .botao-tema{background:transparent;border:1px solid rgba(255,255,255,0.15);color:#e2e8f0;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit;}
+  .botao-tema:hover{background:rgba(255,255,255,0.08);}
+  .login-tema{display:flex;justify-content:center;margin-top:14px;}
+  .login-tema .botao-tema{color:var(--muted);border-color:var(--card-borda);}
   @media (max-width: 1100px){ .layout-crono{grid-template-columns:1fr;} .indice-proc{position:static;max-height:none;} }
   @media (max-width: 900px){
     #root{flex-direction:column;}
@@ -349,6 +446,18 @@
   function consumirHandoff(){
     try { const h = JSON.parse(localStorage.getItem(HANDOFF_KEY) || "null"); localStorage.removeItem(HANDOFF_KEY); return h && Date.now() - h.em < 120000 ? h : null; } catch(e){ return null; }
   }
+  // Tema claro/escuro: MESMAS chaves do painel (mesmo endereço = mesmo localStorage), então a escolha vale nos dois.
+  // Sem nada salvo, escuro — igual ao painel.
+  function temaSalvo(uid){
+    try { const v = (uid && localStorage.getItem("sinergy_theme_" + uid)) || localStorage.getItem("sinergy_theme_default"); return v === "light" ? "claro" : "escuro"; }
+    catch(e){ return "escuro"; }
+  }
+  function aplicarTema(t){ document.documentElement.setAttribute("data-tema", t === "claro" ? "claro" : "escuro"); }
+  function salvarTema(t, uid){
+    const v = t === "claro" ? "light" : "dark";
+    try { if(uid) localStorage.setItem("sinergy_theme_" + uid, v); localStorage.setItem("sinergy_theme_default", v); } catch(e){}
+  }
+  aplicarTema(temaSalvo((lerSessao() || {}).id)); // antes de desenhar a tela, sem piscar
   // Grupos do painel → grupos do cronograma (os 4 base têm o mesmo papel; "coord" no painel = "coordenador" aqui).
   const MAPA_GRUPOS_PAINEL = { coord: "coordenador" };
   function perfilDoGrupoPainel(groupId){ return MAPA_GRUPOS_PAINEL[groupId] || groupId || "analista"; }
@@ -2727,12 +2836,12 @@ function DesdobrarBeneficioPainel({ processo, onConfirmar, onFechar }){
     onConfirmar(montarBlocosDeBeneficio(processo, grupos, nomeOutros));
   }
   return (
-    <div className="card" style={{background:"#f8fafc", border:"1px dashed #94a3b8"}}>
+    <div className="card" style={{background:"var(--surface2)", border:"1px dashed #94a3b8"}}>
       <strong style={{fontSize:12.5}}>Desdobrar por tipo de benefício</strong>
       <p className="muted" style={{margin:"4px 0 8px"}}>Para cada tipo, escolha o cronograma. Tipos no <strong>mesmo número</strong> compartilham um bloco só (ex.: VA e VR no 1, VT no 2).</p>
       <div style={{display:"flex", flexWrap:"wrap", gap:10, alignItems:"center"}}>
         {TIPOS_BENEFICIO_PADRAO.map(t => (
-          <label key={t} className="badge" style={{background: grupos[t] ? "#dbeafe":"#fff", color: grupos[t] ? "#1e3a8a":"#475569", border:"1px solid var(--line)", display:"flex", alignItems:"center", gap:6, padding:"4px 8px"}}>
+          <label key={t} className="badge" style={{background: grupos[t] ? "#e0e7ff":"#fff", color: grupos[t] ? "#3730a3":"#475569", border:"1px solid var(--line)", display:"flex", alignItems:"center", gap:6, padding:"4px 8px"}}>
             <strong>{t}</strong>
             <select value={grupos[t] || 0} onChange={e=>setGrupos({ ...grupos, [t]: Number(e.target.value) })} aria-label={"Cronograma do " + t}>
               <option value={0}>não tem</option>
@@ -3102,7 +3211,7 @@ function ProcessoCard({ processo, onUpdate, onDesdobrar, mesReferencia, ano, som
                 <tr><td colSpan={colunas} className="linha-alerta">⚠ {calc.alertas.join(" · ")}</td></tr>
               )}
               {linhaExcecao===idx && (
-                <tr id={"exc-" + processo.id + "-" + idx}><td colSpan={colunas} style={{background:"#f8fafc", whiteSpace:"normal"}}>
+                <tr id={"exc-" + processo.id + "-" + idx}><td colSpan={colunas} style={{background:"var(--surface2)", whiteSpace:"normal"}}>
                   <div className="rule-editor">
                     <span className="muted">Ajuste só para a competência {MESES[mesPreview-1]}/{ano}:</span>
                     <input type="date" value={excData} onChange={e=>setExcData(e.target.value)} />
@@ -3161,7 +3270,7 @@ function GradeAnual({ cliente, ano }){
               const idx = processo.eventos.indexOf(ev);
               return (
                 <tr key={processo.id + ev.id}>
-                  {ev === eventosVisiveis[0] && <td rowSpan={eventosVisiveis.length} style={{fontWeight:700, background:"#f8fafc", whiteSpace:"normal"}}>{processo.nome}</td>}
+                  {ev === eventosVisiveis[0] && <td rowSpan={eventosVisiveis.length} style={{fontWeight:700, background:"var(--surface2)", whiteSpace:"normal"}}>{processo.nome}</td>}
                   <td title={infoCategoria(categoriaDoEvento(processo, ev), processo.nome).label}>
                     <span className="cat-dot" style={{background: infoCategoria(categoriaDoEvento(processo, ev), processo.nome).cor}} />{ev.nome}
                   </td>
@@ -3171,7 +3280,7 @@ function GradeAnual({ cliente, ano }){
                     if(!mesesAtivos.has(mNum)) return <td key={m} className="muted">—</td>;
                     const calc = porMes[mNum][idx];
                     const foraDoMes = calc && calc.data && ev.regra.tipo !== "recorrencia" && !calc.ocorrencias && (calc.data.getMonth()+1 !== mNum || calc.data.getFullYear() !== ano);
-                    return <td key={m} style={foraDoMes ? {fontStyle:"italic", color:"#475569"} : undefined}
+                    return <td key={m} style={foraDoMes ? {fontStyle:"italic", color:"var(--texto-sec)"} : undefined}
                       title={foraDoMes ? "Competência " + m + ", data real em " + MESES[calc.data.getMonth()] : undefined}>
                       {celulaGrade(ev, calc)}<Alertas lista={calc && calc.alertas} />
                     </td>;
@@ -3192,7 +3301,7 @@ function GradeAnual({ cliente, ano }){
 function estiloChip(it){
   const cor = infoCategoria(it.categoria, it.processo).cor;
   return it.responsavel === "CLIENTE"
-    ? { color: cor, background: "#fff", border: "1px dashed " + cor, borderLeft: "3px solid " + cor }
+    ? { color: cor, background: "var(--surface)", border: "1px dashed " + cor, borderLeft: "3px solid " + cor }
     : { color: cor, background: cor + "1f", border: "1px solid " + cor + "33", borderLeft: "3px solid " + cor };
 }
 function CalendarioMensal({ cliente, ano, mes, soSinergy, onSoSinergy, onNavegar }){
@@ -3274,9 +3383,9 @@ function PainelConflitos({ conflitos, ano, mes, soSinergy, onSoSinergy, recolhid
   const [aberto, setAberto] = useState(!recolhido);
   if(!conflitos.length) return null;
   return (
-    <div className="card" style={{background:"#fef2f2", border:"1px solid #fecaca", padding: aberto ? undefined : "10px 16px"}}>
-      <h3 style={{color:"#991b1b", fontSize:13.5, marginBottom: aberto ? 10 : 0}}>
-        <button type="button" className="proc-titulo" style={{color:"#991b1b", fontSize:13.5}} onClick={()=>setAberto(!aberto)} aria-expanded={aberto}>
+    <div className="card" style={{background:"var(--perigo-bg)", border:"1px solid var(--perigo-borda)", padding: aberto ? undefined : "10px 16px"}}>
+      <h3 style={{color:"var(--perigo-txt)", fontSize:13.5, marginBottom: aberto ? 10 : 0}}>
+        <button type="button" className="proc-titulo" style={{color:"var(--perigo-txt)", fontSize:13.5}} onClick={()=>setAberto(!aberto)} aria-expanded={aberto}>
           {aberto ? "▾" : "▸"} ⚠ {conflitos.length} dia(s) com entregas de processos diferentes em {MESES_LONGOS[mes-1]}/{ano} (datas reais)
         </button>
         <label className="muted" style={{fontWeight:400, display:"flex", gap:4, alignItems:"center"}}>
@@ -3694,7 +3803,7 @@ function AssistenteWizard({ dadosCadastro, modelo, ano, onCancelar, onCriar }){
         <p className="muted">Cronograma: <strong>{dadosCadastro?.nome}</strong> ({(dadosCadastro?.clientesIds || []).length} cliente(s)) · Modelo: <strong>{modelo ? modelo.nome : "padrão"}</strong>. Responda só as datas-chave; o resto da cadeia vem do Modelo, com os mesmos intervalos, e dá pra ajustar depois.</p>
 
         {procsFolha.length > 0 && (
-          <div className="card" style={{background:"#f8fafc", padding:"12px 14px"}}>
+          <div className="card" style={{background:"var(--surface2)", padding:"12px 14px"}}>
             <h3 style={{fontSize:13}}>Folha de Pagamento Mensal — amarrada ao Contábil</h3>
             <p className="muted" style={{marginTop:0}}>O contábil é a âncora: a folha é calculada pra trás a partir dele e nenhuma etapa de folha pode cair depois dele.</p>
             <div className="wizard-q">
@@ -3814,7 +3923,9 @@ function VincularClientesModal({ base, selecionadosIniciais, cronogramaId, vincu
   const emOutro = c => (vinculoDe[c.id] || []).filter(v => v.id !== cronogramaId);
   const termo = normalizar(busca);
   const termoDigitos = soDigitos(busca);
+  const jaVinculados = new Set(selecionadosIniciais || []);
   const filtrados = base
+    .filter(c => c.ativo !== false || jaVinculados.has(c.id)) // inativo só aparece se já estava vinculado
     .filter(c => !soLivres || sel.has(c.id) || !emOutro(c).length)
     .filter(c => !termo || normalizar(c.razaoSocial).includes(termo) || normalizar(c.codigo).includes(termo) || normalizar(c.grupo).includes(termo) || (termoDigitos.length >= 3 && c.documento.includes(termoDigitos)))
     .sort((a,b) => (a.razaoSocial||"").localeCompare(b.razaoSocial||"", "pt-BR"));
@@ -3830,6 +3941,7 @@ function VincularClientesModal({ base, selecionadosIniciais, cronogramaId, vincu
       const n = normalizarDocumento(t);
       const c = (n.valido && porDoc[n.doc]) || porCod[normalizar(t)];
       if(!c){ naoAchados.push(t); return; }
+      if(c.ativo === false && !jaVinculados.has(c.id)){ ocupados.push((c.razaoSocial || fmtDocumento(c.documento)) + " (inativo na base)"); return; }
       if(emOutro(c).length){ ocupados.push((c.razaoSocial || fmtDocumento(c.documento)) + " → " + emOutro(c)[0].nome); return; }
       achados.push(c.id);
     });
@@ -3848,7 +3960,7 @@ function VincularClientesModal({ base, selecionadosIniciais, cronogramaId, vincu
           <button className="btn btn-sm btn-outline" onClick={()=>setColar(!colar)}>{colar ? "Fechar colagem" : "Colar lista de CNPJs/códigos"}</button>
         </div>
         {colar && (
-          <div className="card" style={{background:"#f8fafc", padding:12}}>
+          <div className="card" style={{background:"var(--surface2)", padding:12}}>
             <textarea rows={4} placeholder={"Cole aqui uma coluna do Excel com CNPJs (com ou sem pontuação) ou códigos — um por linha"} value={txt} onChange={e=>setTxt(e.target.value)} />
             <div style={{display:"flex", gap:8, alignItems:"center", marginTop:6, flexWrap:"wrap"}}>
               <button className="btn btn-sm btn-primary" onClick={aplicarColagem} disabled={!txt.trim()}>Marcar os encontrados</button>
@@ -3935,7 +4047,7 @@ function NovoCronogramaForm({ modelos, base, vinculoDe, ano, anosEstado, onCance
             {verPrevia ? "▾ esconder as datas da folha deste Modelo" : "▸ ver as datas da folha deste Modelo"}
           </button>
           {verPrevia && modeloEscolhido && (
-            <div className="card" style={{background:"#f8fafc", padding:"10px 12px", marginTop:6, marginBottom:0}}>
+            <div className="card" style={{background:"var(--surface2)", padding:"10px 12px", marginTop:6, marginBottom:0}}>
               <PreviaFolha processos={modeloEscolhido.processos} ano={anoNovo} titulo="Folha deste Modelo" />
             </div>
           )}
@@ -4091,8 +4203,10 @@ function ClienteBaseForm({ inicial, base, onSalvar, onFechar }){
   );
 }
 
-function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma, podeEditar = true }){
+function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarBase, onAbrirCronograma, podeEditar = true }){
   const [busca, setBusca] = useState("");
+  const [selecionados, setSelecionados] = useState(() => new Set());
+  const [fAtivo, setFAtivo] = useState("ativos"); // ativos | inativos | todos
   const [filtro, setFiltro] = useState("todos");
   const [analise, setAnalise] = useState(null);
   const [colarAberto, setColarAberto] = useState(false);
@@ -4108,11 +4222,13 @@ function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma,
     const [campo, nome] = fResp.split("|"); return c[campo] === nome;
   };
   const lista = base
+    .filter(c => fAtivo === "todos" || (fAtivo === "ativos" ? c.ativo !== false : c.ativo === false))
     .filter(c => filtro === "todos" || (filtro === "sem" ? !(vinculoDe[c.id] || []).length : (vinculoDe[c.id] || []).length))
     .filter(casaResp)
     .filter(c => !termo || [c.razaoSocial, c.codigo, c.grupo, c.gerente, c.coordenador, c.analista].some(v => normalizar(v).includes(termo)) || (termoDigitos.length >= 3 && c.documento.includes(termoDigitos)))
     .sort((a,b) => (a.razaoSocial||"").localeCompare(b.razaoSocial||"", "pt-BR"));
-  const semCronograma = base.filter(c => !(vinculoDe[c.id] || []).length).length;
+  const nInativos = base.filter(c => c.ativo === false).length;
+  const semCronograma = base.filter(c => c.ativo !== false && !(vinculoDe[c.id] || []).length).length;
 
   function analisarLinhas(rows){
     const itens = mapearLinhasClientes(rows);
@@ -4137,11 +4253,49 @@ function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma,
     if(reg.id) await onAtualizarBase(b => b.map(c => c.id === reg.id ? { ...reg, atualizadoEm: new Date().toISOString() } : c), "Cliente atualizado.");
     else await onAtualizarBase(b => [...b, { ...reg, id: novoId("emp"), criadoEm: new Date().toISOString() }], "Cliente adicionado.");
   }
+  const nomeCli = c => c.razaoSocial || fmtDocumento(c.documento);
+  const descVinculos = l => l.map(x => '"' + x.nome + '" (' + x.ano + ")").join(", ");
   async function remover(c){
-    const v = vinculoDe[c.id] || [];
-    if(v.length){ ui.alert('Este cliente está vinculado ao cronograma "' + v[0].nome + '". Desvincule lá antes de remover da base.'); return; }
+    const v = vinculoTodosAnos[c.id] || vinculoDe[c.id] || [];
+    if(v.length){
+      if(c.ativo === false){ ui.alert('"' + nomeCli(c) + '" tem cronograma vinculado (' + descVinculos(v) + ") e não pode ser excluído. Ele já está inativo — o histórico fica preservado."); return; }
+      if(await ui.confirm('"' + nomeCli(c) + '" tem cronograma vinculado (' + descVinculos(v) + ") e não pode ser excluído, para não perder o histórico.\n\nQuer INATIVAR? Ele some da escolha de novos vínculos, mas continua nos cronogramas que já o usam.", { titulo:"Cliente com cronograma", okLabel:"Inativar" }))
+        await alterarAtivo([c], false);
+      return;
+    }
     if(!(await ui.confirm('Remover "' + (c.razaoSocial || fmtDocumento(c.documento)) + '" da base de clientes?', { okLabel:"Remover", perigo:true }))) return;
     await onAtualizarBase(b => b.filter(x => x.id !== c.id), "Cliente removido da base.");
+    setSelecionados(s => { const n = new Set(s); n.delete(c.id); return n; });
+  }
+  // Ativar/inativar (um ou vários). Inativo não aparece para novos vínculos; os vínculos atuais continuam.
+  async function alterarAtivo(lista, ativo){
+    const ids = new Set(lista.map(c => c.id));
+    const agora = new Date().toISOString();
+    await onAtualizarBase(b => b.map(c => ids.has(c.id) ? { ...c, ativo, atualizadoEm: agora, ...(ativo ? { inativadoEm: null } : { inativadoEm: agora }) } : c),
+      lista.length + " cliente(s) " + (ativo ? "reativado(s)." : "inativado(s)."));
+    setSelecionados(new Set());
+  }
+  // Excluir em lote: só os que não estão em nenhum cronograma (qualquer ano); os vinculados são listados e ficam.
+  async function removerSelecionados(){
+    const alvo = base.filter(c => selecionados.has(c.id));
+    if(!alvo.length) return;
+    const vinculados = alvo.filter(c => (vinculoTodosAnos[c.id] || vinculoDe[c.id] || []).length);
+    const livres = alvo.filter(c => !vinculados.includes(c));
+    if(!livres.length){
+      const paraInativar = vinculados.filter(c => c.ativo !== false);
+      if(paraInativar.length && await ui.confirm("Nenhum dos " + alvo.length + " selecionado(s) pode ser excluído: todos têm cronograma vinculado (o histórico seria perdido).\n\nQuer INATIVAR os " + paraInativar.length + " que ainda estão ativos?", { titulo:"Excluir em lote", okLabel:"Inativar " + paraInativar.length }))
+        await alterarAtivo(paraInativar, false);
+      else if(!paraInativar.length) ui.alert("Nenhum dos selecionados pode ser excluído: todos têm cronograma vinculado (e já estão inativos).", { titulo:"Excluir em lote" });
+      return;
+    }
+    const lista = l => l.slice(0, 8).map(c => "• " + nomeCli(c)).join("\n") + (l.length > 8 ? "\n… e mais " + (l.length - 8) : "");
+    const ok = await ui.confirm("Remover " + livres.length + " cliente(s) da base?\n\n" + lista(livres) +
+      (vinculados.length ? "\n\n" + vinculados.length + " ficam (têm cronograma — se quiser, use \u201cInativar selecionados\u201d):\n" + vinculados.slice(0, 8).map(c => "• " + nomeCli(c) + " → " + descVinculos(vinculoTodosAnos[c.id] || vinculoDe[c.id])).join("\n") + (vinculados.length > 8 ? "\n… e mais " + (vinculados.length - 8) : "") : ""),
+      { titulo:"Excluir em lote", okLabel:"Remover " + livres.length, perigo:true });
+    if(!ok) return;
+    const ids = new Set(livres.map(c => c.id));
+    await onAtualizarBase(b => b.filter(x => !ids.has(x.id)), livres.length + " cliente(s) removido(s) da base.");
+    setSelecionados(new Set());
   }
 
   return (
@@ -4149,7 +4303,7 @@ function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma,
       <div className="topbar">
         <div>
           <h2>🏢 Base de clientes</h2>
-          <div className="sub">{base.length} cliente(s) · {semCronograma} sem cronograma. Um CNPJ pertence a um cronograma só; o vínculo é feito no cronograma.</div>
+          <div className="sub">{base.length - nInativos} cliente(s) ativo(s){nInativos ? " · " + nInativos + " inativo(s)" : ""} · {semCronograma} ativo(s) sem cronograma. Um CNPJ pertence a um cronograma só; o vínculo é feito no cronograma.</div>
         </div>
         {podeEditar ? <div className="toolbar">
           <input ref={inputArquivo} type="file" accept=".xlsx,.csv,.txt" style={{display:"none"}} onChange={escolherArquivo} />
@@ -4172,6 +4326,11 @@ function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma,
       <div className="card">
         <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginBottom:10}}>
           <input type="search" placeholder="Buscar por nome, CNPJ, código, grupo ou responsável…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:220}} />
+          <select value={fAtivo} onChange={e=>setFAtivo(e.target.value)} aria-label="Ativos ou inativos">
+            <option value="ativos">Ativos</option>
+            <option value="inativos">Inativos ({nInativos})</option>
+            <option value="todos">Ativos e inativos</option>
+          </select>
           <select value={filtro} onChange={e=>setFiltro(e.target.value)} aria-label="Filtrar por cronograma">
             <option value="todos">Todos</option>
             <option value="sem">Sem cronograma</option>
@@ -4186,18 +4345,33 @@ function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma,
           </select>
           <span className="muted">{lista.length} na lista</span>
         </div>
+        {podeEditar && selecionados.size > 0 && (
+          <div className="note" style={{display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom:10}}>
+            <strong>{selecionados.size} selecionado(s)</strong>
+            <button className="btn btn-sm btn-outline" onClick={()=>alterarAtivo(base.filter(c => selecionados.has(c.id) && c.ativo !== false), false)} disabled={!base.some(c => selecionados.has(c.id) && c.ativo !== false)}>⏸ Inativar selecionados</button>
+            <button className="btn btn-sm btn-outline" onClick={()=>alterarAtivo(base.filter(c => selecionados.has(c.id) && c.ativo === false), true)} disabled={!base.some(c => selecionados.has(c.id) && c.ativo === false)}>▶ Reativar selecionados</button>
+            <button className="btn btn-sm btn-danger" onClick={removerSelecionados}>🗑 Excluir selecionados</button>
+            <button className="btn btn-sm btn-ghost" onClick={()=>setSelecionados(new Set())}>Limpar seleção</button>
+            <span className="muted">Quem tem cronograma (qualquer ano) não é excluído — use Inativar para manter o histórico.</span>
+          </div>
+        )}
         {!base.length ? (
           <div className="muted" style={{padding:"20px 0"}}>A base está vazia. Importe a planilha com seus CNPJs (botão acima) — dá pra usar a <button className="link-btn" onClick={()=>baixarModeloPlanilha()}>planilha modelo</button> ou a sua própria, desde que tenha uma coluna de CNPJ.</div>
         ) : (
           <div className="table-wrap"><table>
-            <thead><tr><th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th><th>Responsáveis</th><th>Cronograma</th><th style={{width:90}}></th></tr></thead>
+            <thead><tr>{podeEditar && <th style={{width:34}}>
+              <input type="checkbox" aria-label="Selecionar todos da lista" checked={lista.length > 0 && lista.every(c => selecionados.has(c.id))}
+                onChange={e => setSelecionados(s => { const n = new Set(s); lista.forEach(c => e.target.checked ? n.add(c.id) : n.delete(c.id)); return n; })} />
+            </th>}<th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th><th>Responsáveis</th><th>Cronograma</th><th style={{width:120}}></th></tr></thead>
             <tbody>
               {lista.map(c => {
                 const v = vinculoDe[c.id] || [];
                 const valido = normalizarDocumento(c.documento).valido;
                 return (
                   <tr key={c.id}>
-                    <td style={{whiteSpace:"normal"}}>{c.razaoSocial || "—"}</td>
+                    {podeEditar && <td><input type="checkbox" aria-label={"Selecionar " + nomeCli(c)} checked={selecionados.has(c.id)}
+                      onChange={e => setSelecionados(s => { const n = new Set(s); e.target.checked ? n.add(c.id) : n.delete(c.id); return n; })} /></td>}
+                    <td style={{whiteSpace:"normal"}}>{c.razaoSocial || "—"}{c.ativo === false && <> <span className="badge badge-off" title={c.inativadoEm ? "Inativado em " + fmtHora(c.inativadoEm) : "Inativo"}>inativo</span></>}</td>
                     <td className={valido ? "" : "doc-invalido"} title={valido ? "" : "Documento inválido"}>{fmtDocumento(c.documento)}</td>
                     <td>{c.codigo || "—"}</td>
                     <td>{c.grupo || "—"}</td>
@@ -4207,8 +4381,9 @@ function ClientesBaseTela({ base, vinculoDe, onAtualizarBase, onAbrirCronograma,
                     <td>{v.length ? v.map(x => <button key={x.id} className="link-btn" onClick={()=>onAbrirCronograma(x.id)}>{x.nome}</button>) : <span className="muted">—</span>}
                       {v.length > 1 && <span className="alerta" title="Vinculado a mais de um cronograma"> ⚠</span>}</td>
                     <td>{podeEditar && <>
-                      <button className="btn btn-sm btn-ghost" onClick={()=>setEditando(c)} aria-label="Editar">✎</button>{" "}
-                      <button className="btn btn-sm btn-ghost" onClick={()=>remover(c)} aria-label="Remover">🗑</button>
+                      <button className="btn btn-sm btn-ghost" onClick={()=>setEditando(c)} aria-label="Editar" title="Editar">✎</button>{" "}
+                      <button className="btn btn-sm btn-ghost" onClick={()=>alterarAtivo([c], c.ativo === false)} aria-label={c.ativo === false ? "Reativar" : "Inativar"} title={c.ativo === false ? "Reativar" : "Inativar (mantém o histórico)"}>{c.ativo === false ? "▶" : "⏸"}</button>{" "}
+                      <button className="btn btn-sm btn-ghost" onClick={()=>remover(c)} aria-label="Remover" title="Excluir da base">🗑</button>
                     </>}</td>
                   </tr>
                 );
@@ -4341,7 +4516,7 @@ function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabal
         {verVersoes && modelo && (() => {
           const lista = (versoes || []).filter(v => v.modeloId === modeloId).sort((a,b) => b.n - a.n);
           return (
-            <div className="card" style={{background:"#f8fafc"}}>
+            <div className="card" style={{background:"var(--surface2)"}}>
               <h3 style={{marginTop:0}}>Versões de "{modelo.nome}"</h3>
               <p className="muted" style={{marginTop:0}}>Cada “Salvar Modelos” guarda uma versão de cada Modelo que mudou (últimas {MAX_VERSOES_POR_MODELO}). Restaurar carrega a versão aqui na tela — confira e clique em <strong>Salvar Modelos</strong> para gravar.{podeRestaurar ? "" : " Restaurar é só para Coordenador para cima."}</p>
               {!lista.length ? <div className="muted">Nenhuma versão ainda — a primeira é criada no próximo salvamento.</div> : (
@@ -4413,7 +4588,7 @@ function ClientesVinculadosTab({ cliente, base, vinculoDe, ano, mesReferencia, s
           <thead><tr><th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th><th>Gerente</th><th>Coordenador</th><th>Analista</th>{!somenteLeitura && <th style={{width:40}}></th>}</tr></thead>
           <tbody>{lista.map(c => (
             <tr key={c.id}>
-              <td style={{whiteSpace:"normal"}}>{c.razaoSocial || "—"}</td><td>{fmtDocumento(c.documento)}</td><td>{c.codigo || "—"}</td><td>{c.grupo || "—"}</td>
+              <td style={{whiteSpace:"normal"}}>{c.razaoSocial || "—"}{c.ativo === false && <> <span className="badge badge-off" title="Inativo na base de clientes">inativo</span></>}</td><td>{fmtDocumento(c.documento)}</td><td>{c.codigo || "—"}</td><td>{c.grupo || "—"}</td>
               <td>{c.gerente || "—"}</td><td>{c.coordenador || "—"}</td><td>{c.analista || "—"}</td>
               {!somenteLeitura && <td><button className="btn btn-sm btn-ghost" title="Desvincular" aria-label="Desvincular" onClick={()=>desvincular(c.id)}>✕</button></td>}
             </tr>
@@ -4964,7 +5139,7 @@ function PainelTela({ linhas: todasLinhas, ano, base, basePorId, modelos, analis
 /* ---------- Central de alertas do cronograma ---------- */
 function CentralAlertas({ alertas, ano, onIr, onFechar }){
   return (
-    <div className="card" style={{border:"1px solid #fcd34d", background:"#fffbeb"}}>
+    <div className="card" style={{border:"1px solid var(--aviso-borda)", background:"var(--aviso-bg)"}}>
       <h3>
         <span>⚠ {alertas.length} alerta(s) em {ano}</span>
         <button className="btn btn-sm btn-ghost" onClick={onFechar}>Fechar</button>
@@ -5318,6 +5493,9 @@ function App({ sessao, gruposPainel, onSair } = {}){
   const [baseClientes, setBaseClientes] = useState([]);
   const [erroBanco, setErroBanco] = useState(null);
   const [usuarioLocal, setUsuarioState] = useState(() => lerLocal("cronograma_usuario", { nome:"", perfil:"gerente" }));
+  const [tema, setTema] = useState(() => temaSalvo(sessao && sessao.id));
+  useEffect(() => { aplicarTema(tema); }, [tema]);
+  function alternarTema(){ const t = tema === "claro" ? "escuro" : "claro"; setTema(t); salvarTema(t, sessao && sessao.id); }
   // Com login integrado, nome e grupo vêm do usuário do painel; sem ele (modo teste), do campo "Você".
   const usuario = sessao ? { nome: sessao.name, perfil: perfilDoGrupoPainel(sessao.groupId) } : usuarioLocal;
   const [recolhida, setRecolhida] = useState(() => lerLocal("cronograma_sidebar_recolhida", false));
@@ -5384,6 +5562,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
   async function importarBackupParaBanco(e){
     const arq = e.target.files && e.target.files[0]; e.target.value = "";
     if(!arq) return;
+    if(!(podeAcessos || podeEncerrar)){ ui.alert("Seu grupo de acesso não importa backups (só Administrador/Diretor e Gerente)."); return; }
     let j; try { j = JSON.parse(await arq.text()); } catch(err){ ui.alert("O arquivo não é um JSON válido."); return; }
     if(!j || j.tipo !== "cronograma_backup" || !j.dados){ ui.alert("Esse arquivo não é um backup do cronograma."); return; }
     const chaves = Object.keys(j.dados).filter(k => k.startsWith("sinergy_cronograma_") && !k.includes("_presenca_"));
@@ -5416,6 +5595,14 @@ function App({ sessao, gruposPainel, onSair } = {}){
     return m;
   }, [clientesResumo, clientesCache, ano]); // um CNPJ = um cronograma, dentro de cada ano
   const basePorId = useMemo(() => Object.fromEntries(baseClientes.map(c => [c.id, c])), [baseClientes]);
+  // clienteBaseId -> [{id, nome, ano}] em todos os anos (índice + cronogramas abertos).
+  const vinculoTodosAnos = useMemo(() => {
+    const m = {};
+    const add = (id, cr, a) => { const l = (m[id] = m[id] || []); if(!l.some(x => x.id === cr.id && x.ano === a)) l.push({ id: cr.id, nome: cr.nome, ano: a }); };
+    clientesResumo.forEach(r => Object.keys(r.versoes || {}).forEach(a => (linhaDoAno(r, Number(a)).clientesIds || []).forEach(id => add(id, r, Number(a)))));
+    Object.values(clientesCache).forEach(c => Object.keys(c.versoes || {}).forEach(a => ((c.versoes[a] || {}).clientesIds || []).forEach(id => add(id, c, Number(a)))));
+    return m;
+  }, [clientesResumo, clientesCache]);
   const nomeClienteBase = id => basePorId[id] ? (basePorId[id].razaoSocial || fmtDocumento(basePorId[id].documento)) : id;
 
   const clienteId = rota.tela === "cronograma" ? rota.id : null;
@@ -6234,7 +6421,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
     { id:"inicio", ic:"🏠", label:"Cronogramas", href:linkTela("inicio") },
     { id:"aprovacoes", ic:"✅", label:"Aprovações", href:linkTela("aprovacoes"), badge:nAprovacoes },
     { id:"painel", ic:"📊", label:"Painel", href:linkTela("painel") },
-    { id:"clientes", ic:"🏢", label:"Base de clientes (" + baseClientes.length + ")", href:linkTela("clientes") },
+    { id:"clientes", ic:"🏢", label:"Base de clientes (" + baseClientes.filter(c => c.ativo !== false).length + ")", href:linkTela("clientes") },
     ...(podeSecoes ? [{ id:"secoes", ic:"🧩", label:"Seções (" + secoes.length + ")", href:linkTela("secoes") }] : []),
     ...(podeAcessos ? [{ id:"acessos", ic:"🔐", label:"Grupos de acesso", href:linkTela("acessos") }] : []),
   ];
@@ -6264,7 +6451,6 @@ function App({ sessao, gruposPainel, onSair } = {}){
             {!recolhida && <h1>Cronograma Operacional</h1>}
             <button className="nav-item" style={{width:"auto", padding:"4px 8px"}} onClick={alternarMenu} title={recolhida ? "Expandir menu" : "Recolher menu"} aria-label={recolhida ? "Expandir menu" : "Recolher menu"}>{recolhida ? "»" : "«"}</button>
           </div>
-          {!recolhida && <div className="sub">protótipo v4</div>}
           <button className="btn btn-primary" style={{width:"100%", marginBottom:10}} onClick={()=>setModalNovo("cadastro")} title="Novo cronograma" disabled={!podeEditar}>{recolhida ? "+" : "+ Novo cronograma"}</button>
           {menu.map(m => (
             <a key={m.id} href={m.href} className={"nav-item" + (rota.tela === m.id ? " active" : "")} title={m.label}>
@@ -6276,6 +6462,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
             ? <a href={linkTela("modelos")} className={"nav-item" + (rota.tela === "modelos" ? " active" : "")} title="Modelos (tarefas-padrão)"><span className="nav-ic">⚙</span>{!recolhida && <span>Modelos</span>}</a>
             : <button className="nav-item" title="Seu grupo de acesso não administra Modelos" disabled><span className="nav-ic">⚙</span>{!recolhida && <span>Modelos</span>}</button>}
 
+          {recolhida && <button className="nav-item" onClick={alternarTema} title={tema === "claro" ? "Mudar para escuro" : "Mudar para claro"}><span className="nav-ic">{tema === "claro" ? "🌙" : "☀️"}</span></button>}
           {!recolhida && recentes.filter(nomeResumo).length > 0 && <>
             <div className="nav-secao">Recentes</div>
             {recentes.filter(nomeResumo).map(id => (
@@ -6291,6 +6478,8 @@ function App({ sessao, gruposPainel, onSair } = {}){
               {anosDisponiveis.map(a => <option key={a} value={a}>{a}{anoEncerrado(a, anosEstado) ? " 🔒 encerrado" : anoPendenteDeEncerrar(a, anosEstado) ? " (a encerrar)" : a === anoVigente() ? " (atual)" : ""}</option>)}
             </select>
 
+            <div className="nav-secao">Aparência</div>
+            <button className="botao-tema" onClick={alternarTema} title="A escolha fica salva e vale também no painel de operações">{tema === "claro" ? "🌙 Mudar para escuro" : "☀️ Mudar para claro"}</button>
             {sessao ? <>
               <div className="nav-secao">Você</div>
               <div className="usuario-logado">
@@ -6305,24 +6494,29 @@ function App({ sessao, gruposPainel, onSair } = {}){
             </select>
             </>}
 
+            {/* Dados e backup ficam recolhidos num menu (só abre ao clicar). */}
             {MODO_ARMAZENAMENTO === "local" ? (
-              <div className="caixa-local">
-                <strong>🧪 Modo teste local</strong> — dados só neste navegador.
-                <div style={{display:"flex", gap:6, marginTop:6, flexWrap:"wrap"}}>
-                  <button className="btn btn-sm btn-ghost" onClick={exportarBackupLocal}>⬇ Backup</button>
-                  <button className="btn btn-sm btn-ghost" onClick={()=>inputBackup.current.click()}>⬆ Importar</button>
-                  <button className="btn btn-sm btn-ghost" onClick={limparTeste}>Limpar tudo</button>
+              <details className="menu-dados menu-dados-local">
+                <summary>🧪 Modo teste local ▾</summary>
+                <div className="menu-dados-corpo">
+                  <div className="menu-dados-info">Dados só neste navegador.</div>
+                  <button className="menu-dados-item" onClick={exportarBackupLocal}>⬇ Baixar backup</button>
+                  <button className="menu-dados-item" onClick={()=>inputBackup.current.click()}>⬆ Importar backup</button>
+                  <button className="menu-dados-item perigo" onClick={limparTeste}>🗑 Limpar tudo</button>
                   <input ref={inputBackup} type="file" accept=".json" style={{display:"none"}} onChange={restaurarBackup} />
                 </div>
-              </div>
-            ) : <div className="muted" style={{fontSize:12, marginTop:12, color:"#94a3b8"}}>
-              🗄 Banco Supabase · tabela {KV_TABELA}
-              {podeAcessos && <div style={{display:"flex", gap:6, marginTop:6, flexWrap:"wrap"}}>
-                <button className="btn btn-sm btn-ghost" onClick={exportarBackupBanco} title="Baixa tudo o que o cronograma tem no banco (JSON)">⬇ Backup do banco</button>
-                <button className="btn btn-sm btn-ghost" onClick={()=>inputBackupBanco.current.click()} title="Leva um backup (ex.: do modo teste) para o banco">⬆ Importar backup</button>
-                <input ref={inputBackupBanco} type="file" accept=".json" style={{display:"none"}} onChange={importarBackupParaBanco} />
-              </div>}
-            </div>}
+              </details>
+            ) : (podeAcessos || podeEncerrar) ? (
+              <details className="menu-dados">
+                <summary>⚙ Dados e backup ▾</summary>
+                <div className="menu-dados-corpo">
+                  <div className="menu-dados-info">Banco Supabase · tabela {KV_TABELA}</div>
+                  <button className="menu-dados-item" onClick={exportarBackupBanco} title="Baixa tudo o que o cronograma tem no banco (JSON)">⬇ Backup do banco</button>
+                  <button className="menu-dados-item" onClick={()=>inputBackupBanco.current.click()} title="Leva um backup (ex.: do modo teste) para o banco">⬆ Importar backup</button>
+                  <input ref={inputBackupBanco} type="file" accept=".json" style={{display:"none"}} onChange={importarBackupParaBanco} />
+                </div>
+              </details>
+            ) : null}
             {erroBanco && <div className="caixa-erro">⚠ {erroBanco}</div>}
           </>}
           <datalist id="lista-analistas">{analistas.map(a => <option key={a} value={a} />)}</datalist>
@@ -6353,7 +6547,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
           ? <ModeloAdmin key="modelos" modelos={modelos} versoes={modelosVersoes} podeRestaurar={podeRestaurar} onSalvar={salvarModelos} ano={ano} />
           : <div className="card muted" style={{marginTop:20}}>Seu grupo de acesso não administra Modelos.</div>)}
         {rota.tela === "painel" && !consulta && (
-          <PainelTela key={"painel-" + ano} ano={ano} estadoAno={anosEstado[ano]} podeEncerrar={podeEncerrar && ano <= anoVigente()} onEncerrar={encerrarAnoInteiro} onReabrir={reabrirAnoInteiro} linhas={linhasCarteira} base={baseClientes} basePorId={basePorId} modelos={modelos} analistas={analistas}
+          <PainelTela key={"painel-" + ano} ano={ano} estadoAno={anosEstado[ano]} podeEncerrar={podeEncerrar && ano <= anoVigente()} onEncerrar={encerrarAnoInteiro} onReabrir={reabrirAnoInteiro} linhas={linhasCarteira} base={baseClientes.filter(c => c.ativo !== false)} basePorId={basePorId} modelos={modelos} analistas={analistas}
             onAbrir={id => navegar(linkCronograma(id))} onFiltrarCarteira={st => { setCarteiraStatus(st); navegar(linkTela("inicio")); }} />
         )}
         {rota.tela === "secoes" && !consulta && (podeSecoes
@@ -6363,7 +6557,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
           ? <GruposTela grupos={PERFIS} onSalvar={salvarGrupos} />
           : <div className="card muted" style={{marginTop:20}}>Seu grupo não tem acesso à gestão de grupos.</div>)}
         {rota.tela === "clientes" && !consulta && (
-          <ClientesBaseTela podeEditar={podeClientes} base={baseClientes} vinculoDe={vinculoDe} onAtualizarBase={atualizarBase} onAbrirCronograma={id => navegar(linkCronograma(id))} />
+          <ClientesBaseTela podeEditar={podeClientes} base={baseClientes} vinculoDe={vinculoDe} vinculoTodosAnos={vinculoTodosAnos} onAtualizarBase={atualizarBase} onAbrirCronograma={id => navegar(linkCronograma(id))} />
         )}
 
         {rota.tela === "cronograma" && (!registroAtual ? (
@@ -6613,11 +6807,26 @@ function presencaAtiva(presenca, minhaSessao){
   return minutos <= PRESENCA_TTL_MIN ? presenca : null;
 }
 
-function LoginTela({ usuarios, onEntrar }){
+// Mesma ordem do login do painel: Administrador > Gerente > Coordenador > demais, e alfabética dentro de cada grupo.
+function ordemHierarquiaPainel(usuarios, grupos){
+  const grupoDe = u => (grupos || []).find(g => g && g.id === u.groupId);
+  const rank = u => {
+    const g = grupoDe(u);
+    if(!g) return 9;
+    if(g.fullAccess) return 0;
+    if(g.isGerente) return 1;
+    if(g.id === "coord" || normalizar(g.name).includes("coord")) return 2;
+    return 3;
+  };
+  return usuarios.slice().sort((a,b) => (rank(a) - rank(b)) || String(a.name || "").localeCompare(String(b.name || ""), "pt-BR", { sensitivity:"base" }));
+}
+function LoginTela({ usuarios, grupos, onEntrar }){
+  const [tema, setTema] = useState(() => temaSalvo(null));
+  function alternarTema(){ const t = tema === "claro" ? "escuro" : "claro"; setTema(t); aplicarTema(t); salvarTema(t, null); }
   const [nome, setNome] = useState("");
   const [pin, setPin] = useState("");
   const [erro, setErro] = useState("");
-  const ordem = usuarios.slice().sort((a,b) => String(a.name || "").localeCompare(String(b.name || ""), "pt-BR"));
+  const ordem = ordemHierarquiaPainel(usuarios, grupos);
   function entrar(e){
     e.preventDefault();
     const u = usuarios.find(x => x.name === nome && String(x.pin) === pin);
@@ -6626,22 +6835,29 @@ function LoginTela({ usuarios, onEntrar }){
   }
   return (
     <div className="login-wrap">
-      <form className="card login-box" onSubmit={entrar}>
-        <img src={"data:image/png;base64," + LOGO_SINERGY_PNG} alt="Sinergy RH" style={{height:40, display:"block", margin:"0 auto 8px"}} />
-        <h2 style={{textAlign:"center", margin:"4px 0"}}>Cronograma Operacional</h2>
-        <p className="muted" style={{textAlign:"center", marginTop:0}}>Entre com o mesmo usuário e PIN do painel de operações.</p>
-        <label className="login-campo">Usuário
-          <select value={nome} onChange={e=>{ setNome(e.target.value); setErro(""); }} autoFocus>
-            <option value="">Selecione…</option>
-            {ordem.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
-          </select>
-        </label>
-        <label className="login-campo">PIN
-          <input type="password" inputMode="numeric" autoComplete="current-password" value={pin} onChange={e=>{ setPin(e.target.value); setErro(""); }} />
-        </label>
-        {erro && <div className="alerta" style={{marginBottom:8}}>{erro}</div>}
-        <button className="btn btn-primary" style={{width:"100%"}} disabled={!nome || pin.length < 4}>Entrar</button>
-      </form>
+      <div className="login-col">
+        <div className="login-topo">
+          <div className="login-selo">S</div>
+          <div className="login-marca">SinergyRH</div>
+          <h1>Cronograma Operacional</h1>
+          <p>🔒 Acesso restrito · mesmo usuário e PIN do painel</p>
+        </div>
+        <form className="login-box" onSubmit={entrar}>
+          <label className="login-campo"><span>Usuário</span>
+            <select value={nome} onChange={e=>{ setNome(e.target.value); setErro(""); }} autoFocus>
+              <option value="">Selecione...</option>
+              {ordem.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
+            </select>
+          </label>
+          <label className="login-campo"><span>PIN</span>
+            <input type="password" inputMode="numeric" autoComplete="current-password" placeholder="......" maxLength={6} value={pin}
+              onChange={e=>{ setPin(e.target.value.replace(/\D/g, "").slice(0, 6)); setErro(""); }} />
+          </label>
+          {erro && <div className="login-erro">{erro}</div>}
+          <button className="btn btn-primary login-entrar" disabled={!nome || pin.length < 4}>Entrar</button>
+        </form>
+        <div className="login-tema"><button type="button" className="botao-tema" onClick={alternarTema}>{tema === "claro" ? "🌙 Escuro" : "☀️ Claro"}</button></div>
+      </div>
     </div>
   );
 }
@@ -6655,7 +6871,7 @@ function PortaoLogin(){
       const achar = s => s && ativos.find(u => u.id === s.id);
       let sessao = null;
       const h = consumirHandoff(), uh = achar(h);
-      if(uh){ sessao = { id: uh.id, name: uh.name, groupId: uh.groupId, em: Date.now(), via: "painel" }; gravarSessao(sessao); }
+      if(uh){ sessao = { id: uh.id, name: uh.name, groupId: uh.groupId, em: Date.now(), via: "painel" }; gravarSessao(sessao); aplicarTema(temaSalvo(sessao.id)); }
       else {
         const s = lerSessao(), us = achar(s);
         if(us) sessao = { ...s, name: us.name, groupId: us.groupId }; else encerrarSessao();
@@ -6665,7 +6881,7 @@ function PortaoLogin(){
   })(); }, []);
   if(st.carregando) return <div style={{padding:40}}>Carregando…</div>;
   if(st.erro) return <div className="login-wrap"><div className="card login-box"><div className="alerta">Não consegui carregar os usuários do painel: {st.erro}</div></div></div>;
-  if(!st.sessao) return <><LoginTela usuarios={st.usuarios} onEntrar={s => { gravarSessao(s); setSt(x => ({ ...x, sessao: s })); }} /><DialogHost /></>;
+  if(!st.sessao) return <><LoginTela usuarios={st.usuarios} grupos={st.grupos} onEntrar={s => { gravarSessao(s); aplicarTema(temaSalvo(s.id)); setSt(x => ({ ...x, sessao: s })); }} /><DialogHost /></>;
   return <App sessao={st.sessao} gruposPainel={st.grupos} onSair={() => { encerrarSessao(); setSt(x => ({ ...x, sessao: null })); }} />;
 }
 function Raiz(){
