@@ -150,7 +150,8 @@
   .contador:hover{border-color:#93c5fd;}
   .contador.on{border-color:var(--accent);box-shadow:0 0 0 2px #bfdbfe;}
   .contador .n{font-size:24px;font-weight:700;line-height:1.1;}
-  .contador .l{font-size:12.5px;color:var(--muted);margin-top:2px;}
+  .contador .l{font-size:12.5px;color:var(--muted);margin-top:2px;overflow-wrap:anywhere;}
+  .contador{min-width:0;}
   .filtros{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}
   .chk{display:flex;gap:5px;align-items:center;cursor:pointer;}
   .bulkbar{position:sticky;top:58px;z-index:40;background:#1e293b;color:#fff;border-radius:8px;padding:8px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;}
@@ -308,6 +309,13 @@
   [data-tema="escuro"] .login-wrap{background:linear-gradient(135deg,#0d0d1a,#12101f,#0a1525);}
   [data-tema="escuro"] .login-box{background:#13131f;border-color:rgba(255,255,255,0.08);}
   [data-tema="escuro"] .login-campo select,[data-tema="escuro"] .login-campo input{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.1);color:#f1f5f9;}
+  .seletor-pessoas{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+  .chip-pessoa{display:inline-flex;align-items:center;gap:4px;background:#e0e7ff;color:#3730a3;border-radius:999px;padding:3px 4px 3px 10px;font-size:12.5px;font-weight:600;}
+  .chip-pessoa button{background:none;border:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:0 4px;border-radius:999px;}
+  .chip-pessoa button:hover{background:rgba(0,0,0,0.08);}
+  [data-tema="escuro"] .chip-pessoa{background:rgba(99,102,241,0.22);color:#c7d2fe;}
+  .chip-pessoa.invalido{background:#fee2e2;color:#991b1b;}
+  [data-tema="escuro"] .chip-pessoa.invalido{background:rgba(239,68,68,0.18);color:#fca5a5;}
   .menu-dados{margin-top:14px;font-size:12.5px;}
   .menu-dados summary{cursor:pointer;list-style:none;color:#94a3b8;padding:6px 8px;border-radius:8px;user-select:none;}
   .menu-dados summary::-webkit-details-marker{display:none;}
@@ -353,6 +361,7 @@
   const KV_SECOES_KEY = "sinergy_cronograma_secoes"; // biblioteca de seções personalizadas (Diretor/Gerente/Coordenador)
   const KV_GRUPOS_KEY = "sinergy_cronograma_grupos"; // grupos de acesso e permissões
   const KV_MODELOS_VERSOES_KEY = "sinergy_cronograma_modelos_versoes"; // histórico de versões dos Modelos
+  const KV_LOTES_KEY = "sinergy_cronograma_lotes"; // aplicações de Modelo em vários cronogramas (para desfazer)
   // Obs.: por compatibilidade, cada CRONOGRAMA continua gravado em "sinergy_cronograma_cliente_<id>".
   function kvKeyCliente(id){ return "sinergy_cronograma_cliente_" + id; }
   function kvKeyFotos(id){ return "sinergy_cronograma_fotos_" + id; } // versões ("fotos") de um cronograma, separadas pra não pesar na abertura
@@ -1530,7 +1539,7 @@ function modeloAPartirDoCronograma(cr, nome, quem){
    manualmente. Se o conteúdo (blocos/tarefas/prazos/clientes) for igual ao da última foto do ano, NÃO vira
    versão nova: só ganha mais um marco (ex.: v1 enviada → v1 aprovada). Restaurar: grupo com "restaura".
    Modelos: cada "Salvar Modelos" guarda o estado de cada Modelo que mudou (até 15 por Modelo). */
-const TIPOS_FOTO = { envio:"enviada ao cliente", aprovacao:"aprovada", manual:"salva manualmente", antes_restaurar:"antes de restaurar" };
+const TIPOS_FOTO = { envio:"enviada ao cliente", aprovacao:"aprovada", manual:"salva manualmente", antes_restaurar:"antes de restaurar", antes_modelo:"antes de mudança vinda do Modelo", antes_lixeira:"antes de ir para a lixeira" };
 function fotoDoCronograma(visao){
   return clonar({ nome: visao.nome || "", processos: visao.processos || [], clientesIds: visao.clientesIds || [], status: visao.status,
     modeloId: visao.modeloId || null, modeloBase: visao.modeloBase || "", analista: visao.analista || "" });
@@ -1620,11 +1629,105 @@ function infoCategoria(cat, nomeProcesso){
 function soDigitos(s){ return String(s == null ? "" : s).replace(/\D/g, ""); }
 // Responsáveis por cliente (importáveis pela planilha) e campos atualizáveis na importação.
 const RESPONSAVEIS = [["gerente","Gerente"], ["coordenador","Coordenador"], ["analista","Analista responsável"]];
-const CAMPOS_CLIENTE = [["razaoSocial","Razão social"], ["codigo","Código"], ["grupo","Grupo"], ...RESPONSAVEIS];
-// Responsável de um cronograma derivado dos clientes vinculados (o mais frequente).
+const CAMPOS_CLIENTE = [["razaoSocial","Razão social"], ["codigo","ID"], ["grupo","Grupo"], ...RESPONSAVEIS];
+// Vários responsáveis no mesmo campo: "Ana, Bia" (vírgula ou ponto e vírgula). Mantém planilha/Excel como texto.
+function nomesDoCampo(v){ return String(v || "").split(/\s*[,;]\s*/).map(s => s.trim()).filter(Boolean); }
+function juntarNomes(lista){ return [...new Set((lista || []).map(s => String(s).trim()).filter(Boolean))].join(", "); }
+function temNome(v, nome){ const n = normalizar(nome).trim(); return !!n && nomesDoCampo(v).some(x => normalizar(x).trim() === n); }
+// ===== Gerência (mesma regra do painel op2026) =====
+// Administrador/Diretor (fullAccess) vê tudo; Gerente vê a própria gerência; os demais, a do gerente a que estão
+// ligados no painel (usuário.gerenteId). Gerências = usuários do grupo Gerente do painel.
+function grupoDoUsuario(u, grupos){ return (grupos || []).find(g => g && u && g.id === u.groupId) || {}; }
+function ehGerentePainel(u, grupos){ const g = grupoDoUsuario(u, grupos); return !!(u && (g.isGerente || u.groupId === "gerente")); }
+function ehCoordPainel(u, grupos){ const g = grupoDoUsuario(u, grupos); return !!(u && !g.fullAccess && !g.isGerente && (u.groupId === "coord" || normalizar(g.name).includes("coord"))); }
+function gerentesDoPainel(usuarios, grupos){
+  return (usuarios || []).filter(u => u && u.active !== false && ehGerentePainel(u, grupos)).map(u => ({ id: u.id, nome: u.name })).sort((a,b) => a.nome.localeCompare(b.nome, "pt-BR"));
+}
+function escopoDoUsuario(u, grupos){
+  if(!u) return "all";
+  const g = grupoDoUsuario(u, grupos);
+  if(g.fullAccess || u.groupId === "admin" || u.gerenteId === "all") return "all";
+  if(g.isGerente || u.groupId === "gerente") return u.id;
+  return u.gerenteId || "__nenhuma__";
+}
+// Pessoas de uma gerência, por papel (para escolher coordenador/analista do cliente).
+function pessoasDaGerencia(usuarios, grupos, gerenteId, papel){
+  return (usuarios || []).filter(u => u && u.active !== false && u.gerenteId === gerenteId && !ehGerentePainel(u, grupos) && !grupoDoUsuario(u, grupos).fullAccess &&
+    (papel === "coordenador" ? ehCoordPainel(u, grupos) : !ehCoordPainel(u, grupos))).map(u => u.name).sort((a,b) => a.localeCompare(b, "pt-BR"));
+}
+// Casa o nome do gerente digitado na base/planilha (ex.: "Ariana") com um gerente do painel.
+function gerentePorNome(nome, gerentes){
+  const n = normalizar(nome).trim(); if(!n) return null;
+  const exato = (gerentes || []).filter(g => normalizar(g.nome).trim() === n); if(exato.length === 1) return exato[0];
+  const parcial = (gerentes || []).filter(g => { const gn = normalizar(g.nome).trim(); return gn.startsWith(n + " ") || gn.split(" ")[0] === n; });
+  return parcial.length === 1 ? parcial[0] : null;
+}
+// Pessoa do painel pelo nome digitado (exato; ou único que começa igual / mesmo primeiro nome).
+function pessoaPorNome(nome, usuarios){
+  const n = normalizar(nome).trim(); if(!n) return null;
+  const ex = (usuarios || []).filter(u => u && normalizar(u.name).trim() === n); if(ex.length === 1) return ex[0];
+  const pa = (usuarios || []).filter(u => { const un = normalizar(u && u.name).trim(); return un.startsWith(n + " ") || un.split(" ")[0] === n; });
+  return pa.length === 1 ? pa[0] : null;
+}
+// Importação de clientes: confere Gerente/Coordenador/Analista com os usuários do painel.
+//  - Gerente que não existe (ou de outra gerência, para quem não é Administrador) → a linha não entra.
+//  - Coordenador/Analista que não existe ou é de outra gerência → o nome não é gravado e vira aviso.
+//  - Nomes reconhecidos ficam com a grafia do painel. Sem Gerente, quem não é Administrador importa na própria gerência.
+function validarResponsaveisImportacao(itens, opcoes){
+  const { gerentes, usuarios, grupos, escopo } = opcoes;
+  const avisos = [], rejeitados = [], ok = [];
+  itens.forEach((it, i) => {
+    const linha = it._linha || (i + 1), rotulo = it.razaoSocial || it.documentoBruto;
+    let gid = null;
+    if(it.gerente){
+      const g = gerentePorNome(it.gerente, gerentes);
+      if(!g){ rejeitados.push({ ...it, linha, motivo: 'Gerente "' + it.gerente + '" não existe entre os gerentes do painel' }); return; }
+      if(escopo !== "all" && g.id !== escopo){ rejeitados.push({ ...it, linha, motivo: 'Gerente "' + g.nome + '" é de outra gerência' }); return; }
+      gid = g.id;
+    } else if(escopo !== "all") gid = escopo;
+    const novo = { ...it, gerente: gid ? (gerentes.find(g => g.id === gid) || {}).nome || "" : "" };
+    ["coordenador", "analista"].forEach(campo => {
+      const bons = [];
+      nomesDoCampo(it[campo]).forEach(nome => {
+        const u = pessoaPorNome(nome, usuarios);
+        if(!u){ avisos.push({ linha, rotulo, campo, nome, motivo: "não existe na tabela de usuários do painel" }); return; }
+        if(gid && u.gerenteId !== gid){ avisos.push({ linha, rotulo, campo, nome: u.name, motivo: "é de outra gerência" }); return; }
+        bons.push(u.name);
+      });
+      novo[campo] = juntarNomes(bons);
+    });
+    ok.push(novo);
+  });
+  return { itens: ok, avisos, rejeitados };
+}
+// Responsáveis de um cliente que não batem com nenhum usuário do painel (ou cliente sem gerência).
+function responsaveisSemUsuario(c, usuarios){
+  const out = [];
+  if(!c.gerenteId) out.push("gerência não definida" + (c.gerente ? ' ("' + c.gerente + '" não é gerente no painel)' : ""));
+  ["coordenador", "analista"].forEach(campo => nomesDoCampo(c[campo]).forEach(n => { if(!pessoaPorNome(n, usuarios)) out.push(campo + ' "' + n + '" sem usuário'); }));
+  return out;
+}
+// Edição em lote de um campo de responsáveis ("Ana, Bia"): manter | substituir | adicionar | remover | limpar.
+function aplicarAcaoNomes(valorAtual, acao, nomes){
+  const atuais = nomesDoCampo(valorAtual), escolhidos = nomesDoCampo(nomes);
+  const tem = (lista, n) => lista.some(x => normalizar(x) === normalizar(n));
+  if(acao === "substituir") return juntarNomes(escolhidos);
+  if(acao === "adicionar") return juntarNomes([...atuais, ...escolhidos.filter(n => !tem(atuais, n))]);
+  if(acao === "remover") return juntarNomes(atuais.filter(n => !tem(escolhidos, n)));
+  if(acao === "limpar") return "";
+  return juntarNomes(atuais);
+}
+function gerenciaDoCliente(c, gerentes){ return (c && c.gerenteId) || ((gerentePorNome(c && c.gerente, gerentes) || {}).id) || null; }
+// Gerência do cronograma: a gravada nele; senão, a dos clientes vinculados (se todos forem da mesma).
+function gerenciaDoCronograma(gerenteId, clientesIds, basePorId){
+  if(gerenteId) return gerenteId;
+  const ids = [...new Set((clientesIds || []).map(id => basePorId[id] && basePorId[id].gerenteId).filter(Boolean))];
+  return ids.length === 1 ? ids[0] : null;
+}
+// Responsável de um cronograma derivado dos clientes vinculados (o mais frequente; cada nome conta).
 function responsavelDosClientes(clientesIds, basePorId, campo){
   const cont = {};
-  (clientesIds || []).forEach(id => { const v = basePorId[id] && basePorId[id][campo]; if(v) cont[v] = (cont[v] || 0) + 1; });
+  (clientesIds || []).forEach(id => { nomesDoCampo(basePorId[id] && basePorId[id][campo]).forEach(v => { cont[v] = (cont[v] || 0) + 1; }); });
   const top = Object.entries(cont).sort((a,b) => b[1] - a[1])[0];
   return top ? top[0] : "";
 }
@@ -1698,15 +1801,27 @@ function mapearLinhasClientes(rows){
   })).filter(x => x.documentoBruto || x.razaoSocial);
 }
 // Compara o que veio da planilha com a base atual (casando por documento).
+// Regras: CNPJ/CPF é a chave (existente = atualização); CNPJ repetido no arquivo e ID repetido (no arquivo ou já
+// usado por OUTRO CNPJ na base) vão para "Com problema" e não entram.
 function analisarImportacao(base, itens){
   const porDoc = Object.fromEntries(base.map(c => [c.documento, c]));
-  const vistos = {};
+  const chaveId = v => normalizar(v).trim();
+  const porId = {}; base.forEach(c => { const k = chaveId(c.codigo); if(k) porId[k] = c; });
+  const vistos = {}, idsNoArquivo = {};
   const novos = [], atualizados = [], iguais = [], invalidos = [];
   itens.forEach((it, i) => {
+    const linha = it._linha || (i + 1);
     const n = normalizarDocumento(it.documentoBruto);
-    if(!n.valido){ invalidos.push({ ...it, linha: i + 1, motivo: n.doc ? n.tipo + " inválido (" + n.doc + ")" : "sem documento" }); return; }
-    if(vistos[n.doc]) return; // duplicado dentro do próprio arquivo
-    vistos[n.doc] = true;
+    if(!n.valido){ invalidos.push({ ...it, linha, motivo: n.doc ? n.tipo + " inválido (" + n.doc + ")" : "sem documento" }); return; }
+    if(vistos[n.doc]){ invalidos.push({ ...it, linha, motivo: "CNPJ/CPF repetido no arquivo (já aparece na linha " + vistos[n.doc] + ")" }); return; }
+    vistos[n.doc] = linha;
+    const kId = chaveId(it.codigo);
+    if(kId){
+      if(idsNoArquivo[kId] && idsNoArquivo[kId].doc !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" repetido no arquivo (linha ' + idsNoArquivo[kId].linha + ", outro CNPJ)" }); return; }
+      const dono = porId[kId];
+      if(dono && dono.documento !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" já pertence a ' + (dono.razaoSocial || "outro cliente") + " (" + fmtDocumento(dono.documento) + ")" }); return; }
+      idsNoArquivo[kId] = { doc: n.doc, linha };
+    }
     const reg = { documento:n.doc, tipoDocumento:n.tipo, razaoSocial:it.razaoSocial, codigo:it.codigo, grupo:it.grupo,
       gerente:it.gerente || "", coordenador:it.coordenador || "", analista:it.analista || "" };
     const ex = porDoc[n.doc];
@@ -1781,7 +1896,7 @@ function alertasDoAno(cronograma, ano){
    clientes vinculados, Modelo, status/aprovação e histórico. Editar 2026 não
    mexe em 2027. Anos já encerrados ficam só para leitura. */
 const CAMPOS_VERSAO = ["processos", "clientesIds", "status", "historico", "acoes", "modeloId", "modeloBase", "reaberto"];
-const CAMPOS_TOPO = ["nome", "analista", "arquivado"];
+const CAMPOS_TOPO = ["nome", "analista", "arquivado", "gerenteId"]; // gerência vale para todos os anos
 function anoCalendarioAtual(){ return new Date().getFullYear(); }
 // ANO VIGENTE = o "ano atual" da operação no sistema (não o do calendário). Hoje 2027: é quando começam a
 // criação e as validações dos cronogramas. Fica salvo em sinergy_cronograma_anos e só muda por Gerente/
@@ -1857,6 +1972,13 @@ function abrirAno(cr, anoNovo, quem){
   return { cronograma: { ...cr, versoes: { ...cr.versoes, [anoNovo]: versao } }, anoBase };
 }
 
+// Lixeira: cronograma excluído fica 15 dias (cronograma.excluido = { em, por }); depois é apagado sozinho.
+const LIXEIRA_DIAS = 15;
+function diasRestantesLixeira(excluido, agora){
+  if(!excluido || !excluido.em) return null;
+  const passados = ((agora || new Date()) - new Date(excluido.em)) / 86400000;
+  return Math.max(0, Math.ceil(LIXEIRA_DIAS - passados));
+}
 // Resumo leve de um cronograma, guardado no índice: é o que a tela inicial,
 // o painel, a fila de aprovação e a busca usam sem abrir cada cronograma.
 // Um resumo por ano (status, clientes e alertas daquele ano).
@@ -1869,12 +1991,12 @@ function resumoDe(cr){
     versoes[a] = { status: v.status, clientesIds: (v.clientesIds || []).slice(), modeloId: v.modeloId || null, modeloBase: v.modeloBase || "", alertas, atualizadoEm: v.atualizadoEm || null, reaberto: !!v.reaberto,
       secoesUsadas: [...new Set((v.processos || []).map(p => p.origemSecaoId).filter(Boolean))] };
   });
-  return { id: cr.id, nome: cr.nome, analista: cr.analista || "", arquivado: !!cr.arquivado, atualizadoEm: cr.atualizadoEm || null, versoes };
+  return { id: cr.id, nome: cr.nome, analista: cr.analista || "", arquivado: !!cr.arquivado, gerenteId: cr.gerenteId || null, excluido: cr.excluido || null, atualizadoEm: cr.atualizadoEm || null, versoes };
 }
 // Linha da lista/painel para um ano: dados do cronograma + da versão daquele ano (ou "sem versão").
 function linhaDoAno(r, ano){
   const v = r.versoes && r.versoes[ano];
-  return { id: r.id, nome: r.nome, analista: r.analista || "", arquivado: !!r.arquivado, anos: Object.keys(r.versoes || {}).map(Number).sort(),
+  return { id: r.id, nome: r.nome, analista: r.analista || "", arquivado: !!r.arquivado, gerenteId: r.gerenteId || null, excluido: r.excluido || null, anos: Object.keys(r.versoes || {}).map(Number).sort(),
     temVersao: !!v, status: v ? v.status : null, clientesIds: v ? v.clientesIds || [] : [], modeloId: v ? v.modeloId : null,
     modeloBase: v ? v.modeloBase : "", alertas: v ? v.alertas : undefined, atualizadoEm: v ? v.atualizadoEm : r.atualizadoEm, reaberto: v ? !!v.reaberto : false };
 }
@@ -2416,6 +2538,54 @@ function rodarAutoTestes(){
     const outros = montarBlocosDeBeneficio(b, { VT:1, Outros:1 }, "Vale Cultura");
     return eq(blocos.map(p => p.nome).join(" | ") + " || " + outros.map(p => p.nome).join(" | ") + " || " + blocos[0].eventos.length + "=" + b.eventos.length,
       "Benefícios — VA + VR | Benefícios — VT || Benefícios — VT + Vale Cultura || " + b.eventos.length + "=" + b.eventos.length);
+  });
+  t("Gerência: escopo igual ao painel, nome do gerente casa com o usuário, cronograma herda dos clientes", () => {
+    const grupos = [{ id:"admin", fullAccess:true }, { id:"gerente", isGerente:true }, { id:"coord", name:"Coordenador" }, { id:"analista", name:"Analista" }];
+    const us = [{ id:"g1", name:"Ariana Souza", groupId:"gerente" }, { id:"g2", name:"Matheus Pavaneli", groupId:"gerente" },
+      { id:"c1", name:"Adriana", groupId:"coord", gerenteId:"g1" }, { id:"a1", name:"Bia", groupId:"analista", gerenteId:"g1" },
+      { id:"a2", name:"Caio", groupId:"analista", gerenteId:"g2" }, { id:"d1", name:"Diretor", groupId:"admin", gerenteId:"all" }];
+    const ger = gerentesDoPainel(us, grupos);
+    const esc = ["d1","g1","c1","a2"].map(id => escopoDoUsuario(us.find(u => u.id === id), grupos)).join(",");
+    const base = { x:{ gerenteId:"g1" }, y:{ gerenteId:"g1" }, z:{ gerenteId:"g2" } };
+    return eq([ger.map(g => g.nome).join("+"), esc, (gerentePorNome("ariana", ger) || {}).id, gerentePorNome("Fulano", ger),
+      gerenciaDoCronograma(null, ["x","y"], base), gerenciaDoCronograma(null, ["x","z"], base), gerenciaDoCronograma("g2", ["x"], base),
+      pessoasDaGerencia(us, grupos, "g1", "coordenador").join("+"), pessoasDaGerencia(us, grupos, "g1", "analista").join("+"),
+      nomesDoCampo("Ana, Bia; Caio").join("|"), temNome("Ana, Bia", "bia")].join(" / "),
+      "Ariana Souza+Matheus Pavaneli / all,g1,g1,g2 / g1 /  / g1 /  / g2 / Adriana / Bia / Ana|Bia|Caio / true"); // null vira "" no join
+  });
+  t("Importação: gerente/coordenador/analista conferidos com os usuários do painel", () => {
+    const grupos = [{ id:"gerente", isGerente:true }, { id:"coord", name:"Coordenador" }, { id:"analista", name:"Analista" }];
+    const us = [{ id:"g1", name:"Ariana Souza", groupId:"gerente" }, { id:"g2", name:"Matheus Pavaneli", groupId:"gerente" },
+      { id:"c1", name:"Adriana Lima", groupId:"coord", gerenteId:"g1" }, { id:"a1", name:"Bia", groupId:"analista", gerenteId:"g1" }, { id:"a2", name:"Caio", groupId:"analista", gerenteId:"g2" }];
+    const ger = gerentesDoPainel(us, grupos);
+    const r = validarResponsaveisImportacao([
+      { documentoBruto:"1", gerente:"ariana", coordenador:"Adriana", analista:"Bia, Caio, Zé" },
+      { documentoBruto:"2", gerente:"Fulano" },
+      { documentoBruto:"3", gerente:"" } ], { gerentes: ger, usuarios: us, grupos, escopo:"all" });
+    const r2 = validarResponsaveisImportacao([{ documentoBruto:"4", gerente:"Matheus" }, { documentoBruto:"5", analista:"Bia" }], { gerentes: ger, usuarios: us, grupos, escopo:"g1" });
+    return eq([r.itens.length, r.itens[0].gerente, r.itens[0].coordenador, r.itens[0].analista, r.avisos.map(a => a.nome + ":" + a.motivo.split(" ")[0]).join(","), r.rejeitados.length,
+      r2.itens.length, r2.itens[0].gerente, r2.itens[0].analista, r2.rejeitados[0].motivo.includes("outra gerência")].join(" | "),
+      "2 | Ariana Souza | Adriana Lima | Bia | Caio:é,Zé:não | 1 | 1 | Ariana Souza | Bia | true");
+  });
+  t("Importação: CNPJ repetido no arquivo e ID repetido/já usado vão para 'Com problema'", () => {
+    const base = [{ id:"e1", documento:"11222333000181", codigo:"100", razaoSocial:"ALFA" }];
+    const a = analisarImportacao(base, [
+      { documentoBruto:"11.222.333/0001-81", codigo:"100", razaoSocial:"ALFA NOVO NOME", _linha:1 },  // mesmo CNPJ e mesmo ID → atualização
+      { documentoBruto:"11444777000161", codigo:"200", razaoSocial:"BETA", _linha:2 },               // novo
+      { documentoBruto:"11444777000161", codigo:"200", razaoSocial:"BETA DE NOVO", _linha:3 },       // CNPJ repetido no arquivo
+      { documentoBruto:"45997418000153", codigo:"100", razaoSocial:"GAMA", _linha:4 },               // ID de outro CNPJ da base
+      { documentoBruto:"06990590000123", codigo:"200", razaoSocial:"DELTA", _linha:5 } ]);           // ID repetido no arquivo
+    return eq([a.atualizados.length, a.novos.map(r => r.razaoSocial).join(","), a.invalidos.map(r => r.linha + ":" + r.motivo.split(" ")[0]).join(",")].join(" | "),
+      "1 | BETA | 3:CNPJ/CPF,4:ID,5:ID");
+  });
+  t("Lixeira: 15 dias contados da exclusão", () => {
+    const agora = new Date(2027, 2, 20, 12, 0);
+    return eq([diasRestantesLixeira({ em: new Date(2027, 2, 20, 11, 0).toISOString() }, agora), diasRestantesLixeira({ em: new Date(2027, 2, 10, 12, 0).toISOString() }, agora),
+      diasRestantesLixeira({ em: new Date(2027, 2, 1).toISOString() }, agora), diasRestantesLixeira(null, agora)].join(","), "15,5,0,");
+  });
+  t("Responsáveis em lote: substituir, adicionar, remover, limpar e manter", () => {
+    return eq([aplicarAcaoNomes("Ana, Bia", "substituir", "Caio"), aplicarAcaoNomes("Ana, Bia", "adicionar", "bia, Caio"), aplicarAcaoNomes("Ana, Bia, Caio", "remover", "bia"),
+      aplicarAcaoNomes("Ana", "limpar", ""), aplicarAcaoNomes("Ana; Bia", "manter", "Zé")].join(" | "), "Caio | Ana, Bia, Caio | Ana, Caio |  | Ana, Bia");
   });
   t("Vínculo entre blocos circular não trava e gera alerta", () => {
     const a = { id:"A", nome:"A", ativo:true, frequencia:{tipo:"mensal"}, eventos:[{ id:"a1", nome:"a1", regra:{ tipo:"vinculo", processoRef:"B", eventoRef:"b1", dias:0 } }] };
@@ -3544,7 +3714,7 @@ function adicionarAbaClientes(wb, nomeAba, linhas, modo){
   const temCrono = linhas.some(l => l.cronograma);
   const interno = modo !== "cliente";
   ws.columns = [...(temCrono ? [{ width:34 }] : []), { width:14 }, { width:48 }, { width:22 }, { width:20 }, ...(interno ? [{ width:22 }, { width:22 }, { width:22 }] : [])];
-  ws.getRow(1).values = [...(temCrono ? ["Cronograma"] : []), "Código", "Razão social", "CNPJ/CPF", "Grupo", ...(interno ? ["Gerente", "Coordenador", "Analista"] : [])];
+  ws.getRow(1).values = [...(temCrono ? ["Cronograma"] : []), "ID", "Razão social", "CNPJ/CPF", "Grupo", ...(interno ? ["Gerente", "Coordenador", "Analista"] : [])];
   estiloCabecalho(ws.getRow(1));
   linhas.forEach(l => ws.addRow([...(temCrono ? [l.cronograma || ""] : []), l.codigo || "", l.razaoSocial || "", fmtDocumento(l.documento), l.grupo || "", ...(interno ? [l.gerente || "", l.coordenador || "", l.analista || ""] : [])]));
 }
@@ -3955,13 +4125,13 @@ function VincularClientesModal({ base, selecionadosIniciais, cronogramaId, vincu
         <h3>Vincular clientes ao cronograma</h3>
         {!base.length ? <p className="muted">A base de clientes está vazia. Importe a planilha em <strong>🏢 Base de clientes</strong> primeiro.</p> : <>
         <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginBottom:8}}>
-          <input type="search" autoFocus placeholder="Buscar por nome, CNPJ, código ou grupo…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:220}} />
+          <input type="search" autoFocus placeholder="Buscar por nome, CNPJ, ID ou grupo…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:220}} />
           <label className="muted" style={{display:"flex", gap:4, alignItems:"center"}}><input type="checkbox" checked={soLivres} onChange={e=>setSoLivres(e.target.checked)} /> só clientes sem cronograma</label>
-          <button className="btn btn-sm btn-outline" onClick={()=>setColar(!colar)}>{colar ? "Fechar colagem" : "Colar lista de CNPJs/códigos"}</button>
+          <button className="btn btn-sm btn-outline" onClick={()=>setColar(!colar)}>{colar ? "Fechar colagem" : "Colar lista de CNPJs/IDs"}</button>
         </div>
         {colar && (
           <div className="card" style={{background:"var(--surface2)", padding:12}}>
-            <textarea rows={4} placeholder={"Cole aqui uma coluna do Excel com CNPJs (com ou sem pontuação) ou códigos — um por linha"} value={txt} onChange={e=>setTxt(e.target.value)} />
+            <textarea rows={4} placeholder={"Cole aqui uma coluna do Excel com CNPJs (com ou sem pontuação) ou IDs — um por linha"} value={txt} onChange={e=>setTxt(e.target.value)} />
             <div style={{display:"flex", gap:8, alignItems:"center", marginTop:6, flexWrap:"wrap"}}>
               <button className="btn btn-sm btn-primary" onClick={aplicarColagem} disabled={!txt.trim()}>Marcar os encontrados</button>
               {relatorio && <span className="muted">{relatorio.achados} marcado(s)
@@ -3978,7 +4148,7 @@ function VincularClientesModal({ base, selecionadosIniciais, cronogramaId, vincu
         </div>
         <div className="pick-list">
           <table>
-            <thead><tr><th style={{width:30}}></th><th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th><th>Cronograma atual</th></tr></thead>
+            <thead><tr><th style={{width:30}}></th><th>Razão social</th><th>CNPJ/CPF</th><th>ID</th><th>Grupo</th><th>Cronograma atual</th></tr></thead>
             <tbody>
               {filtrados.map(c => {
                 const outro = emOutro(c);
@@ -4007,23 +4177,29 @@ function VincularClientesModal({ base, selecionadosIniciais, cronogramaId, vincu
   );
 }
 
-function NovoCronogramaForm({ modelos, base, vinculoDe, ano, anosEstado, onCancelar, onCriarDireto, onIrParaAssistente }){
+function NovoCronogramaForm({ modelos, base, vinculoDe, ano, anosEstado, onCancelar, onCriarDireto, onIrParaAssistente, gerentes = [], escopo = "all" }){
   const [nome, setNome] = useState("");
+  const usaGerencia = gerentes.length > 0;
+  const [gerenteId, setGerenteId] = useState(escopo !== "all" ? escopo : "");
   // Ano da versão que nasce: qualquer ano ainda NÃO encerrado — o anterior ao vigente (ex.: cliente novo entrando
   // em 2026 enquanto 2026 não foi encerrado), o vigente e os dois seguintes. Padrão: o ano em que você está.
   const anosPossiveis = [-1, 0, 1, 2].map(i => anoVigente() + i).filter(a => !anoEncerrado(a, anosEstado));
   const [anoNovo, setAnoNovo] = useState(() => anosPossiveis.includes(ano) ? ano : (anosPossiveis.includes(anoVigente()) ? anoVigente() : anosPossiveis[0]));
-  const [modeloId, setModeloId] = useState(modelos[0]?.id || "");
+  // Modelos da empresa + os da gerência escolhida.
+  const modelosDaGer = usaGerencia ? modelos.filter(m => !m.gerenteId || m.gerenteId === gerenteId) : modelos;
+  const [modeloId, setModeloId] = useState(() => (modelosDaGer[0] || modelos[0] || {}).id || "");
   const [verPrevia, setVerPrevia] = useState(true);
-  const modeloEscolhido = modelos.find(m => m.id === modeloId);
+  const modeloEscolhido = modelosDaGer.find(m => m.id === modeloId);
   const [clientesIds, setClientesIds] = useState([]);
   const [escolhendo, setEscolhendo] = useState(false);
   const porId = Object.fromEntries(base.map(c => [c.id, c]));
   const escolhidos = clientesIds.map(id => porId[id]).filter(Boolean);
 
-  function dados(){ return { nome: nome.trim(), modeloId, clientesIds, ano: anoNovo }; }
+  function dados(){ return { nome: nome.trim(), modeloId, clientesIds, ano: anoNovo, gerenteId: usaGerencia ? gerenteId : null }; }
   function validar(){
     if(!nome.trim()){ ui.alert("Dá um nome pro cronograma antes de continuar (ex.: nome do grupo econômico)."); return false; }
+    if(usaGerencia && !gerenteId){ ui.alert("Escolha a gerência do cronograma — é obrigatória."); return false; }
+    if(!modeloEscolhido){ ui.alert("Escolha o Modelo de partida."); return false; }
     return true;
   }
   return (
@@ -4038,10 +4214,16 @@ function NovoCronogramaForm({ modelos, base, vinculoDe, ano, anosEstado, onCance
               {anosPossiveis.map(a => <option key={a} value={a}>{a}{a === anoVigente() ? " (atual)" : a < anoVigente() ? " (ainda aberto)" : ""}</option>)}
             </select></div>
         </div>
+        {usaGerencia && <div className="wizard-q"><label>Gerência *</label>
+          <select style={{width:"100%"}} value={gerenteId} disabled={escopo !== "all"} onChange={e=>{ const g = e.target.value; setGerenteId(g); setClientesIds([]); const lista = modelos.filter(m => !m.gerenteId || m.gerenteId === g); if(!lista.some(m => m.id === modeloId)) setModeloId((lista[0] || {}).id || ""); }} aria-label="Gerência do cronograma">
+            <option value="">Selecione…</option>
+            {gerentes.map(g => <option key={g.id} value={g.id}>{g.nome}</option>)}
+          </select>
+        </div>}
         <div className="wizard-q">
           <label>Modelo (padrão da casa) de partida</label>
           <select style={{width:"100%"}} value={modeloId} onChange={e=>setModeloId(e.target.value)}>
-            {modelos.map(m => <option key={m.id} value={m.id}>{m.nome}</option>)}
+            {modelosDaGer.map(m => <option key={m.id} value={m.id}>{m.nome}{usaGerencia && m.gerenteId ? " (da gerência)" : ""}</option>)}
           </select>
           <button type="button" className="link-btn" style={{marginTop:6}} onClick={()=>setVerPrevia(!verPrevia)}>
             {verPrevia ? "▾ esconder as datas da folha deste Modelo" : "▸ ver as datas da folha deste Modelo"}
@@ -4055,7 +4237,7 @@ function NovoCronogramaForm({ modelos, base, vinculoDe, ano, anosEstado, onCance
         <div className="wizard-q">
           <label>Clientes (CNPJs) que seguem este cronograma</label>
           <div style={{display:"flex", gap:8, alignItems:"center", flexWrap:"wrap"}}>
-            <button className="btn btn-sm btn-outline" onClick={()=>setEscolhendo(true)}>{escolhidos.length ? "Alterar seleção" : "Escolher clientes…"}</button>
+            <button className="btn btn-sm btn-outline" disabled={usaGerencia && !gerenteId} title={usaGerencia && !gerenteId ? "Escolha a gerência primeiro" : ""} onClick={()=>setEscolhendo(true)}>{escolhidos.length ? "Alterar seleção" : "Escolher clientes…"}</button>
             <span className="muted">{escolhidos.length ? escolhidos.length + " selecionado(s)" : "nenhum ainda — dá pra vincular depois também"}</span>
           </div>
           {escolhidos.length > 0 && (
@@ -4066,12 +4248,12 @@ function NovoCronogramaForm({ modelos, base, vinculoDe, ano, anosEstado, onCance
         </div>
         <div className="wizard-actions">
           <button className="btn btn-ghost" onClick={onCancelar}>Cancelar</button>
-          <button className="btn btn-outline" onClick={()=>{ if(validar()) onIrParaAssistente(dados()); }}>Criar com assistente de datas-chave →</button>
-          <button className="btn btn-primary" onClick={()=>{ if(validar()) onCriarDireto(dados()); }}>Criar com este Modelo</button>
+          {/* Sempre pelo assistente (decisão do usuário): as perguntas-chave personalizam o cronograma. */}
+          <button className="btn btn-primary" onClick={()=>{ if(validar()) onIrParaAssistente(dados()); }}>Continuar no assistente de datas-chave →</button>
         </div>
       </div>
       {escolhendo && (
-        <VincularClientesModal base={base} selecionadosIniciais={clientesIds} cronogramaId={null} vinculoDe={vinculoDe}
+        <VincularClientesModal base={usaGerencia ? base.filter(c => c.gerenteId === gerenteId) : base} selecionadosIniciais={clientesIds} cronogramaId={null} vinculoDe={vinculoDe}
           onFechar={()=>setEscolhendo(false)}
           onConfirmar={ids => {
             setClientesIds(ids); setEscolhendo(false);
@@ -4116,7 +4298,7 @@ async function lerArquivoTabela(arquivo){
 async function baixarModeloPlanilha(){
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Clientes");
-  ws.columns = [{ header:"Código", width:12 }, { header:"Razão social", width:48 }, { header:"CNPJ", width:22, style:{ numFmt:"@" } }, { header:"Grupo", width:22 },
+  ws.columns = [{ header:"ID", width:12 }, { header:"Razão social", width:48 }, { header:"CNPJ", width:22, style:{ numFmt:"@" } }, { header:"Grupo", width:22 },
     { header:"Gerente", width:22 }, { header:"Coordenador", width:22 }, { header:"Analista", width:22 }];
   ws.getRow(1).font = { bold:true };
   ws.addRow(["1001", "Empresa Exemplo Ltda", "11.222.333/0001-81", "Grupo Exemplo", "Nome do gerente", "Nome do coordenador", "Nome do analista"]);
@@ -4129,8 +4311,9 @@ async function baixarModeloPlanilha(){
 
 function ImportarClientesModal({ analise, onConfirmar, onFechar }){
   const { novos, atualizados, iguais, invalidos } = analise;
+  const avisos = analise.avisos || [];
   const [ver, setVer] = useState(novos.length ? "novos" : atualizados.length ? "atualizados" : "invalidos");
-  const abas = [["novos","Novos",novos.length],["atualizados","Atualizados",atualizados.length],["invalidos","Com problema",invalidos.length]];
+  const abas = [["novos","Novos",novos.length],["atualizados","Atualizados",atualizados.length],["invalidos","Com problema",invalidos.length], ...(avisos.length ? [["avisos","⚠ Avisos",avisos.length]] : [])];
   return (
     <div className="modal-overlay dialog-overlay" style={{zIndex:1050}} onMouseDown={fecharAoClicarFora(true, onFechar, "Descartar esta importação? Nada foi importado ainda.")}>
       <div className="modal-box" style={{width:760}}>
@@ -4138,18 +4321,21 @@ function ImportarClientesModal({ analise, onConfirmar, onFechar }){
         <p style={{fontSize:13}}>
           <strong>{novos.length}</strong> novo(s) · <strong>{atualizados.length}</strong> com dados atualizados · {iguais.length} já iguais na base
           {invalidos.length > 0 && <> · <span className="doc-invalido">{invalidos.length} com problema (não serão importados)</span></>}
+          {avisos.length > 0 && <> · <span className="alerta">{avisos.length} nome(s) de responsável não reconhecido(s) (não serão gravados)</span></>}
         </p>
         <div className="toolbar" style={{marginBottom:8}}>
           {abas.map(([id,label,n]) => <button key={id} className={"btn btn-sm " + (ver===id ? "btn-primary" : "btn-outline")} onClick={()=>setVer(id)}>{label} ({n})</button>)}
         </div>
         <div className="pick-list">
           <table>
-            {ver === "novos" && <><thead><tr><th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th></tr></thead>
+            {ver === "novos" && <><thead><tr><th>Razão social</th><th>CNPJ/CPF</th><th>ID</th><th>Grupo</th></tr></thead>
               <tbody>{novos.map((r,i) => <tr key={i}><td style={{whiteSpace:"normal"}}>{r.razaoSocial || "—"}</td><td>{fmtDocumento(r.documento)}</td><td>{r.codigo || "—"}</td><td>{r.grupo || "—"}</td></tr>)}</tbody></>}
             {ver === "atualizados" && <><thead><tr><th>CNPJ/CPF</th><th>O que muda</th></tr></thead>
               <tbody>{atualizados.map((a,i) => <tr key={i}><td>{fmtDocumento(a.novo.documento)}</td><td style={{whiteSpace:"normal"}}>{a.campos.map(k => (CAMPOS_CLIENTE.find(c => c[0] === k) || [k, k])[1] + ': "' + (a.existente[k] || "—") + '" → "' + a.novo[k] + '"').join(" · ")}</td></tr>)}</tbody></>}
             {ver === "invalidos" && <><thead><tr><th>Linha</th><th>Razão social</th><th>Documento</th><th>Problema</th></tr></thead>
               <tbody>{invalidos.map((r,i) => <tr key={i}><td>{r.linha}</td><td style={{whiteSpace:"normal"}}>{r.razaoSocial || "—"}</td><td>{r.documentoBruto || "—"}</td><td className="doc-invalido">{r.motivo}</td></tr>)}</tbody></>}
+            {ver === "avisos" && <><thead><tr><th>Linha</th><th>Cliente</th><th>Campo</th><th>Nome</th><th>Situação</th></tr></thead>
+              <tbody>{avisos.map((a,i) => <tr key={i}><td>{a.linha}</td><td style={{whiteSpace:"normal"}}>{a.rotulo || "—"}</td><td>{a.campo === "coordenador" ? "Coordenador" : "Analista"}</td><td>{a.nome}</td><td className="alerta" style={{whiteSpace:"normal"}}>{a.motivo} — não será gravado</td></tr>)}</tbody></>}
           </table>
         </div>
         <div className="wizard-actions">
@@ -4163,18 +4349,104 @@ function ImportarClientesModal({ analise, onConfirmar, onFechar }){
   );
 }
 
-function ClienteBaseForm({ inicial, base, onSalvar, onFechar }){
+// Coordenador(es)/analista(s) de vários clientes de uma vez (mesma gerência, para as pessoas serem válidas).
+function ResponsaveisLoteModal({ clientes, opcoesPorCampo, rotuloGerencia, onAplicar, onFechar }){
+  const CAMPOS = [["coordenador", "Coordenador(es)"], ["analista", "Analista(s)"]];
+  const [cfg, setCfg] = useState({ coordenador: { acao: "manter", nomes: "" }, analista: { acao: "manter", nomes: "" } });
+  const set = (campo, patch) => setCfg(c => ({ ...c, [campo]: { ...c[campo], ...patch } }));
+  const mudancas = clientes.map(c => {
+    const novo = {}; CAMPOS.forEach(([k]) => { novo[k] = aplicarAcaoNomes(c[k], cfg[k].acao, cfg[k].nomes); });
+    return { c, novo, muda: CAMPOS.some(([k]) => juntarNomes(nomesDoCampo(c[k])) !== novo[k]) };
+  });
+  const nMuda = mudancas.filter(m => m.muda).length;
+  const precisaNomes = CAMPOS.some(([k]) => ["substituir", "adicionar", "remover"].includes(cfg[k].acao) && !nomesDoCampo(cfg[k].nomes).length);
+  async function aplicar(){
+    if(precisaNomes){ ui.alert("Escolha a(s) pessoa(s) para a ação selecionada."); return; }
+    if(!nMuda){ ui.alert("Nada muda nos clientes selecionados com essas opções."); return; }
+    const ex = mudancas.filter(m => m.muda).slice(0, 8).map(m => "• " + (m.c.razaoSocial || fmtDocumento(m.c.documento)) + ": " + CAMPOS.map(([k, l]) => l.replace("(es)", "").replace("(s)", "") + ' "' + (m.novo[k] || "—") + '"').join(" · ")).join("\n");
+    if(!(await ui.confirm("Alterar os responsáveis de " + nMuda + " cliente(s)?\n\n" + ex + (nMuda > 8 ? "\n… e mais " + (nMuda - 8) : ""), { titulo:"Coordenador/analista em lote", okLabel:"Alterar " + nMuda }))) return;
+    onAplicar(mudancas.filter(m => m.muda).map(m => ({ id: m.c.id, ...m.novo })));
+  }
+  return (
+    <div className="modal-overlay dialog-overlay" style={{zIndex:1050}} onMouseDown={fecharAoClicarFora(false, onFechar)}>
+      <div className="modal-box" style={{width:600}}>
+        <h3>Coordenador e analista — {clientes.length} cliente(s)</h3>
+        <p className="muted" style={{marginTop:0}}>{rotuloGerencia} Os campos servem para os filtros “Meus clientes/cronogramas”; o acesso continua sendo pela gerência.</p>
+        {CAMPOS.map(([campo, label]) => (
+          <div className="wizard-q" key={campo}>
+            <label>{label}</label>
+            <div style={{display:"flex", gap:8, alignItems:"flex-start", flexWrap:"wrap"}}>
+              <select value={cfg[campo].acao} onChange={e=>set(campo, { acao: e.target.value })} aria-label={"Ação para " + label}>
+                <option value="manter">Manter como está</option>
+                <option value="substituir">Substituir por…</option>
+                <option value="adicionar">Adicionar…</option>
+                <option value="remover">Remover…</option>
+                <option value="limpar">Limpar (deixar vazio)</option>
+              </select>
+              {["substituir", "adicionar", "remover"].includes(cfg[campo].acao) && (
+                <div style={{flex:1, minWidth:240}}>
+                  <SeletorPessoas valor={cfg[campo].nomes} onChange={v => set(campo, { nomes: v })}
+                    opcoes={cfg[campo].acao === "remover" ? [...new Set(clientes.flatMap(c => nomesDoCampo(c[campo])))].sort((a,b) => a.localeCompare(b, "pt-BR")) : opcoesPorCampo[campo]}
+                    rotuloVazio="ninguém disponível" />
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+        <p className="muted" style={{marginBottom:0}}>{nMuda} de {clientes.length} cliente(s) vão mudar com essas opções.</p>
+        <div className="wizard-actions">
+          <button className="btn btn-ghost" onClick={onFechar}>Cancelar</button>
+          <button className="btn btn-primary" disabled={!nMuda || precisaNomes} onClick={aplicar}>Aplicar…</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+// Vários nomes (chips) escolhidos de uma lista; nomes antigos fora da lista continuam e podem ser removidos.
+function SeletorPessoas({ valor, opcoes, onChange, rotuloVazio }){
+  const escolhidos = nomesDoCampo(valor);
+  const livres = (opcoes || []).filter(o => !escolhidos.some(e => normalizar(e) === normalizar(o)));
+  return (
+    <div className="seletor-pessoas">
+      {escolhidos.map(n => {
+        const valido = (opcoes || []).some(o => normalizar(o) === normalizar(n));
+        return <span key={n} className={"chip-pessoa" + (valido ? "" : " invalido")} title={valido ? "" : "Não é usuário desta gerência no painel — remova ou troque"}>{valido ? "" : "⚠ "}{n}<button type="button" aria-label={"Tirar " + n} onClick={()=>onChange(juntarNomes(escolhidos.filter(x => x !== n)))}>×</button></span>;
+      })}
+      <select value="" onChange={e=>{ if(e.target.value) onChange(juntarNomes([...escolhidos, e.target.value])); }} aria-label="Adicionar pessoa">
+        <option value="">{livres.length ? "+ adicionar…" : (rotuloVazio || "ninguém disponível")}</option>
+        {livres.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+function ClienteBaseForm({ inicial, base, onSalvar, onFechar, gerentes = [], usuariosPainel = [], gruposPainel = [], escopo = "all", vinculado = false }){
   const [f, setF] = useState(() => ({ razaoSocial: inicial?.razaoSocial || "", documento: inicial ? fmtDocumento(inicial.documento) : "", codigo: inicial?.codigo || "", grupo: inicial?.grupo || "",
-    gerente: inicial?.gerente || "", coordenador: inicial?.coordenador || "", analista: inicial?.analista || "" }));
+    gerente: inicial?.gerente || "", coordenador: inicial?.coordenador || "", analista: inicial?.analista || "",
+    gerenteId: inicial?.gerenteId || (escopo !== "all" ? escopo : "") }));
+  const usaGerencia = gerentes.length > 0;
+  const nomeGer = id => (gerentes.find(g => g.id === id) || {}).nome || "";
   const original = useRef(JSON.stringify(f));
   const n = normalizarDocumento(f.documento);
   const duplicado = n.valido && base.find(c => c.documento === n.doc && c.id !== inicial?.id);
+  const idRepetido = f.codigo.trim() && base.find(c => c.id !== inicial?.id && normalizar(c.codigo).trim() === normalizar(f.codigo).trim());
   const nomesDe = campo => [...new Set(base.map(c => c[campo]).filter(Boolean))].sort((a,b) => a.localeCompare(b, "pt-BR"));
   function salvar(){
     if(!n.valido){ ui.alert("CNPJ/CPF inválido — confira os dígitos."); return; }
     if(duplicado){ ui.alert('Esse documento já está na base: "' + (duplicado.razaoSocial || fmtDocumento(duplicado.documento)) + '".'); return; }
+    if(idRepetido){ ui.alert('O ID "' + f.codigo.trim() + '" já é de ' + (idRepetido.razaoSocial || fmtDocumento(idRepetido.documento)) + ". Cada cliente precisa de um ID diferente."); return; }
+    if(usaGerencia && !f.gerenteId){ ui.alert("Escolha a gerência do cliente — é obrigatória."); return; }
+    // Coordenador e analista são opcionais, mas se informados têm de ser usuários do painel dessa gerência.
+    if(usaGerencia){
+      const invalidos = ["coordenador", "analista"].flatMap(campo => {
+        const validos = pessoasDaGerencia(usuariosPainel, gruposPainel, f.gerenteId, campo).map(normalizar);
+        return nomesDoCampo(f[campo]).filter(n => !validos.includes(normalizar(n))).map(n => (campo === "coordenador" ? "Coordenador" : "Analista") + ' "' + n + '"');
+      });
+      if(invalidos.length){ ui.alert("Estes nomes não são usuários da gerência " + nomeGer(f.gerenteId) + " no painel. Remova (×) ou troque pela pessoa certa:\n\n• " + invalidos.join("\n• "), { titulo:"Responsável inválido" }); return; }
+    }
+    if(usaGerencia && vinculado && inicial?.gerenteId && f.gerenteId !== inicial.gerenteId){ ui.alert("Este cliente está vinculado a um cronograma da gerência " + nomeGer(inicial.gerenteId) + ". Desvincule antes de trocar a gerência."); return; }
     onSalvar({ ...(inicial || {}), razaoSocial: f.razaoSocial.trim(), documento: n.doc, tipoDocumento: n.tipo, codigo: f.codigo.trim(), grupo: f.grupo.trim(),
-      gerente: f.gerente.trim(), coordenador: f.coordenador.trim(), analista: f.analista.trim() });
+      gerente: usaGerencia ? nomeGer(f.gerenteId) : f.gerente.trim(), gerenteId: usaGerencia ? f.gerenteId : (inicial?.gerenteId || null),
+      coordenador: juntarNomes(nomesDoCampo(f.coordenador)), analista: juntarNomes(nomesDoCampo(f.analista)) });
   }
   return (
     <div className="modal-overlay dialog-overlay" style={{zIndex:1050}} onMouseDown={fecharAoClicarFora(() => JSON.stringify(f) !== original.current, onFechar, "Descartar as alterações deste cliente?")}>
@@ -4184,13 +4456,29 @@ function ClienteBaseForm({ inicial, base, onSalvar, onFechar }){
         <div className="wizard-q"><label>CNPJ/CPF</label><input type="text" style={{width:"100%"}} value={f.documento} onChange={e=>setF({...f, documento:e.target.value})} />
           {f.documento && !n.valido && <div className="doc-invalido" style={{fontSize:11, marginTop:3}}>Documento inválido</div>}</div>
         <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
-          <div className="wizard-q"><label>Código</label><input type="text" style={{width:"100%"}} value={f.codigo} onChange={e=>setF({...f, codigo:e.target.value})} /></div>
+          <div className="wizard-q"><label>ID</label><input type="text" style={{width:"100%"}} value={f.codigo} onChange={e=>setF({...f, codigo:e.target.value})} />
+            {idRepetido && <div className="doc-invalido" style={{fontSize:11, marginTop:3}}>ID já usado por {idRepetido.razaoSocial || fmtDocumento(idRepetido.documento)}</div>}</div>
           <div className="wizard-q"><label>Grupo (opcional)</label><input type="text" style={{width:"100%"}} value={f.grupo} onChange={e=>setF({...f, grupo:e.target.value})} /></div>
         </div>
         <div className="nav-secao" style={{color:"var(--muted)", marginTop:0}}>Responsáveis</div>
-        {RESPONSAVEIS.map(([campo, label]) => (
+        {usaGerencia ? <>
+          <div className="wizard-q"><label>Gerência (gerente) *</label>
+            <select style={{width:"100%"}} value={f.gerenteId} disabled={escopo !== "all"} onChange={e=>setF({ ...f, gerenteId: e.target.value })} aria-label="Gerência">
+              <option value="">Selecione…</option>
+              {gerentes.map(g => <option key={g.id} value={g.id}>{g.nome}</option>)}
+            </select>
+            {escopo !== "all" && <div className="muted" style={{fontSize:11, marginTop:3}}>Clientes novos entram na sua gerência.</div>}
+          </div>
+          {[["coordenador", "Coordenador(es)"], ["analista", "Analista(s) responsável(is)"]].map(([campo, label]) => (
+            <div className="wizard-q" key={campo}><label>{label}</label>
+              <SeletorPessoas valor={f[campo]} onChange={v => setF({ ...f, [campo]: v })}
+                opcoes={f.gerenteId ? pessoasDaGerencia(usuariosPainel, gruposPainel, f.gerenteId, campo) : []}
+                rotuloVazio={f.gerenteId ? "ninguém disponível nesta gerência" : "escolha a gerência primeiro"} />
+            </div>
+          ))}
+        </> : RESPONSAVEIS.map(([campo, label]) => (
           <div className="wizard-q" key={campo}><label>{label}</label>
-            <input type="text" list={"lista-" + campo} style={{width:"100%"}} value={f[campo]} onChange={e=>setF({...f, [campo]:e.target.value})} />
+            <input type="text" list={"lista-" + campo} style={{width:"100%"}} value={f[campo]} onChange={e=>setF({...f, [campo]:e.target.value})} placeholder={campo === "gerente" ? "" : "vários: separe por vírgula"} />
             <datalist id={"lista-" + campo}>{nomesDe(campo).map(x => <option key={x} value={x} />)}</datalist>
           </div>
         ))}
@@ -4203,7 +4491,14 @@ function ClienteBaseForm({ inicial, base, onSalvar, onFechar }){
   );
 }
 
-function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarBase, onAbrirCronograma, podeEditar = true }){
+function ClientesBaseTela({ base, baseCompleta, problemasCliente = {}, vinculoDe, vinculoTodosAnos = {}, onAtualizarBase, onAbrirCronograma, podeEditar = true, gerentes = [], usuariosPainel = [], gruposPainel = [], escopo = "all", usuarioNome = "" }){
+  const baseTodos = baseCompleta || base; // para checar duplicidade de CNPJ em qualquer gerência
+  const usaGerencia = gerentes.length > 0;
+  const nomeGer = id => (gerentes.find(g => g.id === id) || {}).nome || "";
+  const [fGer, setFGer] = useState(""); // "" | id do gerente | "__sem"
+  const [soMeus, setSoMeus] = useState(false);
+  const [gerLote, setGerLote] = useState("");
+  const [respLote, setRespLote] = useState(null); // clientes selecionados para editar coordenador/analista
   const [busca, setBusca] = useState("");
   const [selecionados, setSelecionados] = useState(() => new Set());
   const [fAtivo, setFAtivo] = useState("ativos"); // ativos | inativos | todos
@@ -4215,25 +4510,44 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
   const [fResp, setFResp] = useState(""); // "campo|nome" ou "semAnalista"
   const inputArquivo = useRef(null);
   const termo = normalizar(busca), termoDigitos = soDigitos(busca);
-  const nomesPorPapel = RESPONSAVEIS.map(([campo, label]) => [campo, label, [...new Set(base.map(c => c[campo]).filter(Boolean))].sort((a,b) => a.localeCompare(b, "pt-BR"))]);
+  const nomesPorPapel = RESPONSAVEIS.map(([campo, label]) => [campo, label, [...new Set(base.flatMap(c => nomesDoCampo(c[campo])))].sort((a,b) => a.localeCompare(b, "pt-BR"))]);
   const casaResp = c => {
     if(!fResp) return true;
     if(fResp === "semAnalista") return !c.analista;
-    const [campo, nome] = fResp.split("|"); return c[campo] === nome;
+    if(fResp === "semUsuario") return !!(problemasCliente[c.id] || []).length;
+    const [campo, nome] = fResp.split("|"); return temNome(c[campo], nome);
   };
+  const ehMeu = c => !!usuarioNome && RESPONSAVEIS.some(([k]) => temNome(c[k], usuarioNome));
   const lista = base
     .filter(c => fAtivo === "todos" || (fAtivo === "ativos" ? c.ativo !== false : c.ativo === false))
     .filter(c => filtro === "todos" || (filtro === "sem" ? !(vinculoDe[c.id] || []).length : (vinculoDe[c.id] || []).length))
     .filter(casaResp)
+    .filter(c => !soMeus || ehMeu(c))
+    .filter(c => !fGer || (fGer === "__sem" ? !c.gerenteId : c.gerenteId === fGer))
     .filter(c => !termo || [c.razaoSocial, c.codigo, c.grupo, c.gerente, c.coordenador, c.analista].some(v => normalizar(v).includes(termo)) || (termoDigitos.length >= 3 && c.documento.includes(termoDigitos)))
     .sort((a,b) => (a.razaoSocial||"").localeCompare(b.razaoSocial||"", "pt-BR"));
   const nInativos = base.filter(c => c.ativo === false).length;
   const semCronograma = base.filter(c => c.ativo !== false && !(vinculoDe[c.id] || []).length).length;
 
   function analisarLinhas(rows){
-    const itens = mapearLinhasClientes(rows);
+    let itens = mapearLinhasClientes(rows).map((x, i) => ({ ...x, _linha: i + 1 }));
     if(!itens.length){ ui.alert("Não encontrei nenhuma linha com CNPJ/CPF nessa tabela."); return; }
-    setAnalise(analisarImportacao(base, itens));
+    let extra = { avisos: [], rejeitados: [] };
+    if(usaGerencia){ extra = validarResponsaveisImportacao(itens, { gerentes, usuarios: usuariosPainel, grupos: gruposPainel, escopo }); itens = extra.itens; }
+    const a = analisarImportacao(baseTodos, itens);
+    if(usaGerencia){
+      // Cliente novo precisa de gerente; CNPJ que já existe em OUTRA gerência não pode ser mexido por quem não é Administrador.
+      const semGer = a.novos.filter(r => !r.gerente);
+      const deOutra = x => escopo !== "all" && x.gerenteId && x.gerenteId !== escopo;
+      const bloqAtual = a.atualizados.filter(x => deOutra(x.existente)), bloqIgual = a.iguais.filter(deOutra);
+      a.novos = a.novos.filter(r => r.gerente);
+      a.atualizados = a.atualizados.filter(x => !bloqAtual.includes(x));
+      a.iguais = a.iguais.filter(x => !bloqIgual.includes(x));
+      a.invalidos = [...a.invalidos, ...extra.rejeitados,
+        ...semGer.map(r => ({ razaoSocial: r.razaoSocial, documentoBruto: fmtDocumento(r.documento), linha: "—", motivo: "Sem gerente — obrigatório para cliente novo" })),
+        ...[...bloqAtual.map(x => x.existente), ...bloqIgual].map(c => ({ razaoSocial: c.razaoSocial, documentoBruto: fmtDocumento(c.documento), linha: "—", motivo: "CNPJ já cadastrado em outra gerência" }))];
+    }
+    setAnalise({ ...a, avisos: extra.avisos });
   }
   async function escolherArquivo(e){
     const arq = e.target.files && e.target.files[0];
@@ -4244,12 +4558,20 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
   }
   async function confirmarImportacao(){
     const a = analise; setAnalise(null);
-    await onAtualizarBase(b => aplicarImportacao(b, analisarImportacao(b, [...a.novos, ...a.atualizados.map(x => x.novo)].map(r => ({ documentoBruto:r.documento, razaoSocial:r.razaoSocial, codigo:r.codigo, grupo:r.grupo, gerente:r.gerente, coordenador:r.coordenador, analista:r.analista })))),
-      a.novos.length + " cliente(s) importado(s)" + (a.atualizados.length ? ", " + a.atualizados.length + " atualizado(s)" : "") + ".");
+    // Gerência: pelo nome da coluna "Gerente" (casado com os gerentes do painel); quem não é Administrador importa na própria gerência.
+    const padrao = escopo !== "all" ? escopo : null;
+    const comGerencia = lista => !usaGerencia ? lista : lista.map(c => {
+      const gid = (padrao && !c.gerenteId) ? padrao : gerenciaDoCliente(c, gerentes);
+      return gid ? { ...c, gerenteId: gid, gerente: nomeGer(gid) } : c;
+    });
+    const semGer = usaGerencia && !padrao ? a.novos.filter(r => !gerentePorNome(r.gerente, gerentes)).length : 0;
+    await onAtualizarBase(b => comGerencia(aplicarImportacao(b, analisarImportacao(b, [...a.novos, ...a.atualizados.map(x => x.novo)].map(r => ({ documentoBruto:r.documento, razaoSocial:r.razaoSocial, codigo:r.codigo, grupo:r.grupo, gerente:r.gerente, coordenador:r.coordenador, analista:r.analista }))))),
+      a.novos.length + " cliente(s) importado(s)" + (a.atualizados.length ? ", " + a.atualizados.length + " atualizado(s)" : "") + (semGer ? " · " + semGer + " sem gerência reconhecida (use o filtro \u201cSem gerência\u201d)" : "") + ".");
     setColarAberto(false); setTxt("");
   }
   async function salvarRegistro(reg){
     setEditando(null);
+    if(usaGerencia && !reg.gerenteId && escopo !== "all") reg = { ...reg, gerenteId: escopo, gerente: nomeGer(escopo) };
     if(reg.id) await onAtualizarBase(b => b.map(c => c.id === reg.id ? { ...reg, atualizadoEm: new Date().toISOString() } : c), "Cliente atualizado.");
     else await onAtualizarBase(b => [...b, { ...reg, id: novoId("emp"), criadoEm: new Date().toISOString() }], "Cliente adicionado.");
   }
@@ -4273,6 +4595,35 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
     const agora = new Date().toISOString();
     await onAtualizarBase(b => b.map(c => ids.has(c.id) ? { ...c, ativo, atualizadoEm: agora, ...(ativo ? { inativadoEm: null } : { inativadoEm: agora }) } : c),
       lista.length + " cliente(s) " + (ativo ? "reativado(s)." : "inativado(s)."));
+    setSelecionados(new Set());
+  }
+  // Gerência em lote (Administrador): acerta quem está sem gerência; quem já tem gerência E cronograma não muda.
+  async function definirGerenciaLote(){
+    if(!gerLote){ ui.alert("Escolha a gerência."); return; }
+    const alvo = base.filter(c => selecionados.has(c.id));
+    const presos = alvo.filter(c => c.gerenteId && c.gerenteId !== gerLote && (vinculoTodosAnos[c.id] || []).length);
+    const ok = alvo.filter(c => !presos.includes(c));
+    if(!ok.length){ ui.alert("Nenhum pode mudar: todos já têm gerência e estão vinculados a cronograma. Desvincule antes.", { titulo:"Definir gerência" }); return; }
+    if(!(await ui.confirm("Definir a gerência " + nomeGer(gerLote) + " para " + ok.length + " cliente(s)?" + (presos.length ? "\n\n" + presos.length + " ficam como estão (já têm outra gerência e cronograma vinculado)." : ""), { titulo:"Definir gerência", okLabel:"Definir" }))) return;
+    const ids = new Set(ok.map(c => c.id));
+    await onAtualizarBase(b => b.map(c => ids.has(c.id) ? { ...c, gerenteId: gerLote, gerente: nomeGer(gerLote), atualizadoEm: new Date().toISOString() } : c), "Gerência definida em " + ok.length + " cliente(s).");
+    setSelecionados(new Set());
+  }
+  function abrirResponsaveisLote(){
+    const alvo = base.filter(c => selecionados.has(c.id));
+    if(usaGerencia){
+      if(alvo.some(c => !c.gerenteId)){ ui.alert("Há cliente(s) sem gerência na seleção. Defina a gerência antes (as pessoas vêm da lista da gerência)."); return; }
+      const gs = [...new Set(alvo.map(c => c.gerenteId))];
+      if(gs.length > 1){ ui.alert("Selecione clientes de uma gerência só (" + gs.map(nomeGer).join(" e ") + " estão misturadas) — as pessoas disponíveis dependem da gerência."); return; }
+    }
+    setRespLote(alvo);
+  }
+  async function aplicarResponsaveisLote(mudancas){
+    const por = Object.fromEntries(mudancas.map(m => [m.id, m]));
+    const agora = new Date().toISOString();
+    setRespLote(null);
+    await onAtualizarBase(b => b.map(c => por[c.id] ? { ...c, coordenador: por[c.id].coordenador, analista: por[c.id].analista, atualizadoEm: agora } : c),
+      "Responsáveis alterados em " + mudancas.length + " cliente(s).");
     setSelecionados(new Set());
   }
   // Excluir em lote: só os que não estão em nenhum cronograma (qualquer ano); os vinculados são listados e ficam.
@@ -4317,15 +4668,15 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
       {colarAberto && (
         <div className="card">
           <h3>Colar do Excel</h3>
-          <p className="muted" style={{marginTop:0}}>Selecione as colunas no Excel (de preferência com o cabeçalho: Código, Razão social, CNPJ, Grupo, Gerente, Coordenador, Analista), copie e cole aqui. Sem cabeçalho também funciona: a coluna do CNPJ é detectada pelo conteúdo. Célula vazia não apaga o que já está na base.</p>
-          <textarea rows={8} value={txt} onChange={e=>setTxt(e.target.value)} placeholder={"Código\tRazão social\tCNPJ\tGerente\tCoordenador\tAnalista\n1001\tEmpresa A Ltda\t11.222.333/0001-81\tMaria\tJoão\tAna"} />
+          <p className="muted" style={{marginTop:0}}>Selecione as colunas no Excel (de preferência com o cabeçalho: ID, Razão social, CNPJ, Grupo, Gerente, Coordenador, Analista), copie e cole aqui. Sem cabeçalho também funciona: a coluna do CNPJ é detectada pelo conteúdo. Célula vazia não apaga o que já está na base.</p>
+          <textarea rows={8} value={txt} onChange={e=>setTxt(e.target.value)} placeholder={"ID\tRazão social\tCNPJ\tGerente\tCoordenador\tAnalista\n1001\tEmpresa A Ltda\t11.222.333/0001-81\tMaria\tJoão\tAna"} />
           <div style={{marginTop:8}}><button className="btn btn-primary" disabled={!txt.trim()} onClick={()=>analisarLinhas(parseTabelaTexto(txt))}>Conferir antes de importar</button></div>
         </div>
       )}
 
       <div className="card">
         <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center", marginBottom:10}}>
-          <input type="search" placeholder="Buscar por nome, CNPJ, código, grupo ou responsável…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:220}} />
+          <input type="search" placeholder="Buscar por nome, CNPJ, ID, grupo ou responsável…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:220}} />
           <select value={fAtivo} onChange={e=>setFAtivo(e.target.value)} aria-label="Ativos ou inativos">
             <option value="ativos">Ativos</option>
             <option value="inativos">Inativos ({nInativos})</option>
@@ -4336,9 +4687,16 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
             <option value="sem">Sem cronograma</option>
             <option value="com">Com cronograma</option>
           </select>
+          {usaGerencia && escopo === "all" && <select value={fGer} onChange={e=>setFGer(e.target.value)} aria-label="Filtrar por gerência">
+            <option value="">Todas as gerências</option>
+            {gerentes.map(g => <option key={g.id} value={g.id}>Gerência {g.nome}</option>)}
+            <option value="__sem">⚠ Sem gerência ({base.filter(c => !c.gerenteId).length})</option>
+          </select>}
+          <label className="muted chk" title="Clientes em que você é gerente, coordenador ou analista"><input type="checkbox" checked={soMeus} disabled={!usuarioNome} onChange={e=>setSoMeus(e.target.checked)} /> Meus clientes</label>
           <select value={fResp} onChange={e=>setFResp(e.target.value)} aria-label="Filtrar por responsável">
             <option value="">Todos os responsáveis</option>
             <option value="semAnalista">Sem analista definido</option>
+            {usaGerencia && <option value="semUsuario">⚠ Responsável sem usuário ({base.filter(c => (problemasCliente[c.id] || []).length).length})</option>}
             {nomesPorPapel.map(([campo, label, nomes]) => nomes.length > 0 && (
               <optgroup key={campo} label={label}>{nomes.map(n => <option key={n} value={campo + "|" + n}>{n}</option>)}</optgroup>
             ))}
@@ -4350,6 +4708,14 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
             <strong>{selecionados.size} selecionado(s)</strong>
             <button className="btn btn-sm btn-outline" onClick={()=>alterarAtivo(base.filter(c => selecionados.has(c.id) && c.ativo !== false), false)} disabled={!base.some(c => selecionados.has(c.id) && c.ativo !== false)}>⏸ Inativar selecionados</button>
             <button className="btn btn-sm btn-outline" onClick={()=>alterarAtivo(base.filter(c => selecionados.has(c.id) && c.ativo === false), true)} disabled={!base.some(c => selecionados.has(c.id) && c.ativo === false)}>▶ Reativar selecionados</button>
+            {usaGerencia && escopo === "all" && <span style={{display:"inline-flex", gap:4, alignItems:"center"}}>
+              <select value={gerLote} onChange={e=>setGerLote(e.target.value)} aria-label="Gerência para os selecionados">
+                <option value="">Gerência…</option>
+                {gerentes.map(g => <option key={g.id} value={g.id}>{g.nome}</option>)}
+              </select>
+              <button className="btn btn-sm btn-outline" onClick={definirGerenciaLote}>Definir gerência</button>
+            </span>}
+            <button className="btn btn-sm btn-outline" onClick={abrirResponsaveisLote}>✎ Coordenador/analista</button>
             <button className="btn btn-sm btn-danger" onClick={removerSelecionados}>🗑 Excluir selecionados</button>
             <button className="btn btn-sm btn-ghost" onClick={()=>setSelecionados(new Set())}>Limpar seleção</button>
             <span className="muted">Quem tem cronograma (qualquer ano) não é excluído — use Inativar para manter o histórico.</span>
@@ -4362,7 +4728,7 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
             <thead><tr>{podeEditar && <th style={{width:34}}>
               <input type="checkbox" aria-label="Selecionar todos da lista" checked={lista.length > 0 && lista.every(c => selecionados.has(c.id))}
                 onChange={e => setSelecionados(s => { const n = new Set(s); lista.forEach(c => e.target.checked ? n.add(c.id) : n.delete(c.id)); return n; })} />
-            </th>}<th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th><th>Responsáveis</th><th>Cronograma</th><th style={{width:120}}></th></tr></thead>
+            </th>}<th>Razão social</th><th>CNPJ/CPF</th><th>ID</th><th>Grupo</th><th>Responsáveis</th><th>Cronograma</th><th style={{width:120}}></th></tr></thead>
             <tbody>
               {lista.map(c => {
                 const v = vinculoDe[c.id] || [];
@@ -4376,7 +4742,8 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
                     <td>{c.codigo || "—"}</td>
                     <td>{c.grupo || "—"}</td>
                     <td style={{whiteSpace:"normal", fontSize:12.5, lineHeight:1.45}}>
-                      {RESPONSAVEIS.some(([k]) => c[k]) ? RESPONSAVEIS.map(([k, label]) => c[k] && <div key={k}><span className="muted">{label.replace(" responsável", "")}:</span> {c[k]}</div>) : <span className="muted">—</span>}
+                      {(problemasCliente[c.id] || []).length > 0 && <div><span className="badge badge-alerta" style={{whiteSpace:"normal"}} title="Não bate com nenhum usuário do painel — edite o cliente">⚠ {problemasCliente[c.id].join("; ")}</span></div>}
+                      {RESPONSAVEIS.some(([k]) => c[k]) ? RESPONSAVEIS.map(([k, label]) => c[k] && <div key={k}><span className="muted">{label.replace(" responsável", "")}:</span> {c[k]}</div>) : (!usaGerencia || c.gerenteId) && <span className="muted">—</span>}
                     </td>
                     <td>{v.length ? v.map(x => <button key={x.id} className="link-btn" onClick={()=>onAbrirCronograma(x.id)}>{x.nome}</button>) : <span className="muted">—</span>}
                       {v.length > 1 && <span className="alerta" title="Vinculado a mais de um cronograma"> ⚠</span>}</td>
@@ -4394,28 +4761,49 @@ function ClientesBaseTela({ base, vinculoDe, vinculoTodosAnos = {}, onAtualizarB
       </div>
 
       {analise && <ImportarClientesModal analise={analise} onFechar={()=>setAnalise(null)} onConfirmar={confirmarImportacao} />}
-      {editando && <ClienteBaseForm inicial={editando === "novo" ? null : editando} base={base} onFechar={()=>setEditando(null)} onSalvar={salvarRegistro} />}
+      {respLote && (() => {
+        const gid = usaGerencia ? respLote[0].gerenteId : null;
+        const nomesBase = campo => [...new Set(baseTodos.flatMap(c => nomesDoCampo(c[campo])))].sort((a,b) => a.localeCompare(b, "pt-BR"));
+        return <ResponsaveisLoteModal clientes={respLote}
+          opcoesPorCampo={{ coordenador: gid ? pessoasDaGerencia(usuariosPainel, gruposPainel, gid, "coordenador") : nomesBase("coordenador"),
+                            analista: gid ? pessoasDaGerencia(usuariosPainel, gruposPainel, gid, "analista") : nomesBase("analista") }}
+          rotuloGerencia={gid ? "Gerência " + nomeGer(gid) + " — só pessoas desta gerência no painel." : ""}
+          onAplicar={aplicarResponsaveisLote} onFechar={()=>setRespLote(null)} />;
+      })()}
+      {editando && <ClienteBaseForm inicial={editando === "novo" ? null : editando} base={baseTodos} onFechar={()=>setEditando(null)} onSalvar={salvarRegistro}
+        gerentes={gerentes} usuariosPainel={usuariosPainel} gruposPainel={gruposPainel} escopo={escopo} vinculado={editando !== "novo" && !!(vinculoTodosAnos[editando.id] || []).length} />}
     </div>
   );
 }
 
 /* ---------- Administração de Modelos ---------- */
-// Página "⚙ Modelos" (#/<ano>/modelos). Edita um rascunho; nada grava até "Salvar Modelos".
-function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabalho }){
+// Página "⚙ Modelos" (#/<ano>/modelos). Edita um rascunho; nada grava até "Salvar Modelos" (revisão + confirmação).
+// Modelo de TODA A EMPRESA (gerenteId vazio) ou de UMA GERÊNCIA (gerenteId = gerente do painel). Quem não é
+// Administrador edita só os da própria gerência; os da empresa ficam só leitura (dá para Duplicar para a gerência).
+// Modelo em uso em algum cronograma não é removido — só inativado (some do "Novo cronograma").
+function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabalho, podeEditarModelo = () => true, gerentes = [], escopo = "all", usoModelos = {}, lotes = [], onDesfazerLote }){
+  const usaGerencia = gerentes.length > 0;
+  const nomeGer = id => (gerentes.find(g => g.id === id) || {}).nome || "";
+  const visivel = m => !usaGerencia || escopo === "all" || !m.gerenteId || m.gerenteId === escopo;
+  const rotuloAbr = m => !usaGerencia ? "" : (m.gerenteId ? "Gerência " + nomeGer(m.gerenteId) : "Toda a empresa");
   const [verVersoes, setVerVersoes] = useState(false);
   const [restaurados, setRestaurados] = useState({}); // modeloId → motivo (vai para o histórico ao salvar)
   const [original, setOriginal] = useState(() => JSON.stringify(modelos));
   const [rascunho, setRascunho] = useState(() => clonar(modelos));
-  const [modeloId, setModeloId] = useState(() => (modelos[0] || {}).id || "");
+  const primeiroVisivel = lista => (lista.find(visivel) || {}).id || "";
+  const [modeloId, setModeloId] = useState(() => primeiroVisivel(modelos));
+  const [revisao, setRevisao] = useState(null); // passo 1 da gravação
   const ano = anoTrabalho || new Date().getFullYear() + 1;
   const [mesReferencia, setMesReferencia] = useState(1);
-  const modelo = rascunho.find(m=>m.id===modeloId);
+  const modelo = rascunho.find(m => m.id === modeloId);
+  const podeEditarEste = !!modelo && podeEditarModelo(modelo);
   const sujo = JSON.stringify(rascunho) !== original;
+  const visiveis = rascunho.filter(visivel);
 
   // Modelos gravados (depois de salvar, ou carregados depois de abrir a página): vira o novo ponto de partida.
   useEffect(() => {
     setOriginal(JSON.stringify(modelos)); setRascunho(clonar(modelos)); setRestaurados({});
-    setModeloId(id => modelos.some(m => m.id === id) ? id : ((modelos[0] || {}).id || ""));
+    setModeloId(id => modelos.some(m => m.id === id && visivel(m)) ? id : primeiroVisivel(modelos));
   }, [modelos]);
   // Sair da página com alterações não salvas pede confirmação (links do menu e fechar/recarregar a aba).
   useEffect(() => {
@@ -4433,28 +4821,43 @@ function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabal
   }, [sujo]);
   async function descartar(){
     if(!(await ui.confirm("Descartar todas as alterações ainda não salvas nos Modelos?", { okLabel:"Descartar", perigo:true }))) return;
-    setRascunho(JSON.parse(original)); setRestaurados({});
-    setModeloId(id => JSON.parse(original).some(m => m.id === id) ? id : ((JSON.parse(original)[0] || {}).id || ""));
+    const o = JSON.parse(original);
+    setRascunho(o); setRestaurados({});
+    setModeloId(id => o.some(m => m.id === id && visivel(m)) ? id : primeiroVisivel(o));
   }
-  function updateModelo(patch){ setRascunho(r => r.map(m => m.id===modeloId ? {...m, ...patch} : m)); }
+  function updateModelo(patch){ if(!podeEditarEste) return; setRascunho(r => r.map(m => m.id===modeloId ? {...m, ...patch} : m)); }
   function updateProcesso(processoId, novoProcesso){
+    if(!podeEditarEste) return;
     setRascunho(r => r.map(m => m.id===modeloId ? { ...m, processos: m.processos.map(p=>p.id===processoId?novoProcesso:p) } : m));
   }
+  const gerenciaNova = () => escopo !== "all" ? escopo : null;
   async function novoModelo(){
-    const nome = await ui.prompt("Nome do novo Modelo:", "", { titulo:"Novo Modelo" }); if(!nome) return;
-    const m = { id:novoId("modelo"), nome, processos: [] };
+    const m0 = { id:novoId("modelo"), nome:"", processos: [], gerenteId: gerenciaNova(), ativo: true };
+    if(!podeEditarModelo(m0)){ ui.alert("Seu grupo de acesso não cria Modelos."); return; }
+    const nome = await ui.prompt("Nome do novo Modelo" + (usaGerencia ? " (" + rotuloAbr(m0) + ")" : "") + ":", "", { titulo:"Novo Modelo" }); if(!nome) return;
+    const m = { ...m0, nome: nome.trim() };
     setRascunho([...rascunho, m]); setModeloId(m.id);
   }
   function duplicarModelo(){
     if(!modelo) return;
-    const copia = { ...clonar(modelo), id:novoId("modelo"), nome: modelo.nome + " (cópia)" };
+    const { versaoPadrao, criadoDe, ...resto } = clonar(modelo);
+    const copia = { ...resto, id:novoId("modelo"), nome: modelo.nome + " (cópia)", gerenteId: escopo !== "all" ? escopo : (modelo.gerenteId || null), ativo: true };
+    if(!podeEditarModelo(copia)){ ui.alert("Seu grupo de acesso não cria Modelos."); return; }
     setRascunho([...rascunho, copia]); setModeloId(copia.id);
   }
   async function removerModelo(){
-    if(rascunho.length<=1){ ui.alert("Precisa existir ao menos um Modelo."); return; }
-    if(!(await ui.confirm('Remover o Modelo "'+modelo.nome+'"? Clientes já criados a partir dele não são afetados — só deixa de aparecer como opção pra novos clientes.', { okLabel:"Remover", perigo:true }))) return;
-    const restante = rascunho.filter(m=>m.id!==modeloId);
-    setRascunho(restante); setModeloId(restante[0]?.id||"");
+    if(!podeEditarEste) return;
+    const n = usoModelos[modelo.id] || 0;
+    if(n > 0){
+      if(modelo.ativo === false){ ui.alert('"' + modelo.nome + '" está em uso em ' + n + " cronograma(s) e já está inativo. Modelo usado não pode ser removido."); return; }
+      if(await ui.confirm('"' + modelo.nome + '" já foi usado em ' + n + " cronograma(s), por isso não pode ser removido.\n\nQuer INATIVAR? Ele some das opções do Novo cronograma; os cronogramas que já o usam continuam iguais.", { titulo:"Modelo em uso", okLabel:"Inativar" }))
+        updateModelo({ ativo: false });
+      return;
+    }
+    if(visiveis.filter(m => m.ativo !== false).length <= 1){ ui.alert("Precisa existir ao menos um Modelo ativo."); return; }
+    if(!(await ui.confirm('Remover o Modelo "' + modelo.nome + '"? Ele não está em uso em nenhum cronograma.', { okLabel:"Remover", perigo:true }))) return;
+    const restante = rascunho.filter(m => m.id !== modeloId);
+    setRascunho(restante); setModeloId(primeiroVisivel(restante));
   }
   async function adicionarProcesso(){
     const nome = await ui.prompt("Nome do novo processo:", "", { titulo:"Novo processo" }); if(!nome) return;
@@ -4462,56 +4865,107 @@ function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabal
       eventos:[{ id:novoId("ev"), nome:"Nova tarefa", responsavel:"SINERGY", ativo:true, bloqueada:false, excecoes:{}, regra:{tipo:"dia_fixo", dia:10, ajuste:"next"} }] };
     updateModelo({ processos:[...modelo.processos, novo] });
   }
-  // Tarefa renomeada (ex.: erro de escrita): oferece o mesmo nome nos outros Modelos que ainda têm
-  // a tarefa com o nome antigo; o App depois oferece levar aos cronogramas já criados.
-  async function salvar(){
-    let lista = rascunho;
-    const renomes = renomesEntreModelos(JSON.parse(original), rascunho);
-    if(renomes.length){
-      const r = renomearTarefas([].concat(...lista.map(m => m.processos)), renomes);
-      if(r.n){
-        const txt = renomes.map(x => "• \"" + x.de + "\" → \"" + x.para + "\"").join("\n");
-        if(await ui.confirm("Você renomeou tarefa(s):\n" + txt + "\n\nAplicar o mesmo nome nos outros Modelos que ainda têm essa tarefa com o nome antigo (" + r.n + " tarefa(s))?", { titulo:"Renomear em todos os Modelos", okLabel:"Aplicar nos Modelos", cancelLabel:"Só neste" }))
-          lista = lista.map(m => ({ ...m, processos: renomearTarefas(m.processos, renomes).processos }));
-      }
-    }
-    onSalvar(lista, renomes, restaurados);
-  }
   async function removerProcesso(pid){
     if(!(await ui.confirm("Remover este processo inteiro do Modelo?", { okLabel:"Remover", perigo:true }))) return;
     updateModelo({ processos: modelo.processos.filter(p=>p.id!==pid) });
+  }
+  // Gravar — passo 1: revisar tudo o que mudou (e o que está em uso). Passo 2: confirmação final.
+  async function salvar(){
+    const orig = JSON.parse(original);
+    // Só vai para a gravação o que esta pessoa pode editar; o resto fica exatamente como estava.
+    let lista = rascunho.map(m => podeEditarModelo(m) ? m : (orig.find(o => o.id === m.id) || m))
+      .concat(orig.filter(o => !podeEditarModelo(o) && !rascunho.some(m => m.id === o.id)));
+    const renomes = renomesEntreModelos(orig, lista);
+    if(renomes.length){
+      const outros = lista.filter(podeEditarModelo);
+      const r = renomearTarefas([].concat(...outros.map(m => m.processos)), renomes);
+      if(r.n){
+        const txt = renomes.map(x => "• \"" + x.de + "\" → \"" + x.para + "\"").join("\n");
+        if(await ui.confirm("Você renomeou tarefa(s):\n" + txt + "\n\nAplicar o mesmo nome nos outros Modelos que você pode editar e que ainda têm essa tarefa com o nome antigo (" + r.n + " tarefa(s))?", { titulo:"Renomear nos Modelos", okLabel:"Aplicar nos Modelos", cancelLabel:"Só neste" }))
+          lista = lista.map(m => podeEditarModelo(m) ? { ...m, processos: renomearTarefas(m.processos, renomes).processos } : m);
+      }
+    }
+    const itens = [];
+    lista.forEach(m => {
+      const o = orig.find(x => x.id === m.id);
+      if(!o){ itens.push({ nome: m.nome, linhas: ["Modelo novo" + (usaGerencia ? " (" + rotuloAbr(m) + ")" : "") + " com " + m.processos.length + " processo(s)."], uso: 0 }); return; }
+      const linhas = diffClientes(o, m).map(l => l.replace(/^Nome do cronograma/, "Nome do Modelo"));
+      if((o.ativo !== false) !== (m.ativo !== false)) linhas.push(m.ativo === false ? "Inativado (some do Novo cronograma)." : "Reativado.");
+      if((o.gerenteId || null) !== (m.gerenteId || null)) linhas.push("Abrangência: " + rotuloAbr(o) + " → " + rotuloAbr(m) + ".");
+      if(linhas.length) itens.push({ nome: m.nome, linhas, uso: usoModelos[m.id] || 0 });
+    });
+    orig.filter(o => !lista.some(m => m.id === o.id)).forEach(o => itens.push({ nome: o.nome, linhas: ["Modelo removido."], uso: 0 }));
+    if(!itens.length){ ui.alert("Nada mudou nos Modelos que você pode editar."); return; }
+    setRevisao({ lista, renomes, itens });
+  }
+  async function confirmarGravacao(){
+    const r = revisao;
+    const emUso = r.itens.filter(i => i.uso > 0);
+    if(!(await ui.confirm("Gravar as alterações em " + r.itens.length + " Modelo(s)?" +
+      (emUso.length ? "\n\n" + emUso.length + " deles estão em uso em cronogramas — esses cronogramas NÃO mudam agora. Para levar as mudanças a eles, use “Aplicar Modelo atualizado” (você escolhe quais, e dá para desfazer)." : "") +
+      "\n\nCada Modelo alterado ganha uma versão no histórico (🕘 Versões).", { titulo:"Confirmar gravação (2 de 2)", okLabel:"Gravar Modelos", perigo:true }))) return;
+    setRevisao(null);
+    onSalvar(r.lista, r.renomes, restaurados);
   }
 
   const acoes = <>
     {sujo ? <span className="dirty">● alterações não salvas</span> : <span className="muted">✓ tudo salvo</span>}
     <button className="btn btn-ghost" onClick={descartar} disabled={!sujo}>Descartar alterações</button>
-    <button className="btn btn-primary" onClick={salvar} disabled={!sujo}>Salvar Modelos</button>
+    <button className="btn btn-primary" onClick={salvar} disabled={!sujo}>Salvar Modelos…</button>
   </>;
+  const uso = modelo ? (usoModelos[modelo.id] || 0) : 0;
   return (
     <div style={{paddingTop:20}}>
       <div className="topbar">
         <div>
           <h2>⚙ Modelos</h2>
-          <div className="sub">Tarefas-padrão usadas nos cronogramas novos. Tarefas marcadas como <strong>🔒 padrão</strong> não podem ser renomeadas nem excluídas dentro do cronograma de um cliente — só o prazo continua livre. Nada é gravado até você clicar em <strong>Salvar Modelos</strong>.</div>
+          <div className="sub">Tarefas-padrão usadas nos cronogramas novos. Tarefas marcadas como <strong>🔒 padrão</strong> não podem ser renomeadas nem excluídas dentro do cronograma de um cliente — só o prazo continua livre. Nada é gravado até você clicar em <strong>Salvar Modelos</strong> (com revisão e confirmação).{usaGerencia && escopo !== "all" ? " Você edita os Modelos da sua gerência; os de toda a empresa ficam só para consulta (dá para Duplicar)." : ""}</div>
         </div>
         <div className="toolbar" style={{alignItems:"center"}}>{acoes}</div>
       </div>
       <div className="card">
         <div style={{display:"flex", gap:8, alignItems:"center", flexWrap:"wrap"}}>
-          <select value={modeloId} onChange={e=>setModeloId(e.target.value)}>
-            {rascunho.map(m => <option key={m.id} value={m.id}>{m.nome}</option>)}
+          <select value={modeloId} onChange={e=>setModeloId(e.target.value)} aria-label="Modelo">
+            {visiveis.map(m => <option key={m.id} value={m.id}>{m.nome}{m.ativo === false ? " (inativo)" : ""}{usaGerencia ? " · " + rotuloAbr(m) : ""}</option>)}
           </select>
-          <input type="text" style={{width:220}} value={modelo?.nome||""} onChange={e=>updateModelo({nome:e.target.value})} aria-label="Nome do Modelo" />
+          <input type="text" style={{width:220}} value={modelo?.nome||""} disabled={!podeEditarEste} onChange={e=>updateModelo({nome:e.target.value})} aria-label="Nome do Modelo" />
           <button className="btn btn-sm btn-outline" onClick={novoModelo}>+ Novo Modelo</button>
-          <button className="btn btn-sm btn-outline" onClick={duplicarModelo}>Duplicar</button>
-          <button className="btn btn-sm btn-ghost" onClick={removerModelo}>Remover Modelo</button>
+          <button className="btn btn-sm btn-outline" onClick={duplicarModelo} title={usaGerencia && escopo !== "all" ? "Cria uma cópia na sua gerência" : ""}>Duplicar</button>
+          {podeEditarEste && <button className="btn btn-sm btn-ghost" onClick={removerModelo}>{uso ? "Inativar…" : "Remover Modelo"}</button>}
           <button className="btn btn-sm btn-outline" onClick={()=>setVerVersoes(v => !v)} aria-expanded={verVersoes}>🕘 Versões ({(versoes || []).filter(v => v.modeloId === modeloId).length})</button>
           <span style={{marginLeft:"auto"}} className="muted">Competência da prévia:</span>
           <select value={mesReferencia} onChange={e=>setMesReferencia(Number(e.target.value))}>
             {MESES_LONGOS.map((m,i) => <option key={m} value={i+1}>{m}/{ano}</option>)}
           </select>
         </div>
+        {modelo && <div style={{display:"flex", gap:12, alignItems:"center", flexWrap:"wrap", marginTop:10}}>
+          <span className="badge badge-months" title="Versões de cronogramas (qualquer ano) criadas a partir deste Modelo">{uso ? "em uso em " + uso + " cronograma(s)" : "sem uso"}</span>
+          {usaGerencia && (escopo === "all" && podeEditarEste
+            ? <label className="muted" style={{display:"flex", gap:6, alignItems:"center"}}>Abrangência:
+                <select value={modelo.gerenteId || ""} onChange={e=>updateModelo({ gerenteId: e.target.value || null })} aria-label="Abrangência do Modelo">
+                  <option value="">Toda a empresa</option>
+                  {gerentes.map(g => <option key={g.id} value={g.id}>Gerência {g.nome}</option>)}
+                </select></label>
+            : <span className="muted">{rotuloAbr(modelo)}</span>)}
+          {podeEditarEste && <label className="muted chk" title="Inativo = não aparece no Novo cronograma; quem já usa continua igual">
+            <input type="checkbox" checked={modelo.ativo !== false} onChange={e=>updateModelo({ ativo: e.target.checked })} /> ativo para novos cronogramas</label>}
+          {!podeEditarEste && <span className="note-info" style={{padding:"4px 10px", borderRadius:8, fontSize:12.5}}>Só leitura para você{usaGerencia && !modelo.gerenteId ? " (Modelo de toda a empresa)" : ""} — use <strong>Duplicar</strong> para criar um da sua gerência.</span>}
+        </div>}
       </div>
+
+      {lotes.length > 0 && (
+        <details className="card">
+          <summary style={{cursor:"pointer", fontWeight:700}}>Aplicações recentes em cronogramas ({lotes.length}) — dá para desfazer</summary>
+          <div className="table-wrap" style={{marginTop:10}}><table><thead><tr><th>Quando</th><th>Quem</th><th>O que</th><th>Cronogramas</th><th></th></tr></thead>
+            <tbody>{lotes.map(l => (
+              <tr key={l.id}>
+                <td>{fmtHora(l.em)}</td><td>{l.por || "—"}</td><td style={{whiteSpace:"normal"}}>{l.descricao}</td>
+                <td style={{whiteSpace:"normal"}} title={l.itens.map(i => i.nome).join("\n")}>{l.itens.length}: {l.itens.slice(0, 3).map(i => i.nome).join(", ")}{l.itens.length > 3 ? "…" : ""}</td>
+                <td>{l.desfeitoEm ? <span className="muted">desfeito em {fmtHora(l.desfeitoEm)}</span> : podeRestaurar ? <button className="link-btn perigo" onClick={()=>onDesfazerLote(l)}>desfazer</button> : <span className="muted">—</span>}</td>
+              </tr>
+            ))}</tbody></table></div>
+        </details>
+      )}
 
         {verVersoes && modelo && (() => {
           const lista = (versoes || []).filter(v => v.modeloId === modeloId).sort((a,b) => b.n - a.n);
@@ -4529,7 +4983,7 @@ function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabal
                         const d = diffClientes(v.modelo, modelo);
                         ui.alert(d.length ? "Da v" + v.n + " para o que está na tela:\n\n• " + d.slice(0, 40).join("\n• ") + (d.length > 40 ? "\n… e mais " + (d.length - 40) : "") : "O que está na tela é igual à v" + v.n + ".", { titulo:"Comparar com a v" + v.n });
                       }}>comparar com a tela</button>
-                      {podeRestaurar && <>{" · "}<button className="link-btn perigo" onClick={async ()=>{
+                      {podeRestaurar && podeEditarEste && <>{" · "}<button className="link-btn perigo" onClick={async ()=>{
                         if(!(await ui.confirm("Carregar a v" + v.n + ' de "' + modelo.nome + '" na tela? Nada é gravado até você clicar em Salvar Modelos.', { okLabel:"Carregar v" + v.n }))) return;
                         setRascunho(r => r.map(m => m.id === modeloId ? { ...clonar(v.modelo), id: modeloId } : m));
                         setRestaurados(x => ({ ...x, [modeloId]: "restaurada a v" + v.n }));
@@ -4543,12 +4997,125 @@ function ModeloAdmin({ modelos, versoes, podeRestaurar, onSalvar, ano: anoTrabal
         })()}
         {modelo && modelo.processos.map(processo => (
           <ProcessoCard key={modelo.id + ":" + processo.id} processo={processo} todosProcessos={modelo.processos} modo="modelo" ano={ano} mesReferencia={mesReferencia}
+            somenteLeitura={!podeEditarEste}
             onUpdate={(novo)=>updateProcesso(processo.id, novo)} onDesdobrar={()=>{}}
-            acoesExtras={<button className="btn btn-sm btn-ghost" onClick={()=>removerProcesso(processo.id)}>Remover processo</button>} />
+            acoesExtras={podeEditarEste ? <button className="btn btn-sm btn-ghost" onClick={()=>removerProcesso(processo.id)}>Remover processo</button> : null} />
         ))}
-        {modelo && <button className="btn btn-sm btn-outline" onClick={adicionarProcesso}>+ Novo processo no Modelo</button>}
+        {modelo && podeEditarEste && <button className="btn btn-sm btn-outline" onClick={adicionarProcesso}>+ Novo processo no Modelo</button>}
 
         <div className="wizard-actions" style={{alignItems:"center"}}>{acoes}</div>
+
+      {revisao && (
+        <div className="modal-overlay dialog-overlay" onMouseDown={fecharAoClicarFora(false, () => setRevisao(null))}>
+          <div className="modal-box" style={{width:720}}>
+            <h3>Revisar alterações nos Modelos (1 de 2)</h3>
+            <p className="muted" style={{marginTop:0}}>Confira o que vai ser gravado. Os cronogramas que já existem não mudam nesta etapa.</p>
+            <div className="pick-list" style={{padding:"8px 12px"}}>
+              {revisao.itens.map((it, i) => (
+                <div key={i} style={{marginBottom:12}}>
+                  <strong>{it.nome}</strong>{it.uso > 0 && <span className="badge badge-alerta" style={{marginLeft:8}}>em uso em {it.uso} cronograma(s)</span>}
+                  <ul style={{margin:"4px 0 0", paddingLeft:18}}>{it.linhas.slice(0, 30).map((l, j) => <li key={j} style={{fontSize:13}}>{l}</li>)}{it.linhas.length > 30 && <li className="muted">… e mais {it.linhas.length - 30}</li>}</ul>
+                </div>
+              ))}
+            </div>
+            <div className="wizard-actions">
+              <button className="btn btn-ghost" onClick={()=>setRevisao(null)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={confirmarGravacao}>Continuar →</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Lixeira de cronogramas (15 dias). Restaurar e excluir definitivamente: permissão "lixeira".
+function LixeiraTela({ itens, nomeGerente, usaGerencia, onRestaurar, onExcluir }){
+  const [sel, setSel] = useState(() => new Set());
+  const ordenados = itens.slice().sort((a,b) => (a.excluido.em < b.excluido.em ? 1 : -1));
+  const alternar = id => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  return (
+    <div style={{paddingTop:20}}>
+      <div className="topbar">
+        <div>
+          <h2>🗑 Lixeira</h2>
+          <div className="sub">Cronogramas excluídos ficam aqui por {LIXEIRA_DIAS} dias e depois são apagados de vez, sozinhos. Enquanto estão aqui, os clientes deles ficam livres para outro cronograma.</div>
+        </div>
+        {sel.size > 0 && <div className="toolbar">
+          <button className="btn btn-danger" onClick={async ()=>{ await onExcluir([...sel]); setSel(new Set()); }}>Excluir definitivamente ({sel.size})</button>
+        </div>}
+      </div>
+      <div className="card">
+        {!ordenados.length ? <div className="muted">A lixeira está vazia.</div> : (
+          <div className="table-wrap"><table className="tabela-lista">
+            <thead><tr><th style={{width:34}}><input type="checkbox" aria-label="Selecionar todos" checked={ordenados.every(c => sel.has(c.id))} onChange={e => setSel(e.target.checked ? new Set(ordenados.map(c => c.id)) : new Set())} /></th>
+              <th>Cronograma</th>{usaGerencia && <th>Gerência</th>}<th>Anos</th><th>Excluído</th><th>Apagado de vez em</th><th></th></tr></thead>
+            <tbody>{ordenados.map(c => {
+              const dias = diasRestantesLixeira(c.excluido);
+              return (
+                <tr key={c.id}>
+                  <td><input type="checkbox" checked={sel.has(c.id)} onChange={()=>alternar(c.id)} aria-label={"Selecionar " + c.nome} /></td>
+                  <td style={{whiteSpace:"normal"}}><strong>{c.nome}</strong></td>
+                  {usaGerencia && <td>{nomeGerente(c.gerenteId) || "—"}</td>}
+                  <td>{(c.anos || []).join(", ") || "—"}</td>
+                  <td>{fmtHora(c.excluido.em)}{c.excluido.por ? " · " + c.excluido.por : ""}</td>
+                  <td><span className={dias <= 3 ? "alerta" : ""}>{dias} dia(s)</span></td>
+                  <td style={{whiteSpace:"nowrap"}}>
+                    <button className="btn btn-sm btn-primary" onClick={()=>onRestaurar(c.id)}>Restaurar</button>{" "}
+                    <button className="btn btn-sm btn-ghost" onClick={()=>onExcluir([c.id])}>Excluir de vez</button>
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table></div>
+        )}
+      </div>
+    </div>
+  );
+}
+// Escolher em quais cronogramas aplicar uma mudança vinda do Modelo (renomear / aplicar Modelo atualizado).
+// Passo 1: marcar; passo 2: confirmação final. Antes de mudar, cada um ganha uma versão de segurança e a
+// operação fica em Modelos → "Aplicações recentes" (com Desfazer).
+function LoteCronogramasModal({ titulo, descricao, itens, okLabel, onAplicar, onCancelar }){
+  const [sel, setSel] = useState(() => new Set(itens.filter(i => !i.bloqueado).map(i => i.id)));
+  const livres = itens.filter(i => !i.bloqueado);
+  const alternar = id => setSel(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  async function aplicar(){
+    const escolhidos = itens.filter(i => sel.has(i.id));
+    if(!escolhidos.length){ ui.alert("Marque ao menos um cronograma."); return; }
+    const ok = await ui.confirm("Confirmar? Vai alterar " + escolhidos.length + " cronograma(s):\n\n" + escolhidos.slice(0, 10).map(i => "• " + i.nome + (i.clientes ? " — " + i.clientes : "")).join("\n") + (escolhidos.length > 10 ? "\n… e mais " + (escolhidos.length - 10) : "") +
+      "\n\nAntes, cada um ganha uma versão de segurança. A operação fica em Modelos → “Aplicações recentes”, com Desfazer.", { titulo: titulo + " (2 de 2)", okLabel:"Confirmar", perigo:true });
+    if(!ok) return;
+    onAplicar(new Set(escolhidos.map(i => i.id)));
+  }
+  return (
+    <div className="modal-overlay dialog-overlay" onMouseDown={fecharAoClicarFora(false, onCancelar)}>
+      <div className="modal-box" style={{width:780}}>
+        <h3>{titulo} (1 de 2)</h3>
+        <p style={{whiteSpace:"pre-line", fontSize:13, marginTop:0}}>{descricao}</p>
+        <div style={{display:"flex", gap:10, alignItems:"center", marginBottom:6, flexWrap:"wrap"}}>
+          <button className="link-btn" onClick={()=>setSel(new Set(livres.map(i => i.id)))}>Marcar todos ({livres.length})</button>
+          <button className="link-btn" onClick={()=>setSel(new Set())}>Desmarcar todos</button>
+          <span className="muted" style={{marginLeft:"auto"}}><strong>{sel.size}</strong> de {itens.length} selecionado(s)</span>
+        </div>
+        <div className="pick-list">
+          <table>
+            <thead><tr><th style={{width:30}}></th><th>Cronograma</th><th>Clientes afetados</th><th>O que muda</th></tr></thead>
+            <tbody>{itens.map(i => (
+              <tr key={i.id} className={i.bloqueado ? "bloq" : ""} onClick={()=>{ if(!i.bloqueado) alternar(i.id); }} style={{cursor: i.bloqueado ? "default" : "pointer"}}>
+                <td><input type="checkbox" checked={sel.has(i.id)} disabled={!!i.bloqueado} onChange={()=>alternar(i.id)} onClick={e=>e.stopPropagation()} aria-label={"Selecionar " + i.nome} /></td>
+                <td style={{whiteSpace:"normal"}}><strong>{i.nome}</strong>{i.bloqueado && <div className="alerta" style={{fontSize:12}}>fica de fora: {i.bloqueado}</div>}</td>
+                <td style={{whiteSpace:"normal", fontSize:12.5}}>{i.clientes || "—"}</td>
+                <td style={{whiteSpace:"normal", fontSize:12.5}}>{i.detalhe}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+        <div className="wizard-actions">
+          <button className="btn btn-ghost" onClick={onCancelar}>Cancelar</button>
+          <button className="btn btn-primary" disabled={!sel.size} onClick={aplicar}>{okLabel || "Aplicar"} nos {sel.size} selecionado(s)…</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -4585,7 +5152,7 @@ function ClientesVinculadosTab({ cliente, base, vinculoDe, ano, mesReferencia, s
       ) : <>
         {vinculados.length > 8 && <input type="search" placeholder="Filtrar vinculados…" value={busca} onChange={e=>setBusca(e.target.value)} style={{width:"100%", maxWidth:320, marginBottom:8}} />}
         <div className="table-wrap" style={{maxHeight:360, overflow:"auto"}}><table>
-          <thead><tr><th>Razão social</th><th>CNPJ/CPF</th><th>Código</th><th>Grupo</th><th>Gerente</th><th>Coordenador</th><th>Analista</th>{!somenteLeitura && <th style={{width:40}}></th>}</tr></thead>
+          <thead><tr><th>Razão social</th><th>CNPJ/CPF</th><th>ID</th><th>Grupo</th><th>Gerente</th><th>Coordenador</th><th>Analista</th>{!somenteLeitura && <th style={{width:40}}></th>}</tr></thead>
           <tbody>{lista.map(c => (
             <tr key={c.id}>
               <td style={{whiteSpace:"normal"}}>{c.razaoSocial || "—"}{c.ativo === false && <> <span className="badge badge-off" title="Inativo na base de clientes">inativo</span></>}</td><td>{fmtDocumento(c.documento)}</td><td>{c.codigo || "—"}</td><td>{c.grupo || "—"}</td>
@@ -4711,10 +5278,10 @@ function gravarLocal(chave, valor){ try { localStorage.setItem(chave, JSON.strin
 // Grupos de acesso: os 4 base são os do site autenticado da Sinergy (provisórios aqui até integrar o
 // login). As permissões de cada grupo são configuráveis no menu "🔐 Grupos de acesso" (quem tem "acessos").
 const PERFIS_PADRAO = {
-  admin:       { label:"Administrador / Diretor", edita:true, aprova:true,  clientes:true,  secoes:true,  modelos:true,  encerra:true,  restaura:true,  acessos:true  },
-  gerente:     { label:"Gerente",                 edita:true, aprova:true,  clientes:true,  secoes:true,  modelos:true,  encerra:true,  restaura:true,  acessos:false },
-  coordenador: { label:"Coordenador",             edita:true, aprova:true,  clientes:true,  secoes:true,  modelos:false, encerra:false, restaura:true,  acessos:false },
-  analista:    { label:"Analista",                edita:true, aprova:false, clientes:false, secoes:false, modelos:false, encerra:false, restaura:false, acessos:false },
+  admin:       { label:"Administrador / Diretor", edita:true, aprova:true,  clientes:true,  secoes:true,  modelos:true,  modelos_gerencia:true,  encerra:true,  restaura:true,  lixeira:true,  acessos:true  },
+  gerente:     { label:"Gerente",                 edita:true, aprova:true,  clientes:true,  secoes:true,  modelos:true,  modelos_gerencia:true,  encerra:true,  restaura:true,  lixeira:true,  acessos:false },
+  coordenador: { label:"Coordenador",             edita:true, aprova:true,  clientes:true,  secoes:true,  modelos:false, modelos_gerencia:true,  encerra:false, restaura:true,  lixeira:false, acessos:false },
+  analista:    { label:"Analista",                edita:true, aprova:false, clientes:false, secoes:false, modelos:false, modelos_gerencia:false, encerra:false, restaura:false, lixeira:false, acessos:false },
 };
 let PERFIS = PERFIS_PADRAO; // substituído pela configuração salva (sinergy_cronograma_grupos) a cada render do App
 const STATUS_EM_APROVACAO = ["aprovado_analista", "aguardando_aprovacao_superior"];
@@ -4730,7 +5297,7 @@ function lerRota(){
   const [tela, id, aba] = h.split("/").map(s => decodeURIComponent(s || ""));
   const anoFinal = ano || lerLocal("cronograma_ano", anoTrabalhoPadrao());
   if(tela === "cronograma" && id) return { tela, id, aba: aba || "parametrizar", ano: anoFinal };
-  if(["inicio","aprovacoes","painel","clientes","secoes","acessos","modelos"].includes(tela)) return { tela, ano: anoFinal };
+  if(["inicio","aprovacoes","painel","clientes","secoes","acessos","modelos","lixeira"].includes(tela)) return { tela, ano: anoFinal };
   return { tela:"inicio", ano: anoFinal };
 }
 let ANO_DA_ROTA = anoTrabalhoPadrao(); // atualizado pelo App a cada render (usado nos links)
@@ -4747,7 +5314,7 @@ function ContadorStatus({ n, label, on, onClick, cor }){
 }
 
 /* ---------- Tela inicial: carteira de cronogramas ---------- */
-function CarteiraTela({ linhas, ano, modelos, usuario, analistas, sujos, basePorId, atualizandoResumo, onAbrir, onNovo, onAcaoMassa, statusInicial }){
+function CarteiraTela({ linhas, problemasResp = {}, ano, modelos, usuario, analistas, sujos, basePorId, atualizandoResumo, onAbrir, onNovo, onAcaoMassa, statusInicial }){
   const [busca, setBusca] = useState("");
   const [fStatus, setFStatus] = useState(statusInicial === "__semVersao" ? "" : (statusInicial || ""));
   const [soSemVersao, setSoSemVersao] = useState(statusInicial === "__semVersao");
@@ -4756,6 +5323,7 @@ function CarteiraTela({ linhas, ano, modelos, usuario, analistas, sujos, basePor
   const [soMeus, setSoMeus] = useState(false);
   const [soAlerta, setSoAlerta] = useState(false);
   const [soSemClientes, setSoSemClientes] = useState(false);
+  const [soRespInvalido, setSoRespInvalido] = useState(false);
   const [arquivados, setArquivados] = useState(false);
   const [ordem, setOrdem] = useState({ col:"nome", dir:1 });
   const [sel, setSel] = useState(() => new Set());
@@ -4771,10 +5339,11 @@ function CarteiraTela({ linhas, ano, modelos, usuario, analistas, sujos, basePor
     .filter(c => !fStatus || c.status === fStatus)
     .filter(c => !fModelo || c.modeloId === fModelo)
     .filter(c => !fAnalista || c.analista === fAnalista)
-    .filter(c => !soMeus || (usuario.nome && c.analista === usuario.nome))
+    .filter(c => !soMeus || (usuario.nome && (temNome(c.analista, usuario.nome) || (c.clientesIds || []).some(id => { const b = basePorId[id]; return b && RESPONSAVEIS.some(([k]) => temNome(b[k], usuario.nome)); }))))
     .filter(c => !soAlerta || c.alertas > 0)
     .filter(c => !soSemClientes || (c.temVersao && !(c.clientesIds || []).length))
     .filter(c => !soSemVersao || !c.temVersao)
+    .filter(c => !soRespInvalido || (problemasResp[c.id] || []).length)
     .filter(casaBusca);
   const valor = (c, col) => col === "clientes" ? (c.clientesIds || []).length : col === "status" ? statusIndex(c.status) : col === "atualizadoEm" ? (c.atualizadoEm || "") : col === "alertas" ? (c.alertas || 0) : normalizar(c[col] || "");
   const ordenadas = filtradas.slice().sort((a,b) => { const x = valor(a, ordem.col), y = valor(b, ordem.col); return (x < y ? -1 : x > y ? 1 : 0) * ordem.dir; });
@@ -4803,16 +5372,17 @@ function CarteiraTela({ linhas, ano, modelos, usuario, analistas, sujos, basePor
       </div>
 
       <div className="contadores">
-        <ContadorStatus n={base.length} label="Todos" on={!fStatus && !soAlerta && !soSemClientes && !soSemVersao} onClick={()=>{ setFStatus(""); setSoAlerta(false); setSoSemClientes(false); setSoSemVersao(false); }} />
+        <ContadorStatus n={base.length} label="Todos" on={!fStatus && !soAlerta && !soSemClientes && !soSemVersao && !soRespInvalido} onClick={()=>{ setFStatus(""); setSoAlerta(false); setSoSemClientes(false); setSoSemVersao(false); setSoRespInvalido(false); }} />
         <ContadorStatus n={conta(c => !c.temVersao)} label={"Sem versão " + ano} on={soSemVersao} onClick={()=>setSoSemVersao(!soSemVersao)} />
         {STATUS_FLOW.map(s => <ContadorStatus key={s.id} n={conta(c => c.status === s.id)} label={s.label.replace(" — pronto para gerar tarefas", "")} on={fStatus === s.id} onClick={()=>setFStatus(fStatus === s.id ? "" : s.id)} />)}
         <ContadorStatus n={conta(c => c.alertas > 0)} label="Com alerta ⚠" cor="var(--warn)" on={soAlerta} onClick={()=>setSoAlerta(!soAlerta)} />
         <ContadorStatus n={conta(c => c.temVersao && !(c.clientesIds || []).length)} label="Sem clientes" on={soSemClientes} onClick={()=>setSoSemClientes(!soSemClientes)} />
+        {Object.keys(problemasResp).length > 0 && <ContadorStatus n={conta(c => (problemasResp[c.id] || []).length)} label="⚠ Responsável sem usuário" on={soRespInvalido} onClick={()=>setSoRespInvalido(!soRespInvalido)} />}
       </div>
 
       <div className="card">
         <div className="filtros">
-          <input type="search" placeholder="Buscar por cronograma, cliente, CNPJ, código ou analista…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:240}} aria-label="Buscar" />
+          <input type="search" placeholder="Buscar por cronograma, cliente, CNPJ, ID ou analista…" value={busca} onChange={e=>setBusca(e.target.value)} style={{flex:1, minWidth:240}} aria-label="Buscar" />
           <select value={fModelo} onChange={e=>setFModelo(e.target.value)} aria-label="Filtrar por Modelo">
             <option value="">Todos os Modelos</option>
             {modelos.map(m => <option key={m.id} value={m.id}>{m.nome}</option>)}
@@ -4821,7 +5391,7 @@ function CarteiraTela({ linhas, ano, modelos, usuario, analistas, sujos, basePor
             <option value="">Todos os analistas</option>
             {analistas.map(a => <option key={a} value={a}>{a}</option>)}
           </select>
-          <label className="muted chk"><input type="checkbox" checked={soMeus} disabled={!usuario.nome} onChange={e=>setSoMeus(e.target.checked)} /> Meus cronogramas{!usuario.nome ? " (defina seu nome no menu)" : ""}</label>
+          <label className="muted chk"><input type="checkbox" checked={soMeus} disabled={!usuario.nome} onChange={e=>setSoMeus(e.target.checked)} /> <span title="Cronogramas em que você é o analista, ou gerente/coordenador/analista de algum cliente vinculado">Meus cronogramas</span>{!usuario.nome ? " (defina seu nome no menu)" : ""}</label>
           <label className="muted chk"><input type="checkbox" checked={arquivados} onChange={e=>setArquivados(e.target.checked)} /> Arquivados</label>
         </div>
 
@@ -4850,6 +5420,7 @@ function CarteiraTela({ linhas, ano, modelos, usuario, analistas, sujos, basePor
                   <td onClick={e=>e.stopPropagation()}><input type="checkbox" checked={sel.has(c.id)} onChange={()=>alternar(c.id)} aria-label={"Selecionar " + c.nome} /></td>
                   <td style={{whiteSpace:"normal"}}>
                     <a href={linkCronograma(c.id)} onClick={e=>e.stopPropagation()} className="link-crono">{c.nome}</a>
+                    {(problemasResp[c.id] || []).length > 0 && <span className="badge badge-alerta" style={{marginLeft:6}} title={problemasResp[c.id].join("\n")}>⚠ responsável</span>}
                     {sujos.has(c.id) && <span className="dirty" title="Alterações não salvas"> ●</span>}
                     {c.arquivado && <span className="badge badge-off" style={{marginLeft:6}}>arquivado</span>}
                   </td>
@@ -5375,9 +5946,11 @@ const PERMISSOES = [
   ["aprova",  "Aprovar cronogramas",               "Marcar como Aprovado (trava a edição) e usar a fila de Aprovações."],
   ["clientes","Editar a base de clientes",         "Importar planilha, adicionar, editar e remover CNPJs e responsáveis."],
   ["secoes",  "Seções personalizadas",             "Criar/editar a biblioteca de seções e adicionar seções nos cronogramas."],
-  ["modelos", "Administrar Modelos",               "Mudar os Modelos padrão (valem para cronogramas novos)."],
+  ["modelos", "Administrar Modelos (empresa)",     "Mudar os Modelos de toda a empresa (quem não é Administrador edita só os da própria gerência)."],
+  ["modelos_gerencia","Modelos da própria gerência", "Criar e editar Modelos só da sua gerência (ex.: coordenadora cria para o gerente dela)."],
   ["encerra", "Encerrar/reabrir ano e ano vigente","Encerrar o ano, reabrir (com motivo) e trocar o ano vigente."],
   ["restaura","Restaurar versões",                 "Voltar um cronograma (ou um Modelo, junto com Administrar Modelos) para uma versão anterior."],
+  ["lixeira", "Lixeira de cronogramas",            "Ver a lixeira, restaurar e excluir definitivamente (o que passa de 15 dias é apagado sozinho)."],
   ["acessos", "Gerenciar grupos de acesso",        "Abrir esta tela e mudar as permissões de todos os grupos."],
 ];
 const GRUPOS_BASE = ["admin", "gerente", "coordenador", "analista"];
@@ -5461,7 +6034,7 @@ function GruposTela({ grupos, onSalvar }){
   );
 }
 
-function App({ sessao, gruposPainel, onSair } = {}){
+function App({ sessao, gruposPainel, usuariosPainel, onSair } = {}){
   const paramsUrl = useMemo(() => new URLSearchParams(window.location.search), []);
   const consulta = paramsUrl.get("consulta") === "1";
   const clienteFixadoPorUrl = paramsUrl.get("cliente");
@@ -5473,6 +6046,8 @@ function App({ sessao, gruposPainel, onSair } = {}){
   const [modelos, setModelos] = useState([]);
   const [modelosAtualizadoEm, setModelosAtualizadoEm] = useState(null);
   const [modelosVersoes, setModelosVersoes] = useState([]); // histórico de versões dos Modelos
+  const [lotes, setLotes] = useState([]);                   // aplicações de Modelo em cronogramas (com desfazer)
+  const [loteModal, setLoteModal] = useState(null);
   const [fotosAtual, setFotosAtual] = useState([]);         // versões do cronograma aberto (todas os anos)
   const [fotosRecarga, setFotosRecarga] = useState(0);
   const [fotoAberta, setFotoAberta] = useState(null);       // { foto, modo: "ver" | "comparar" }
@@ -5494,6 +6069,19 @@ function App({ sessao, gruposPainel, onSair } = {}){
   const [erroBanco, setErroBanco] = useState(null);
   const [usuarioLocal, setUsuarioState] = useState(() => lerLocal("cronograma_usuario", { nome:"", perfil:"gerente" }));
   const [tema, setTema] = useState(() => temaSalvo(sessao && sessao.id));
+  // Usuários/grupos do painel (gerências). Integrado: vêm do login; modo teste: lidos aqui (usuários falsos, se houver).
+  const [pessoasLocais, setPessoasLocais] = useState(null);
+  useEffect(() => {
+    if(usuariosPainel) return;
+    carregarUsuariosDoPainel().then(r => setPessoasLocais({ usuarios: (r.usuarios || []).filter(u => u && u.active !== false), grupos: r.grupos || [] })).catch(() => {});
+  }, []);
+  const pessoasPainel = usuariosPainel || (pessoasLocais && pessoasLocais.usuarios) || [];
+  const gruposPainelEf = gruposPainel || (pessoasLocais && pessoasLocais.grupos) || [];
+  const gerentes = useMemo(() => gerentesDoPainel(pessoasPainel, gruposPainelEf), [pessoasPainel, gruposPainelEf]);
+  const usaGerencia = gerentes.length > 0;
+  const meuUsuarioPainel = sessao ? (pessoasPainel.find(u => u.id === sessao.id) || { id: sessao.id, groupId: sessao.groupId }) : null;
+  const escopo = usaGerencia && sessao ? escopoDoUsuario(meuUsuarioPainel, gruposPainelEf) : "all"; // "all" ou id do gerente
+  const nomeGerente = id => (gerentes.find(g => g.id === id) || {}).nome || "";
   useEffect(() => { aplicarTema(tema); }, [tema]);
   function alternarTema(){ const t = tema === "claro" ? "escuro" : "claro"; setTema(t); salvarTema(t, sessao && sessao.id); }
   // Com login integrado, nome e grupo vêm do usuário do painel; sem ele (modo teste), do campo "Você".
@@ -5530,6 +6118,16 @@ function App({ sessao, gruposPainel, onSair } = {}){
   const podeAprovar = !consulta && PERFIS[perfil].aprova;
   const podeEncerrar = !consulta && PERFIS[perfil].encerra; // encerrar/reabrir ano: Gerente e Administrador/Diretor
   const podeModelos = !consulta && PERFIS[perfil].modelos;  // administrar Modelos: Gerente e Administrador/Diretor
+  const podeModelosGerencia = !consulta && PERFIS[perfil].modelos_gerencia;
+  const podeLixeira = !consulta && PERFIS[perfil].lixeira; // lixeira: Gerente e Administrador/Diretor // Modelos só da própria gerência
+  const podeModelosTela = podeModelos || podeModelosGerencia;
+  // Modelo da empresa (sem gerenteId): só quem administra Modelos e vê tudo. Modelo de gerência: Administrador,
+  // ou quem é daquela gerência e tem uma das duas permissões.
+  function podeEditarModelo(m){
+    if(!usaGerencia) return !!podeModelos;
+    if(m && m.gerenteId) return escopo === "all" ? !!podeModelos : (m.gerenteId === escopo && !!podeModelosTela);
+    return !!podeModelos && escopo === "all";
+  }
   const podeSecoes = !consulta && PERFIS[perfil].secoes;    // seções personalizadas: Diretor, Gerente e Coordenador
   const podeClientes = !consulta && PERFIS[perfil].clientes; // editar a base de clientes
   const podeAcessos = !consulta && PERFIS[perfil].acessos;   // gerenciar grupos de acesso
@@ -5588,13 +6186,28 @@ function App({ sessao, gruposPainel, onSair } = {}){
   // pros cronogramas abertos, da versão em edição.
   const vinculoDe = useMemo(() => {
     const porId = {};
-    clientesResumo.forEach(r => { porId[r.id] = { id:r.id, nome:r.nome, clientesIds: linhaDoAno(r, ano).clientesIds }; });
-    Object.values(clientesCache).forEach(c => { const v = visaoDoAno(c, ano); porId[c.id] = { id:c.id, nome:c.nome, clientesIds: v ? v.clientesIds || [] : [] }; });
+    clientesResumo.forEach(r => { if(!r.excluido) porId[r.id] = { id:r.id, nome:r.nome, clientesIds: linhaDoAno(r, ano).clientesIds }; });
+    Object.values(clientesCache).forEach(c => { if(c.excluido){ delete porId[c.id]; return; } const v = visaoDoAno(c, ano); porId[c.id] = { id:c.id, nome:c.nome, clientesIds: v ? v.clientesIds || [] : [] }; });
     const m = {};
     Object.values(porId).forEach(cr => cr.clientesIds.forEach(id => { (m[id] = m[id] || []).push({ id:cr.id, nome:cr.nome }); }));
     return m;
   }, [clientesResumo, clientesCache, ano]); // um CNPJ = um cronograma, dentro de cada ano
-  const basePorId = useMemo(() => Object.fromEntries(baseClientes.map(c => [c.id, c])), [baseClientes]);
+  // Base com a gerência resolvida (clientes antigos: o nome do gerente casa com o gerente do painel).
+  const baseClientesG = useMemo(() => !usaGerencia ? baseClientes : baseClientes.map(c => {
+    const gid = gerenciaDoCliente(c, gerentes);
+    return gid && gid !== c.gerenteId ? { ...c, gerenteId: gid, gerente: nomeGerente(gid) } : c;
+  }), [baseClientes, gerentes, usaGerencia]);
+  const baseVisivel = useMemo(() => escopo === "all" ? baseClientesG : baseClientesG.filter(c => c.gerenteId === escopo), [baseClientesG, escopo]);
+  const basePorId = useMemo(() => Object.fromEntries(baseClientesG.map(c => [c.id, c])), [baseClientesG]);
+  // Clientes antigos cujo "Gerente" (nome) casa com um gerente do painel: grava o id da gerência na base (uma vez).
+  const sincGerRef = useRef(false);
+  useEffect(() => {
+    if(!usaGerencia || !podeClientes || sincGerRef.current || !baseClientes.length) return;
+    const acertar = baseClientes.filter(c => !c.gerenteId && gerenciaDoCliente(c, gerentes));
+    if(!acertar.length) return;
+    sincGerRef.current = true;
+    atualizarBase(b => b.map(c => { if(c.gerenteId) return c; const gid = gerenciaDoCliente(c, gerentes); return gid ? { ...c, gerenteId: gid, gerente: nomeGerente(gid) } : c; }));
+  }, [baseClientes, gerentes, usaGerencia]);
   // clienteBaseId -> [{id, nome, ano}] em todos os anos (índice + cronogramas abertos).
   const vinculoTodosAnos = useMemo(() => {
     const m = {};
@@ -5622,10 +6235,36 @@ function App({ sessao, gruposPainel, onSair } = {}){
     if(!vivo) return l;
     const v = visaoDoAno(vivo, ano);
     return { ...l, nome: vivo.nome, analista: vivo.analista || "", arquivado: !!vivo.arquivado, anos: anosDoCronograma(vivo),
-      ...(v ? { temVersao:true, status:v.status, clientesIds:v.clientesIds || [], modeloId:v.modeloId, modeloBase:v.modeloBase || l.modeloBase } : { temVersao:false, status:null, clientesIds:[] }) };
-  }), [clientesResumo, clientesCache, ano]);
-  const analistas = useMemo(() => [...new Set(linhasCarteira.map(c => c.analista).filter(Boolean).concat(usuario.nome ? [usuario.nome] : []))].sort((a,b) => a.localeCompare(b, "pt-BR")), [linhasCarteira, usuario.nome]);
-  const nAprovacoes = linhasCarteira.filter(c => !c.arquivado && STATUS_EM_APROVACAO.includes(c.status)).length;
+      ...(v ? { temVersao:true, status:v.status, clientesIds:v.clientesIds || [], modeloId:v.modeloId, modeloBase:v.modeloBase || l.modeloBase } : { temVersao:false, status:null, clientesIds:[] }), gerenteId: vivo.gerenteId || null, excluido: vivo.excluido || null };
+  }).map(l => ({ ...l, gerenteId: gerenciaDoCronograma(l.gerenteId, l.clientesIds, basePorId) })), [clientesResumo, clientesCache, ano, basePorId]);
+  // Responsável sem usuário no painel: por cliente e por cronograma (gerência, analista ou algum cliente com problema).
+  const problemasCliente = useMemo(() => {
+    if(!usaGerencia) return {};
+    const m = {}; baseClientesG.forEach(c => { const p = responsaveisSemUsuario(c, pessoasPainel); if(p.length) m[c.id] = p; }); return m;
+  }, [baseClientesG, pessoasPainel, usaGerencia]);
+  const problemasCrono = useMemo(() => {
+    if(!usaGerencia) return {};
+    const m = {};
+    linhasCarteira.forEach(l => {
+      if(l.excluido) return;
+      const p = [];
+      if(!l.gerenteId) p.push("gerência não definida");
+      nomesDoCampo(l.analista).forEach(n => { if(!pessoaPorNome(n, pessoasPainel)) p.push('analista "' + n + '" sem usuário'); });
+      const nCli = (l.clientesIds || []).filter(id => problemasCliente[id]).length;
+      if(nCli) p.push(nCli + " cliente(s) com responsável sem usuário");
+      if(p.length) m[l.id] = p;
+    });
+    return m;
+  }, [linhasCarteira, problemasCliente, pessoasPainel, usaGerencia]);
+  // Modelos que esta pessoa vê (empresa + própria gerência) e quantas versões de cronograma usam cada um.
+  const modelosVisiveis = useMemo(() => (!usaGerencia || escopo === "all") ? modelos : modelos.filter(m => !m.gerenteId || m.gerenteId === escopo), [modelos, usaGerencia, escopo]);
+  const usoModelos = useMemo(() => { const u = {}; clientesResumo.forEach(r => Object.values(r.versoes || {}).forEach(v => { if(v && v.modeloId) u[v.modeloId] = (u[v.modeloId] || 0) + 1; })); return u; }, [clientesResumo]);
+  // O que cada pessoa vê: Administrador/Diretor tudo; os demais, só a própria gerência (como no painel).
+  const linhasDoEscopo = useMemo(() => escopo === "all" ? linhasCarteira : linhasCarteira.filter(l => l.gerenteId === escopo), [linhasCarteira, escopo]);
+  const linhasVisiveis = useMemo(() => linhasDoEscopo.filter(l => !l.excluido), [linhasDoEscopo]);
+  const linhasLixeira = useMemo(() => linhasDoEscopo.filter(l => l.excluido), [linhasDoEscopo]);
+  const analistas = useMemo(() => [...new Set(linhasVisiveis.flatMap(c => nomesDoCampo(c.analista)).concat(usuario.nome ? [usuario.nome] : []))].sort((a,b) => a.localeCompare(b, "pt-BR")), [linhasVisiveis, usuario.nome]);
+  const nAprovacoes = linhasVisiveis.filter(c => !c.arquivado && STATUS_EM_APROVACAO.includes(c.status)).length;
 
   function showToast(msg){
     setToast(msg);
@@ -5645,7 +6284,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
     return () => window.removeEventListener("hashchange", h);
   }, []);
   useEffect(() => {
-    const nomes = { inicio:"Cronogramas", aprovacoes:"Aprovações", painel:"Painel", clientes:"Base de clientes", secoes:"Seções personalizadas", acessos:"Grupos de acesso", modelos:"Modelos" };
+    const nomes = { inicio:"Cronogramas", aprovacoes:"Aprovações", painel:"Painel", clientes:"Base de clientes", secoes:"Seções personalizadas", acessos:"Grupos de acesso", modelos:"Modelos", lixeira:"Lixeira" };
     document.title = (rota.tela === "cronograma" ? (registroAtual ? registroAtual.nome : "Cronograma") : nomes[rota.tela]) + " " + ano + " · Cronograma Operacional";
   }, [rota, registroAtual && registroAtual.nome, ano]);
 
@@ -5706,6 +6345,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
         if(!a || !a.anoVigente) kvSave(KV_ANOS_KEY, { ...(a || {}), anos: (a && a.anos) || {}, anoVigente: vig, atualizadoEm: new Date().toISOString() }).catch(()=>{});
         if(!window.location.hash.match(/^#\/?\d{4}/) && lerLocal("cronograma_ano", null) === null) setRota(r => ({ ...r, ano: vig }));
       } catch(e){ console.warn("Estado dos anos indisponível:", e.message); }
+      try { const lt = await kvLoad(KV_LOTES_KEY); setLotes((lt && lt.lotes) || []); } catch(e){}
       try { const mv = await kvLoad(KV_MODELOS_VERSOES_KEY); setModelosVersoes((mv && mv.versoes) || []); } catch(e){ console.warn("Versões dos Modelos indisponíveis:", e.message); }
       try { const g = await kvLoad(KV_GRUPOS_KEY); if(g && g.grupos && Object.keys(g.grupos).length) setGruposCfg(normalizarGrupos(g.grupos)); } catch(e){ console.warn("Grupos indisponíveis:", e.message); }
       try { const s = await kvLoad(KV_SECOES_KEY); setSecoes((s && s.secoes) || []); setSecoesAtualizadoEm((s && s.atualizadoEm) || null); } catch(e){ console.warn("Seções indisponíveis:", e.message); }
@@ -5879,6 +6519,8 @@ function App({ sessao, gruposPainel, onSair } = {}){
       const mudancas = antes ? diffClientes(antes, cliente, nomeClienteBase) : [];
       const quem = usuario.nome || null;
       const visaoFinal = { ...cliente, acoes: [...(cliente.acoes||[]), ...mudancas.map(descricao => ({ tipo:"edicao", descricao, em: agora, quem }))] };
+      // Gerência que veio dos clientes (cronogramas antigos) fica gravada no cronograma ao salvar.
+      if(usaGerencia && !visaoFinal.gerenteId){ const g = gerenciaDoCronograma(null, visaoFinal.clientesIds, basePorId); if(g) visaoFinal.gerenteId = g; }
       const reg0 = cacheRef.current[cliente.id] || migrarParaVersoes(cliente, anoV);
       const paraSalvar = gravarVisao(reg0, anoV, visaoFinal);
       paraSalvar.atualizadoEm = agora;
@@ -5921,6 +6563,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
     return {
       id: novoId("cli"), nome: dados.nome,
       clientesIds: dados.clientesIds || [],
+      gerenteId: dados.gerenteId || null,
       modeloBase: modelo ? modelo.nome : "Sem modelo", modeloId: modelo ? modelo.id : null,
       status: "em_desenvolvimento",
       historico: [{ status:"em_desenvolvimento", em: new Date().toISOString(), por: usuario.nome || "sistema" }],
@@ -5963,22 +6606,84 @@ function App({ sessao, gruposPainel, onSair } = {}){
     gravarNoCache(novo);
     await salvarCliente(novo);
   }
+  // Excluir = mandar para a LIXEIRA (15 dias). Os CNPJs ficam livres para outro cronograma nesse meio-tempo.
   async function excluirCliente(){
     if(!clienteAtual) return;
     const alvo = clienteAtual;
-    const ok = await ui.confirm('Excluir o cronograma "' + alvo.nome + '" definitivamente, inclusive o histórico? Os clientes continuam na base, só ficam sem cronograma. Se só quiser tirar da lista, use Arquivar.', { titulo:"Excluir cronograma", okLabel:"Excluir definitivamente", perigo:true });
+    const ok = await ui.confirm('Mandar o cronograma "' + alvo.nome + '" (todos os anos) para a LIXEIRA?\n\n• Fica lá por ' + LIXEIRA_DIAS + " dias; depois é apagado de vez, sozinho.\n• Gerente ou Administrador/Diretor podem restaurar nesse prazo.\n• Os clientes continuam na base e ficam livres para outro cronograma." +
+      (sujos.has(alvo.id) ? "\n• As alterações ainda não salvas serão descartadas." : "") + "\n\nSe só quiser tirar da lista, use Arquivar.", { titulo:"Excluir cronograma", okLabel:"Mandar para a lixeira", perigo:true });
     if(!ok) return;
     try {
-      await atualizarIndice(lista => lista.filter(c => c.id !== alvo.id));
-      await kvDelete(kvKeyCliente(alvo.id)).catch(e => console.warn("Não consegui apagar a chave:", e.message));
-      await kvDelete(kvKeyFotos(alvo.id)).catch(() => {});
+      const reg0 = await kvLoad(kvKeyCliente(alvo.id));
+      if(!reg0){ ui.alert("Não encontrei o cronograma salvo."); return; }
+      const agora = new Date().toISOString(), quem = usuario.nome || perfil;
+      const paraSalvar = { ...migrarParaVersoes(reg0, anoTrabalhoPadrao()), excluido: { em: agora, por: quem }, atualizadoEm: agora };
+      await kvSave(kvKeyCliente(alvo.id), paraSalvar);
+      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar)));
       kvDelete(kvKeyPresenca(alvo.id)).catch(()=>{});
-      setClientesCache(prev => { const n = { ...prev }; delete n[alvo.id]; return n; });
-      setSnapshots(prev => { const n = { ...prev }; delete n[alvo.id]; return n; });
+      cacheRef.current = { ...cacheRef.current, [alvo.id]: paraSalvar };
+      setClientesCache(prev => ({ ...prev, [alvo.id]: paraSalvar }));
+      marcarSalvo(paraSalvar);
       navegar(linkTela("inicio"));
-      showToast('"' + alvo.nome + '" excluído.');
+      showToast('"' + alvo.nome + '" foi para a lixeira (' + LIXEIRA_DIAS + " dias para restaurar).");
     } catch(e){ showToast("Erro ao excluir: " + e.message); }
   }
+  async function restaurarDaLixeira(id){
+    if(!podeLixeira){ ui.alert("Seu grupo de acesso não restaura da lixeira."); return; }
+    try {
+      const reg0 = await kvLoad(kvKeyCliente(id));
+      if(!reg0 || !reg0.excluido){ ui.alert("Esse cronograma não está mais na lixeira."); return; }
+      let reg = migrarParaVersoes(reg0, anoTrabalhoPadrao());
+      // CNPJs que, enquanto estava na lixeira, foram para outro cronograma no mesmo ano: saem deste.
+      const conflitos = [];
+      const versoes = { ...reg.versoes };
+      Object.keys(versoes).forEach(a => {
+        const ocupados = new Set(clientesResumo.filter(r => r.id !== id && !r.excluido).flatMap(r => linhaDoAno(r, Number(a)).clientesIds || []));
+        const ids = (versoes[a].clientesIds || []);
+        const tirar = ids.filter(c => ocupados.has(c));
+        if(tirar.length){ conflitos.push(a + ": " + tirar.map(nomeClienteBase).join(", ")); versoes[a] = { ...versoes[a], clientesIds: ids.filter(c => !ocupados.has(c)) }; }
+      });
+      if(!(await ui.confirm('Restaurar "' + reg.nome + '" da lixeira?' + (conflitos.length ? "\n\nEstes clientes foram para outro cronograma enquanto este estava na lixeira e vão ficar desvinculados daqui:\n• " + conflitos.join("\n• ") : ""), { titulo:"Restaurar da lixeira", okLabel:"Restaurar" }))) return;
+      const agora = new Date().toISOString(), quem = usuario.nome || perfil;
+      Object.keys(versoes).forEach(a => { versoes[a] = { ...versoes[a], acoes: [...(versoes[a].acoes || []), { tipo:"edicao", descricao: "Restaurado da lixeira (excluído em " + fmtHora(reg.excluido.em) + (reg.excluido.por ? " por " + reg.excluido.por : "") + ").", em: agora, quem }] }; });
+      const { excluido, ...resto } = reg;
+      const paraSalvar = { ...resto, versoes, atualizadoEm: agora };
+      await kvSave(kvKeyCliente(id), paraSalvar);
+      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar)));
+      cacheRef.current = { ...cacheRef.current, [id]: paraSalvar };
+      setClientesCache(prev => ({ ...prev, [id]: paraSalvar }));
+      marcarSalvo(paraSalvar);
+      showToast('"' + paraSalvar.nome + '" restaurado.');
+    } catch(e){ showToast("Erro ao restaurar: " + e.message); }
+  }
+  async function apagarDeVez(id, silencioso){
+    await kvDelete(kvKeyCliente(id)).catch(e => console.warn("Não consegui apagar a chave:", e.message));
+    await kvDelete(kvKeyFotos(id)).catch(() => {});
+    kvDelete(kvKeyPresenca(id)).catch(()=>{});
+    setClientesCache(prev => { const n = { ...prev }; delete n[id]; return n; });
+    setSnapshots(prev => { const n = { ...prev }; delete n[id]; return n; });
+    if(!silencioso) showToast("Cronograma apagado definitivamente.");
+  }
+  async function excluirDefinitivo(ids){
+    if(!podeLixeira){ ui.alert("Seu grupo de acesso não exclui definitivamente."); return; }
+    const nomes = ids.map(id => (clientesResumo.find(r => r.id === id) || {}).nome || id);
+    if(!(await ui.confirm("Excluir DEFINITIVAMENTE " + ids.length + " cronograma(s), inclusive histórico e versões? Não dá para desfazer.\n\n• " + nomes.slice(0, 10).join("\n• ") + (nomes.length > 10 ? "\n… e mais " + (nomes.length - 10) : ""), { titulo:"Excluir definitivamente", okLabel:"Excluir definitivamente", perigo:true }))) return;
+    for(const id of ids) await apagarDeVez(id, true);
+    await atualizarIndice(lista => lista.filter(c => !ids.includes(c.id))).catch(()=>{});
+    showToast(ids.length + " cronograma(s) excluído(s) definitivamente.");
+  }
+  // Limpeza automática: o que está na lixeira há mais de 15 dias é apagado de vez (uma vez por abertura).
+  const limpezaRef = useRef(false);
+  useEffect(() => {
+    if(carregando || consulta || limpezaRef.current) return;
+    limpezaRef.current = true;
+    const vencidos = clientesResumo.filter(r => r.excluido && diasRestantesLixeira(r.excluido) === 0).map(r => r.id);
+    if(!vencidos.length) return;
+    (async () => {
+      for(const id of vencidos) await apagarDeVez(id, true);
+      await atualizarIndice(lista => lista.filter(c => !vencidos.includes(c.id))).catch(()=>{});
+    })();
+  }, [carregando]);
 
   function updateProcesso(processoId, novoProcesso){
     setCliente(clienteId, c => ({ ...c, processos: c.processos.map(p => p.id === processoId ? novoProcesso : p) }));
@@ -6090,15 +6795,25 @@ function App({ sessao, gruposPainel, onSair } = {}){
         (semRef ? "\n" + semRef + " tarefa(s) de cronogramas criados antes da v4 não têm a referência de origem e não foram tocadas." : "") +
         (pulados.length ? "\nIgnorados: " + pulados.join(", ") + "." : "");
       if(!tarefas){ ui.alert("Nada a aplicar.\n\n" + resumoTxt, { titulo:"Aplicar Modelo atualizado" }); return false; }
-      if(!(await ui.confirm(resumoTxt + avisoPendentes, { titulo:"Aplicar Modelo atualizado", okLabel:"Aplicar" }))) return false;
-      let n = 0;
-      for(const p of comMudanca){
-        const novo = { ...p.cronograma, acoes: [...(p.cronograma.acoes || []), { tipo:"edicao", descricao:"Modelo atualizado aplicado: " + p.alteradas.join("; ") + ".", em: new Date().toISOString(), quem: usuario.nome || null }] };
-        gravarNoCache(novo);
-        if(await salvarCliente(novo, { silencioso:true })) n++;
-      }
-      showToast("Modelo atualizado aplicado em " + n + " cronograma(s).");
-      return true;
+      setLoteModal({ titulo:"Aplicar Modelo atualizado", okLabel:"Aplicar",
+        descricao: resumoTxt + avisoPendentes + "\n\nMarque em quais cronogramas aplicar.",
+        itens: comMudanca.map(p => ({ id: p.c.id, nome: p.c.nome, clientes: (p.c.clientesIds || []).map(nomeClienteBase).slice(0, 4).join(", "),
+          detalhe: p.alteradas.length + " tarefa(s): " + p.alteradas.slice(0, 3).join("; ") + (p.alteradas.length > 3 ? "…" : "") })),
+        onAplicar: async sel => {
+          let n = 0; const itensLote = [];
+          for(const p of comMudanca.filter(x => sel.has(x.c.id))){
+            const f = await registrarFoto(p.c.id, ano, p.c, "antes_modelo", "antes de aplicar o Modelo atualizado").catch(() => null);
+            const novo = { ...p.cronograma, acoes: [...(p.cronograma.acoes || []), { tipo:"edicao", descricao:"Modelo atualizado aplicado: " + p.alteradas.join("; ") + ".", em: new Date().toISOString(), quem: usuario.nome || null }] };
+            gravarNoCache(novo);
+            if(await salvarCliente(novo, { silencioso:true })){
+              n++;
+              if(f) itensLote.push({ cronogramaId: p.c.id, nome: p.c.nome, anos: [{ ano, fotoId: f.foto.id }], atualizadoEmDepois: (cacheRef.current[p.c.id] || {}).atualizadoEm });
+            }
+          }
+          if(itensLote.length) await gravarLote({ tipo:"modelo", descricao: "Aplicar Modelo atualizado (" + ano + ")", itens: itensLote });
+          showToast("Modelo atualizado aplicado em " + n + " cronograma(s). Dá para desfazer em Modelos → Aplicações recentes.");
+        } });
+      return false;
     }
     return false;
   }
@@ -6256,11 +6971,11 @@ function App({ sessao, gruposPainel, onSair } = {}){
   // Troca o nome de tarefas em todos os cronogramas (todas as versões de anos não encerrados), só onde
   // a tarefa ainda está com o nome antigo. É só o nome (datas não mudam), então vale também para aprovados.
   // Cronogramas com alterações não salvas ficam de fora (pra não salvar edição pela metade de ninguém).
-  async function renomearNosCronogramas(renomes){
+  async function renomearNosCronogramas(renomes, idsSelecionados){
     showToast("Renomeando nos cronogramas…");
-    const regs = await carregarVarios(clientesResumo.map(r => r.id));
+    const regs = await carregarVarios(idsSelecionados ? [...idsSelecionados] : idsCronogramasVisiveis());
     const agora = new Date().toISOString(), quem = usuario.nome || null;
-    const resumos = [], pulados = []; let nTarefas = 0;
+    const resumos = [], pulados = [], itensLote = []; let nTarefas = 0;
     for(const r0 of regs){
       const r = cacheRef.current[r0.id] || r0;
       const versoes = { ...(r.versoes || {}) }; let mudou = false, nAqui = 0;
@@ -6276,6 +6991,14 @@ function App({ sessao, gruposPainel, onSair } = {}){
       if(sujos.has(r.id)){ pulados.push(r.nome); continue; }
       const paraSalvar = { ...r, versoes, atualizadoEm: agora };
       try {
+        // Versão de segurança de cada ano alterado (para desfazer).
+        const anosSeg = [];
+        for(const a of Object.keys(versoes)){
+          if(versoes[a] === r.versoes[a]) continue;
+          const f = await registrarFoto(r.id, Number(a), visaoDoAno(r, a), "antes_modelo", "antes de renomear tarefa pelo Modelo");
+          anosSeg.push({ ano: Number(a), fotoId: f.foto.id });
+        }
+        itensLote.push({ cronogramaId: r.id, nome: r.nome, anos: anosSeg, atualizadoEmDepois: agora });
         await kvSave(kvKeyCliente(r.id), paraSalvar);
         cacheRef.current = { ...cacheRef.current, [r.id]: paraSalvar };
         setClientesCache(prev => ({ ...prev, [r.id]: paraSalvar }));
@@ -6284,7 +7007,8 @@ function App({ sessao, gruposPainel, onSair } = {}){
       } catch(e){ showToast('Falhou renomear em "' + r.nome + '": ' + e.message); }
     }
     if(resumos.length) await atualizarIndice(lista => resumos.reduce((l, x) => upsertResumo(l, x), lista)).catch(()=>{});
-    showToast(nTarefas + " tarefa(s) renomeada(s) em " + resumos.length + " cronograma(s).");
+    if(itensLote.length) await gravarLote({ tipo:"renomear", descricao: "Renomear tarefa: " + renomes.map(x => "\"" + x.de + "\" → \"" + x.para + "\"").join("; "), itens: itensLote });
+    showToast(nTarefas + " tarefa(s) renomeada(s) em " + resumos.length + " cronograma(s). Dá para desfazer em Modelos → Aplicações recentes.");
     if(pulados.length) ui.alert("Ficaram de fora por terem alterações não salvas (salve e rode de novo, ou renomeie à mão):\n" + pulados.join(", "), { titulo:"Renomear nos cronogramas" });
   }
   async function carregarFotos(id){
@@ -6337,14 +7061,16 @@ function App({ sessao, gruposPainel, onSair } = {}){
     } catch(e){ console.warn("Não consegui gravar as versões dos Modelos:", e.message); }
   }
   async function criarModeloDoCronograma(){
-    if(!podeModelos){ ui.alert("Seu grupo de acesso não administra Modelos."); return; }
+    if(!podeModelosTela){ ui.alert("Seu grupo de acesso não cria Modelos."); return; }
     if(!clienteAtual) return;
+    const gerModelo = usaGerencia && escopo !== "all" ? escopo : null; // quem não é Administrador cria para a própria gerência
     const temVig = clienteAtual.processos.some(p => p.eventos.some(e => (e.vigencias || []).length));
     const temExc = clienteAtual.processos.some(p => p.eventos.some(e => e.excecoes && Object.keys(e.excecoes).length));
     const nome = await ui.prompt('Criar um Modelo novo a partir de "' + clienteAtual.nome + '" (' + ano + ").\n\n" +
       "Vão para o Modelo todos os blocos e tarefas como estão na tela" + (sujos.has(clienteId) ? " (inclusive alterações ainda não salvas)" : "") + ": prazos, responsáveis, travas 🔒, seções, ciclo semanal e vínculos." +
       (temVig ? "\n• Tarefas com regra \u201ca partir de\u201d levam a regra que vale em dezembro." : "") +
       (temExc ? "\n• Ajustes pontuais não vão (são só deste cronograma)." : "") +
+      (usaGerencia ? "\n\nAbrangência: " + (gerModelo ? "Gerência " + nomeGerente(gerModelo) : "toda a empresa") + "." : "") +
       "\n\nO cronograma não muda. Nome do novo Modelo:", "Modelo — " + clienteAtual.nome, { titulo:"Salvar como Modelo", okLabel:"Criar Modelo" });
     if(nome === null) return;
     if(!nome.trim()){ ui.alert("Dê um nome para o Modelo."); return; }
@@ -6352,7 +7078,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
       const noServidor = await kvLoad(KV_MODELOS_KEY).catch(()=>null);
       const atuais = (noServidor && noServidor.modelos) || modelos;
       if(atuais.some(m => normalizar(m.nome).trim() === normalizar(nome).trim())){ ui.alert('Já existe um Modelo chamado "' + nome.trim() + '". Escolha outro nome.'); return; }
-      const novo = modeloAPartirDoCronograma({ ...clienteAtual, ano }, nome.trim(), usuario.nome || perfil);
+      const novo = { ...modeloAPartirDoCronograma({ ...clienteAtual, ano }, nome.trim(), usuario.nome || perfil), gerenteId: gerModelo, ativo: true };
       const lista = [...atuais, novo], em = new Date().toISOString();
       await kvSave(KV_MODELOS_KEY, { modelos: lista, atualizadoEm: em });
       setModelos(lista); setModelosAtualizadoEm(em);
@@ -6361,23 +7087,91 @@ function App({ sessao, gruposPainel, onSair } = {}){
     } catch(e){ showToast("Falhou criar o Modelo: " + e.message); }
   }
   async function salvarModelos(novos, renomes, motivos){
+    if(!podeModelosTela){ ui.alert("Seu grupo de acesso não mexe em Modelos."); return; }
     try {
       const noServidor = await kvLoad(KV_MODELOS_KEY).catch(()=>null);
-      if(noServidor && noServidor.atualizadoEm && modelosAtualizadoEm && noServidor.atualizadoEm !== modelosAtualizadoEm){
-        const ok = await ui.confirm("Os Modelos foram salvos em outra sessão às " + fmtHora(noServidor.atualizadoEm) + ". Salvar agora vai SOBRESCREVER essas mudanças.", { titulo:"Conflito de edição", okLabel:"Sobrescrever", perigo:true });
-        if(!ok) return;
-      }
+      const servidor = (noServidor && noServidor.modelos) || modelos;
+      // Conflito só se algum Modelo que ESTA pessoa edita mudou no servidor desde que ela abriu a página.
+      const mudouLa = servidor.filter(podeEditarModelo).some(m => JSON.stringify(m) !== JSON.stringify(modelos.find(x => x.id === m.id)));
+      if(mudouLa && !(await ui.confirm("Algum Modelo que você está editando foi salvo em outra sessão às " + fmtHora(noServidor.atualizadoEm) + ". Salvar agora vai SOBRESCREVER essas mudanças.", { titulo:"Conflito de edição", okLabel:"Sobrescrever", perigo:true }))) return;
+      // Mescla: o que você pode editar vem da sua tela; o resto (ex.: Modelos de outra gerência) fica como está no servidor.
+      const ordem = m => { const i = MODELOS_PADRAO_DEF.findIndex(d => d.id === m.id); return i < 0 ? 99 : i; };
+      const final = [...novos.filter(podeEditarModelo), ...servidor.filter(m => !podeEditarModelo(m))]
+        .map((m, i) => ({ m, i })).sort((a, b) => (ordem(a.m) - ordem(b.m)) || (a.i - b.i)).map(x => x.m);
+      const antes = servidor;
       const em = new Date().toISOString();
-      await kvSave(KV_MODELOS_KEY, { modelos: novos, atualizadoEm: em });
-      await gravarVersoesModelos(modelos, novos, motivos);
-      setModelos(novos); setModelosAtualizadoEm(em);
-      showToast("Modelos salvos. Para levar as mudanças aos cronogramas, use “Aplicar Modelo atualizado” na tela inicial.");
-      if(renomes && renomes.length && clientesResumo.length && podeEditar &&
-        await ui.confirm("Aplicar os nomes novos também nos cronogramas já criados?\n\n" + renomes.map(x => "• \"" + x.de + "\" → \"" + x.para + "\"").join("\n") +
-          "\n\nSó troca onde a tarefa ainda está com o nome antigo, em todos os anos não encerrados (inclusive aprovados — é só o nome, as datas não mudam). Fica registrado no histórico de cada cronograma.",
-          { titulo:"Renomear nos cronogramas", okLabel:"Renomear nos cronogramas", cancelLabel:"Agora não" }))
-        await renomearNosCronogramas(renomes);
+      await kvSave(KV_MODELOS_KEY, { modelos: final, atualizadoEm: em });
+      await gravarVersoesModelos(antes, final, motivos);
+      setModelos(final); setModelosAtualizadoEm(em);
+      showToast("Modelos salvos. Para levar as mudanças aos cronogramas, use “Aplicar Modelo atualizado” na tela inicial (você escolhe quais).");
+      if(renomes && renomes.length && clientesResumo.length && podeEditar) await prepararRenomeio(renomes);
     } catch(e){ showToast("Falhou salvar os Modelos: " + e.message); }
+  }
+  // Nomes dos clientes de um cronograma (versão mais recente), para mostrar quem é afetado.
+  function clientesDoRegistro(r){
+    const anos = anosDoCronograma(r); const v = anos.length ? r.versoes[anos[anos.length - 1]] : null;
+    const nomes = ((v && v.clientesIds) || []).map(id => basePorId[id] ? (basePorId[id].razaoSocial || fmtDocumento(basePorId[id].documento)) : null).filter(Boolean);
+    return nomes.length ? nomes.slice(0, 4).join(", ") + (nomes.length > 4 ? " e mais " + (nomes.length - 4) : "") : "";
+  }
+  // Cronogramas que esta pessoa vê (todas as versões), para operações em lote vindas do Modelo.
+  function idsCronogramasVisiveis(){
+    return clientesResumo.filter(r => escopo === "all" || gerenciaDoCronograma(r.gerenteId, Object.values(r.versoes || {}).flatMap(v => (v && v.clientesIds) || []), basePorId) === escopo).map(r => r.id);
+  }
+  async function prepararRenomeio(renomes){
+    showToast("Procurando cronogramas com essas tarefas…");
+    const regs = await carregarVarios(idsCronogramasVisiveis());
+    const itens = [];
+    regs.forEach(r0 => {
+      const r = cacheRef.current[r0.id] || r0; let n = 0; const anos = [];
+      Object.keys(r.versoes || {}).forEach(a => { if(anoEncerrado(Number(a), anosEstado)) return; const res = renomearTarefas(r.versoes[a].processos, renomes); if(res.n){ n += res.n; anos.push(a); } });
+      if(n) itens.push({ id: r.id, nome: r.nome, detalhe: n + " tarefa(s) renomeada(s) · " + anos.join(", "), clientes: clientesDoRegistro(r), bloqueado: sujos.has(r.id) ? "tem alterações não salvas" : null });
+    });
+    if(!itens.length){ showToast("Nenhum cronograma tem essas tarefas com o nome antigo."); return; }
+    setLoteModal({ titulo:"Renomear nos cronogramas", okLabel:"Renomear", itens,
+      descricao: "Tarefa(s) renomeada(s) no Modelo:\n" + renomes.map(x => "• \"" + x.de + "\" → \"" + x.para + "\"").join("\n") +
+        "\n\nMarque em quais cronogramas aplicar. Só troca o nome (as datas não mudam), inclusive em aprovados; anos encerrados ficam de fora.",
+      onAplicar: sel => renomearNosCronogramas(renomes, sel) });
+  }
+  // Operação em lote registrada para poder desfazer: cada item guarda a versão de segurança de cada ano alterado.
+  async function gravarLote(lote){
+    try {
+      const atual = await kvLoad(KV_LOTES_KEY).catch(()=>null);
+      const lista = [{ id: novoId("lote"), em: new Date().toISOString(), por: usuario.nome || perfil, ...lote }, ...((atual && atual.lotes) || lotes)].slice(0, 30);
+      await kvSave(KV_LOTES_KEY, { lotes: lista, atualizadoEm: new Date().toISOString() });
+      setLotes(lista);
+    } catch(e){ showToast("Aviso: não consegui registrar a operação para desfazer (" + e.message + ")."); }
+  }
+  async function desfazerLote(lote){
+    if(!podeRestaurar){ ui.alert("Seu grupo de acesso não desfaz operações."); return; }
+    if(!(await ui.confirm('Desfazer "' + lote.descricao + '" (' + fmtHora(lote.em) + ")?\n\n" + lote.itens.length + " cronograma(s) voltam como estavam antes dessa operação. Os que foram alterados depois ficam de fora, para não perder o que foi feito.", { titulo:"Desfazer aplicação", okLabel:"Desfazer", perigo:true }))) return;
+    const feitos = [], pulados = [], resumos = [];
+    for(const it of lote.itens){
+      try {
+        const reg0 = await kvLoad(kvKeyCliente(it.cronogramaId));
+        if(!reg0){ pulados.push(it.nome + " (não encontrado)"); continue; }
+        if(sujos.has(it.cronogramaId) || reg0.atualizadoEm !== it.atualizadoEmDepois){ pulados.push(it.nome + " (alterado depois)"); continue; }
+        const fotos = await carregarFotos(it.cronogramaId);
+        let r = migrarParaVersoes(reg0, anoTrabalhoPadrao());
+        const agora = new Date().toISOString();
+        it.anos.forEach(a => {
+          const f = fotos.find(x => x.id === a.fotoId), v = visaoDoAno(r, a.ano);
+          if(!f || !v) return;
+          r = gravarVisao(r, a.ano, { ...restaurarDaFoto(v, f), acoes: [...(v.acoes || []), { tipo:"edicao", descricao: "Desfeito: " + lote.descricao + ".", em: agora, quem: usuario.nome || null }] });
+        });
+        const paraSalvar = { ...r, atualizadoEm: agora };
+        await kvSave(kvKeyCliente(it.cronogramaId), paraSalvar);
+        cacheRef.current = { ...cacheRef.current, [it.cronogramaId]: paraSalvar };
+        setClientesCache(prev => ({ ...prev, [it.cronogramaId]: paraSalvar }));
+        marcarSalvo(paraSalvar); resumos.push(resumoDe(paraSalvar)); feitos.push(it.nome);
+      } catch(e){ pulados.push(it.nome + " (" + e.message + ")"); }
+    }
+    if(resumos.length) await atualizarIndice(lista => resumos.reduce((l, x) => upsertResumo(l, x), lista)).catch(()=>{});
+    try {
+      const atual = await kvLoad(KV_LOTES_KEY).catch(()=>null);
+      const lista = ((atual && atual.lotes) || lotes).map(l => l.id === lote.id ? { ...l, desfeitoEm: new Date().toISOString(), desfeitoPor: usuario.nome || perfil, desfeitos: feitos.length } : l);
+      await kvSave(KV_LOTES_KEY, { lotes: lista, atualizadoEm: new Date().toISOString() }); setLotes(lista);
+    } catch(e){}
+    ui.alert(feitos.length + " cronograma(s) voltaram como estavam." + (pulados.length ? "\n\nFicaram de fora:\n• " + pulados.join("\n• ") : ""), { titulo:"Desfazer aplicação" });
   }
 
   function navegarMes(delta){
@@ -6390,6 +7184,25 @@ function App({ sessao, gruposPainel, onSair } = {}){
   const alertasAtual = useMemo(() => clienteAtual ? alertasDoAno(clienteAtual, ano) : [], [clienteAtual, ano]);
   const vinculadosAtual = clienteAtual ? (clienteAtual.clientesIds || []).map(id => basePorId[id]).filter(Boolean) : [];
   // Gerente/coordenador/analista vindos da base de clientes (o mais frequente entre os CNPJs vinculados).
+  // Gerência do cronograma aberto e se esta pessoa pode vê-lo.
+  const gerAtual = registroAtual ? gerenciaDoCronograma(registroAtual.gerenteId, clienteAtual ? clienteAtual.clientesIds : [], basePorId) : null;
+  const semAcessoGerencia = !!registroAtual && escopo !== "all" && gerAtual !== escopo;
+  const gerenciasDosClientes = clienteAtual ? [...new Set((clienteAtual.clientesIds || []).map(id => basePorId[id] && basePorId[id].gerenteId).filter(Boolean))] : [];
+  function definirGerenciaCronograma(gid){
+    if(gerenciasDosClientes.length && gerenciasDosClientes.some(g => g !== gid)){ ui.alert("Os clientes vinculados são da gerência " + gerenciasDosClientes.map(nomeGerente).join(" e ") + ". A gerência do cronograma precisa ser a mesma dos clientes."); return; }
+    updateClienteAtual({ gerenteId: gid || null });
+  }
+  // Vincular clientes: todos da MESMA gerência e com gerência definida (decisão: um cronograma não mistura gerências).
+  function vincularComGerencia(ids){
+    if(!usaGerencia){ updateClienteAtual({ clientesIds: ids }); return; }
+    const novos = ids.filter(id => !(clienteAtual.clientesIds || []).includes(id)).map(id => basePorId[id]).filter(Boolean);
+    const semG = novos.filter(c => !c.gerenteId);
+    if(semG.length){ ui.alert("Defina a gerência destes clientes na Base de clientes antes de vincular:\n" + semG.slice(0, 8).map(c => "• " + (c.razaoSocial || fmtDocumento(c.documento))).join("\n")); return; }
+    const gs = [...new Set(ids.map(id => basePorId[id] && basePorId[id].gerenteId).filter(Boolean))];
+    if(gs.length > 1){ ui.alert("Um cronograma não pode ter clientes de gerências diferentes (" + gs.map(nomeGerente).join(" e ") + ")."); return; }
+    if(clienteAtual.gerenteId && gs[0] && gs[0] !== clienteAtual.gerenteId){ ui.alert("Este cronograma é da gerência " + nomeGerente(clienteAtual.gerenteId) + "; os clientes escolhidos são da gerência " + nomeGerente(gs[0]) + "."); return; }
+    updateClienteAtual({ clientesIds: ids, ...(!clienteAtual.gerenteId && gs[0] ? { gerenteId: gs[0] } : {}) });
+  }
   const respBase = clienteAtual ? Object.fromEntries(RESPONSAVEIS.map(([campo]) => [campo, responsavelDosClientes(clienteAtual.clientesIds, basePorId, campo)])) : {};
   const abertosAtual = new Set((clienteAtual && abertos[clienteAtual.id]) || []);
   function alternarProcesso(pid){ setAbertos(prev => { const s = new Set(prev[clienteId] || []); s.has(pid) ? s.delete(pid) : s.add(pid); return { ...prev, [clienteId]: [...s] }; }); }
@@ -6421,9 +7234,10 @@ function App({ sessao, gruposPainel, onSair } = {}){
     { id:"inicio", ic:"🏠", label:"Cronogramas", href:linkTela("inicio") },
     { id:"aprovacoes", ic:"✅", label:"Aprovações", href:linkTela("aprovacoes"), badge:nAprovacoes },
     { id:"painel", ic:"📊", label:"Painel", href:linkTela("painel") },
-    { id:"clientes", ic:"🏢", label:"Base de clientes (" + baseClientes.filter(c => c.ativo !== false).length + ")", href:linkTela("clientes") },
+    { id:"clientes", ic:"🏢", label:"Base de clientes (" + baseVisivel.filter(c => c.ativo !== false).length + ")", href:linkTela("clientes") },
     ...(podeSecoes ? [{ id:"secoes", ic:"🧩", label:"Seções (" + secoes.length + ")", href:linkTela("secoes") }] : []),
     ...(podeAcessos ? [{ id:"acessos", ic:"🔐", label:"Grupos de acesso", href:linkTela("acessos") }] : []),
+    ...(podeLixeira ? [{ id:"lixeira", ic:"🗑", label:"Lixeira (" + linhasLixeira.length + ")", href:linkTela("lixeira") }] : []),
   ];
   const nomeResumo = id => (linhasCarteira.find(c => c.id === id) || {}).nome;
   // Em quantos cronogramas (qualquer ano) cada seção da biblioteca está em uso — vem do índice e das versões abertas.
@@ -6458,7 +7272,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
               {m.badge > 0 && <span className="nav-badge">{m.badge}</span>}
             </a>
           ))}
-          {podeModelos
+          {podeModelosTela
             ? <a href={linkTela("modelos")} className={"nav-item" + (rota.tela === "modelos" ? " active" : "")} title="Modelos (tarefas-padrão)"><span className="nav-ic">⚙</span>{!recolhida && <span>Modelos</span>}</a>
             : <button className="nav-item" title="Seu grupo de acesso não administra Modelos" disabled><span className="nav-ic">⚙</span>{!recolhida && <span>Modelos</span>}</button>}
 
@@ -6524,30 +7338,34 @@ function App({ sessao, gruposPainel, onSair } = {}){
       )}
 
       <main className="main">
-        {!consulta && !["clientes","secoes","acessos","modelos"].includes(rota.tela) && anoPendenteDeEncerrar(ano, anosEstado) && (
+        {!consulta && !["clientes","secoes","acessos","modelos","lixeira"].includes(rota.tela) && anoPendenteDeEncerrar(ano, anosEstado) && (
           <div className="note faixa-ano" style={{marginTop:14}}>
             ⏳ {ano} já terminou no calendário e ainda não foi encerrado.
             {podeEncerrar ? <> <button className="btn btn-sm btn-primary" style={{marginLeft:8}} onClick={encerrarAnoInteiro}>Encerrar {ano}…</button></> : " Quem encerra é o Gerente ou o Administrador/Diretor."}
           </div>
         )}
-        {!consulta && !["clientes","secoes","acessos","modelos","cronograma"].includes(rota.tela) && anoEncerrado(ano, anosEstado) && (
+        {!consulta && !["clientes","secoes","acessos","modelos","lixeira","cronograma"].includes(rota.tela) && anoEncerrado(ano, anosEstado) && (
           <div className="note note-lock" style={{marginTop:14}}>
             🔒 {ano} encerrado{anosEstado[ano].por ? " por " + anosEstado[ano].por + " em " + fmtHora(anosEstado[ano].em) : ""} — só consulta.
             {podeEncerrar && <> <button className="btn btn-sm btn-outline" style={{marginLeft:8}} onClick={reabrirAnoInteiro}>Reabrir {ano}…</button></>}
           </div>
         )}
         {rota.tela === "inicio" && !consulta && (
-          <CarteiraTela key={"carteira-" + carteiraStatus + "-" + ano} ano={ano} statusInicial={carteiraStatus} linhas={linhasCarteira} modelos={modelos} usuario={usuario} analistas={analistas} sujos={sujos} basePorId={basePorId}
+          <CarteiraTela key={"carteira-" + carteiraStatus + "-" + ano} ano={ano} statusInicial={carteiraStatus} linhas={linhasVisiveis} problemasResp={problemasCrono} modelos={modelos} usuario={usuario} analistas={analistas} sujos={sujos} basePorId={basePorId}
             atualizandoResumo={atualizandoResumo} onAbrir={id => navegar(linkCronograma(id))} onNovo={()=>setModalNovo("cadastro")} onAcaoMassa={acaoMassa} />
         )}
         {rota.tela === "aprovacoes" && !consulta && (
-          <AprovacoesTela linhas={linhasCarteira} perfil={perfil} onAbrir={id => navegar(linkCronograma(id))} onAprovar={aprovarDaFila} onDevolver={devolverDaFila} />
+          <AprovacoesTela linhas={linhasVisiveis} perfil={perfil} onAbrir={id => navegar(linkCronograma(id))} onAprovar={aprovarDaFila} onDevolver={devolverDaFila} />
         )}
-        {rota.tela === "modelos" && !consulta && (podeModelos
-          ? <ModeloAdmin key="modelos" modelos={modelos} versoes={modelosVersoes} podeRestaurar={podeRestaurar} onSalvar={salvarModelos} ano={ano} />
+        {rota.tela === "lixeira" && !consulta && (podeLixeira
+          ? <LixeiraTela itens={linhasLixeira} nomeGerente={nomeGerente} usaGerencia={usaGerencia} onRestaurar={restaurarDaLixeira} onExcluir={excluirDefinitivo} />
+          : <div className="card muted" style={{marginTop:20}}>A lixeira é acessada por Gerente ou Administrador/Diretor.</div>)}
+        {rota.tela === "modelos" && !consulta && (podeModelosTela
+          ? <ModeloAdmin key="modelos" modelos={modelos} versoes={modelosVersoes} podeRestaurar={podeRestaurar} onSalvar={salvarModelos} ano={ano}
+              podeEditarModelo={podeEditarModelo} gerentes={gerentes} escopo={escopo} usoModelos={usoModelos} lotes={lotes} onDesfazerLote={desfazerLote} />
           : <div className="card muted" style={{marginTop:20}}>Seu grupo de acesso não administra Modelos.</div>)}
         {rota.tela === "painel" && !consulta && (
-          <PainelTela key={"painel-" + ano} ano={ano} estadoAno={anosEstado[ano]} podeEncerrar={podeEncerrar && ano <= anoVigente()} onEncerrar={encerrarAnoInteiro} onReabrir={reabrirAnoInteiro} linhas={linhasCarteira} base={baseClientes.filter(c => c.ativo !== false)} basePorId={basePorId} modelos={modelos} analistas={analistas}
+          <PainelTela key={"painel-" + ano} ano={ano} estadoAno={anosEstado[ano]} podeEncerrar={podeEncerrar && ano <= anoVigente()} onEncerrar={encerrarAnoInteiro} onReabrir={reabrirAnoInteiro} linhas={linhasVisiveis} base={baseVisivel.filter(c => c.ativo !== false)} basePorId={basePorId} modelos={modelos} analistas={analistas}
             onAbrir={id => navegar(linkCronograma(id))} onFiltrarCarteira={st => { setCarteiraStatus(st); navegar(linkTela("inicio")); }} />
         )}
         {rota.tela === "secoes" && !consulta && (podeSecoes
@@ -6557,11 +7375,25 @@ function App({ sessao, gruposPainel, onSair } = {}){
           ? <GruposTela grupos={PERFIS} onSalvar={salvarGrupos} />
           : <div className="card muted" style={{marginTop:20}}>Seu grupo não tem acesso à gestão de grupos.</div>)}
         {rota.tela === "clientes" && !consulta && (
-          <ClientesBaseTela podeEditar={podeClientes} base={baseClientes} vinculoDe={vinculoDe} vinculoTodosAnos={vinculoTodosAnos} onAtualizarBase={atualizarBase} onAbrirCronograma={id => navegar(linkCronograma(id))} />
+          <ClientesBaseTela podeEditar={podeClientes} base={baseVisivel} baseCompleta={baseClientesG} problemasCliente={problemasCliente} vinculoDe={vinculoDe} vinculoTodosAnos={vinculoTodosAnos}
+            gerentes={gerentes} usuariosPainel={pessoasPainel} gruposPainel={gruposPainelEf} escopo={escopo} usuarioNome={usuario.nome} onAtualizarBase={atualizarBase} onAbrirCronograma={id => navegar(linkCronograma(id))} />
         )}
 
         {rota.tela === "cronograma" && (!registroAtual ? (
           <div className="muted" style={{paddingTop:30}}>{carregandoCrono ? "Abrindo o cronograma…" : <>Cronograma não encontrado. <a href={linkTela("inicio")}>Voltar para a lista</a></>}</div>
+        ) : registroAtual.excluido ? (
+          <div className="card" style={{marginTop:24}}>
+            <h3>🗑 “{registroAtual.nome}” está na lixeira</h3>
+            <p className="muted">Excluído em {fmtHora(registroAtual.excluido.em)}{registroAtual.excluido.por ? " por " + registroAtual.excluido.por : ""} · apagado de vez em {diasRestantesLixeira(registroAtual.excluido)} dia(s).</p>
+            {podeLixeira ? <button className="btn btn-primary" onClick={()=>restaurarDaLixeira(registroAtual.id)}>Restaurar</button> : <p className="muted">Peça a um Gerente ou Administrador/Diretor para restaurar.</p>}
+            {" "}<a href={linkTela("inicio")}>Voltar para a lista</a>
+          </div>
+        ) : semAcessoGerencia ? (
+          <div className="card" style={{marginTop:24}}>
+            <h3>Sem acesso a este cronograma</h3>
+            <p className="muted">“{registroAtual.nome}” {gerAtual ? "é da gerência " + nomeGerente(gerAtual) : "ainda não tem gerência definida"}. Você vê apenas os cronogramas da sua gerência.</p>
+            <a href={linkTela("inicio")}>Voltar para a lista</a>
+          </div>
         ) : !clienteAtual ? (
           <div style={{paddingTop:24}}>
             <div className="migalha" style={{marginBottom:10}}><a href={linkTela("inicio")}>Cronogramas {ano}</a> › <strong>{registroAtual.nome}</strong></div>
@@ -6602,13 +7434,20 @@ function App({ sessao, gruposPainel, onSair } = {}){
                 )}
               </div>
               <div className="sub">
+                {usaGerencia && <>Gerência: {gerAtual ? <strong style={{fontWeight:600}}>{nomeGerente(gerAtual)}</strong> : <span className="alerta">⚠ não definida</span>}
+                  {escopo === "all" && podeEditar && !somenteLeitura && !gerAtual && <> <select value={clienteAtual.gerenteId || ""} onChange={e=>definirGerenciaCronograma(e.target.value)} aria-label="Definir gerência do cronograma" style={{padding:"1px 4px"}}>
+                    <option value="">definir…</option>
+                    {gerentes.map(g => <option key={g.id} value={g.id}>{g.nome}</option>)}
+                  </select></>}
+                  {gerenciasDosClientes.length > 1 && <span className="alerta"> ⚠ clientes de gerências diferentes</span>}
+                  {" · "}</>}
                 Modelo: {clienteAtual.modeloBase} · {vinculadosAtual.length} CNPJ(s) ·{" "}
                 <label>Analista: <input type="text" list="lista-analistas" value={clienteAtual.analista || ""} disabled={!podeEditar} placeholder="—" onChange={e=>updateClienteAtual({ analista: e.target.value })} style={{width:150, padding:"2px 6px"}} aria-label="Analista responsável" /></label>
                 {respBase.analista && respBase.analista !== (clienteAtual.analista || "") && podeEditar && <> <button className="link-btn" onClick={()=>updateClienteAtual({ analista: respBase.analista })} title="Analista cadastrado na base de clientes para os CNPJs deste cronograma">usar "{respBase.analista}" (da base)</button></>}
                 {respBase.coordenador && <> · Coordenador: <strong style={{fontWeight:600}}>{respBase.coordenador}</strong></>}
-                {respBase.gerente && <> · Gerente: <strong style={{fontWeight:600}}>{respBase.gerente}</strong></>}
+                {!usaGerencia && respBase.gerente && <> · Gerente: <strong style={{fontWeight:600}}>{respBase.gerente}</strong></>}
                 {!consulta && <> · <button className="link-btn" onClick={copiarLink}>🔗 Copiar link</button></>}
-                {podeModelos && <> · <button className="link-btn" onClick={criarModeloDoCronograma} title="Cria um Modelo novo com os blocos e tarefas deste cronograma (o cronograma não muda)">Salvar como Modelo</button></>}
+                {podeModelosTela && <> · <button className="link-btn" onClick={criarModeloDoCronograma} title="Cria um Modelo novo com os blocos e tarefas deste cronograma (o cronograma não muda)">Salvar como Modelo</button></>}
                 {podeEditar && <> · <button className="link-btn" onClick={duplicarCliente}>Duplicar</button>
                   {" · "}<button className="link-btn" onClick={alternarArquivado}>{clienteAtual.arquivado ? "Desarquivar" : "Arquivar"}</button>
                   {" · "}<button className="link-btn perigo" onClick={excluirCliente}>Excluir</button></>}
@@ -6710,10 +7549,11 @@ function App({ sessao, gruposPainel, onSair } = {}){
           </>}
           {aba === "previa_anual" && <GradeAnual cliente={clienteAtual} ano={ano} />}
           {aba === "clientes" && (
-            <ClientesVinculadosTab key={clienteAtual.id} cliente={clienteAtual} base={baseClientes} vinculoDe={vinculoDe}
+            <ClientesVinculadosTab key={clienteAtual.id} cliente={clienteAtual} vinculoDe={vinculoDe}
+              base={usaGerencia && gerAtual ? baseClientesG.filter(c => c.gerenteId === gerAtual || (clienteAtual.clientesIds || []).includes(c.id)) : (escopo === "all" ? baseClientesG : baseVisivel.concat(baseClientesG.filter(c => (clienteAtual.clientesIds || []).includes(c.id) && c.gerenteId !== escopo)))}
               ano={ano} mesReferencia={mesReferencia} somenteLeitura={somenteLeitura}
               onEditar={()=>setAba("parametrizar")}
-              onAlterarVinculos={(ids)=>updateClienteAtual({ clientesIds: ids })} />
+              onAlterarVinculos={vincularComGerencia} />
           )}
           {aba === "historico" && <>
             <VersoesCard fotos={fotosAtual} ano={ano} podeEditar={podeEditar && !travado} podeRestaurar={podeRestaurar}
@@ -6733,7 +7573,7 @@ function App({ sessao, gruposPainel, onSair } = {}){
       {toast && <div className="toast" role="status">{toast}</div>}
 
       {modalNovo === "cadastro" && (
-        <NovoCronogramaForm modelos={modelos} base={baseClientes} vinculoDe={vinculoDe} ano={ano} anosEstado={anosEstado} onCancelar={()=>setModalNovo(null)}
+        <NovoCronogramaForm modelos={modelosVisiveis.filter(m => m.ativo !== false)} base={baseVisivel.filter(c => c.ativo !== false)} vinculoDe={vinculoDe} gerentes={gerentes} escopo={escopo} ano={ano} anosEstado={anosEstado} onCancelar={()=>setModalNovo(null)}
           onCriarDireto={criarCliente}
           onIrParaAssistente={(dados)=>{ setDadosCadastroPendente(dados); setModalNovo("assistente"); }} />
       )}
@@ -6742,6 +7582,8 @@ function App({ sessao, gruposPainel, onSair } = {}){
           modelo={modelos.find(m => m.id === dadosCadastroPendente?.modeloId) || modelos[0]}
           onCancelar={()=>setModalNovo(null)} onCriar={criarClienteViaAssistente} />
       )}
+      {loteModal && <LoteCronogramasModal {...loteModal} onCancelar={()=>setLoteModal(null)}
+        onAplicar={async sel => { const f = loteModal.onAplicar; setLoteModal(null); await f(sel); }} />}
       {modalSecao && clienteAtual && (
         <AdicionarSecaoModal secoes={secoes} processosAtuais={clienteAtual.processos} ano={ano}
           onAdicionar={adicionarSecaoAoCronograma} onFechar={()=>setModalSecao(false)} />
@@ -6882,7 +7724,7 @@ function PortaoLogin(){
   if(st.carregando) return <div style={{padding:40}}>Carregando…</div>;
   if(st.erro) return <div className="login-wrap"><div className="card login-box"><div className="alerta">Não consegui carregar os usuários do painel: {st.erro}</div></div></div>;
   if(!st.sessao) return <><LoginTela usuarios={st.usuarios} grupos={st.grupos} onEntrar={s => { gravarSessao(s); aplicarTema(temaSalvo(s.id)); setSt(x => ({ ...x, sessao: s })); }} /><DialogHost /></>;
-  return <App sessao={st.sessao} gruposPainel={st.grupos} onSair={() => { encerrarSessao(); setSt(x => ({ ...x, sessao: null })); }} />;
+  return <App sessao={st.sessao} gruposPainel={st.grupos} usuariosPainel={st.usuarios} onSair={() => { encerrarSessao(); setSt(x => ({ ...x, sessao: null })); }} />;
 }
 function Raiz(){
   const p = new URLSearchParams(window.location.search);
