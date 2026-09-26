@@ -1987,6 +1987,11 @@ function anoTravado(ano, versao, anosEstado){
 function anoPendenteDeEncerrar(ano, anosEstado, vigente){
   return Number(ano) < (vigente || anoVigente()) && !anoEncerrado(ano, anosEstado);
 }
+// Aviso "já terminou e não foi encerrado": só quando o ano ACABOU no calendário (ex.: 2026 a partir de jan/2027).
+// Antes disso o ano ainda está em andamento (as tarefas de dezembro caem em jan/fev), mesmo que o vigente já seja o seguinte.
+function anoProntoParaEncerrar(ano, anosEstado, hoje){
+  return Number(ano) < (hoje || new Date()).getFullYear() && !anoEncerrado(ano, anosEstado);
+}
 // Última data da competência de dezembro do ano (folha, encargos, eSocial… caem no ano seguinte):
 // antes dela, encerrar o ano pode travar tarefas que ainda vão acontecer.
 function ultimaTarefaDeDezembro(cronogramasVisoes, ano){
@@ -2351,6 +2356,11 @@ function rodarAutoTestes(){
     const ok = anoTravado(2025, {}, estado) && !anoTravado(2026, {}, estado) && !anoTravado(2025, { reaberto:{ motivo:"x" } }, estado)
       && anoPendenteDeEncerrar(2026, estado, vigente) && !anoPendenteDeEncerrar(2025, estado, vigente) && !anoPendenteDeEncerrar(2027, estado, vigente);
     return ok ? true : "regra de encerramento errada";
+  });
+  t("Aviso de encerrar o ano só depois que ele acaba no calendário (set/2026 não pede para encerrar 2026)", () => {
+    const set26 = new Date(2026, 8, 26), jan27 = new Date(2027, 0, 5), estado = {};
+    return eq([anoProntoParaEncerrar(2026, estado, set26), anoProntoParaEncerrar(2026, estado, jan27), anoProntoParaEncerrar(2026, { 2026: { encerrado:true } }, jan27), anoProntoParaEncerrar(2025, estado, set26)].join(","),
+      "false,true,false,true");
   });
   t("Encerramento: última tarefa da competência de dezembro cai no ano seguinte (Caixa → eSocial em fev)", () => {
     const d = ultimaTarefaDeDezembro([{ processos: seedProcessos("caixa") }], 2026);
@@ -2768,7 +2778,7 @@ function rodarAutoTestes(){
      build de lá (Vite/esbuild) — o Babel aqui é só pra rodar como arquivo único.
      ========================================================================= -->
 <script>
-/* Telas compiladas a partir de cronograma_v4.html em 25/09/2026 20:43 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
+/* Telas compiladas a partir de cronograma_v4.html em 26/09/2026 00:47 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
@@ -12598,7 +12608,7 @@ function App({
   }, anosDisponiveis.map(a => /*#__PURE__*/React.createElement("option", {
     key: a,
     value: a
-  }, a, anoEncerrado(a, anosEstado) ? " 🔒 encerrado" : anoPendenteDeEncerrar(a, anosEstado) ? " (a encerrar)" : a === anoVigente() ? " (atual)" : ""))), /*#__PURE__*/React.createElement("div", {
+  }, a, anoEncerrado(a, anosEstado) ? " 🔒 encerrado" : anoProntoParaEncerrar(a, anosEstado) ? " (a encerrar)" : a === anoVigente() ? " (atual)" : a === anoCalendarioAtual() ? " (em andamento)" : ""))), /*#__PURE__*/React.createElement("div", {
     className: "nav-secao"
   }, "Apar\xEAncia"), /*#__PURE__*/React.createElement("button", {
     className: "botao-tema",
@@ -12699,7 +12709,7 @@ function App({
     value: a
   })))), /*#__PURE__*/React.createElement("main", {
     className: "main"
-  }, !consulta && !["clientes", "secoes", "acessos", "modelos", "lixeira", "pendencias"].includes(rota.tela) && anoPendenteDeEncerrar(ano, anosEstado) && /*#__PURE__*/React.createElement("div", {
+  }, !consulta && !["clientes", "secoes", "acessos", "modelos", "lixeira", "pendencias"].includes(rota.tela) && anoProntoParaEncerrar(ano, anosEstado) && /*#__PURE__*/React.createElement("div", {
     className: "note faixa-ano",
     style: {
       marginTop: 14
