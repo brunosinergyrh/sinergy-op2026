@@ -1846,37 +1846,53 @@ function mapearLinhasClientes(rows){
     gerente: col(r, iGerente), coordenador: col(r, iCoord), analista: col(r, iAnalista),
   })).filter(x => x.documentoBruto || x.razaoSocial);
 }
-// Compara o que veio da planilha com a base atual (casando por documento).
-// Regras: CNPJ/CPF é a chave (existente = atualização); CNPJ repetido no arquivo e ID repetido (no arquivo ou já
-// usado por OUTRO CNPJ na base) vão para "Com problema" e não entram.
+// Compara o que veio da planilha com a base atual.
+// IDENTIDADE DO CLIENTE = ID (o mesmo CNPJ pode ter vários clientes: ex. "X – AUTÔNOMOS" e "X – PJ", matriz/filial).
+//  - Linha COM ID: casa pelo ID (senão, adota o único cliente daquele CNPJ que ainda não tem ID). ID repetido no
+//    arquivo, ou ID que já é de OUTRO CNPJ na base → "Com problema".
+//  - Linha SEM ID: casa por CNPJ + razão social. Mesmo CNPJ com razão social diferente = OUTRO cliente (vira aviso,
+//    recomendando o ID). Só é problema CNPJ + razão social repetidos no arquivo, ou vários clientes iguais na base.
 function analisarImportacao(base, itens){
-  const porDoc = Object.fromEntries(base.map(c => [c.documento, c]));
   const chaveId = v => normalizar(v).trim();
   const porId = {}; base.forEach(c => { const k = chaveId(c.codigo); if(k) porId[k] = c; });
-  const vistos = {}, idsNoArquivo = {};
-  const novos = [], atualizados = [], iguais = [], invalidos = [];
+  const porDoc = {}; base.forEach(c => { (porDoc[c.documento] = porDoc[c.documento] || []).push(c); });
+  const idsNoArquivo = {}, docsSemId = {}, docsNoArquivoSemId = {};
+  const novos = [], atualizados = [], iguais = [], invalidos = [], avisos = [];
+  const nomeN = v => normalizar(v).trim();
   itens.forEach((it, i) => {
     const linha = it._linha || (i + 1);
     const n = normalizarDocumento(it.documentoBruto);
     if(!n.valido){ invalidos.push({ ...it, linha, motivo: n.doc ? n.tipo + " inválido (" + n.doc + ")" : "sem documento" }); return; }
-    if(vistos[n.doc]){ invalidos.push({ ...it, linha, motivo: "CNPJ/CPF repetido no arquivo (já aparece na linha " + vistos[n.doc] + ")" }); return; }
-    vistos[n.doc] = linha;
     const kId = chaveId(it.codigo);
+    let ex = null;
     if(kId){
-      if(idsNoArquivo[kId] && idsNoArquivo[kId].doc !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" repetido no arquivo (linha ' + idsNoArquivo[kId].linha + ", outro CNPJ)" }); return; }
-      const dono = porId[kId];
-      if(dono && dono.documento !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" já pertence a ' + (dono.razaoSocial || "outro cliente") + " (" + fmtDocumento(dono.documento) + ")" }); return; }
-      idsNoArquivo[kId] = { doc: n.doc, linha };
+      if(idsNoArquivo[kId]){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" repetido no arquivo (já aparece na linha ' + idsNoArquivo[kId] + ")" }); return; }
+      idsNoArquivo[kId] = linha;
+      ex = porId[kId] || null;
+      if(ex && ex.documento !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" já pertence a ' + (ex.razaoSocial || "outro cliente") + " (" + fmtDocumento(ex.documento) + ")" }); return; }
+      if(!ex){ const semId = (porDoc[n.doc] || []).filter(c => !chaveId(c.codigo)); if(semId.length === 1) ex = semId[0]; } // dá o ID a quem ainda não tinha
+    } else {
+      const kNome = n.doc + "|" + nomeN(it.razaoSocial);
+      if(docsSemId[kNome]){ invalidos.push({ ...it, linha, motivo: "CNPJ/CPF e razão social repetidos no arquivo (linha " + docsSemId[kNome] + ")" }); return; }
+      docsSemId[kNome] = linha;
+      const rotulo = it.razaoSocial || fmtDocumento(n.doc);
+      if(docsNoArquivoSemId[n.doc]) avisos.push({ linha, rotulo, campo:"cnpj", nome: fmtDocumento(n.doc), motivo: "mesmo CNPJ da linha " + docsNoArquivoSemId[n.doc] + " — entram como clientes diferentes (recomendado preencher o ID)" });
+      else docsNoArquivoSemId[n.doc] = linha;
+      const lista = porDoc[n.doc] || [];
+      const mesmoNome = lista.filter(c => nomeN(c.razaoSocial) === nomeN(it.razaoSocial));
+      if(mesmoNome.length > 1){ invalidos.push({ ...it, linha, motivo: "Há " + mesmoNome.length + " clientes com este CNPJ e esta razão social — preencha o ID para saber qual atualizar" }); return; }
+      if(mesmoNome.length === 1) ex = mesmoNome[0];
+      else if(lista.length === 1 && !nomeN(it.razaoSocial)) ex = lista[0];
+      else if(lista.length) avisos.push({ linha, rotulo, campo:"cnpj", nome: fmtDocumento(n.doc), motivo: "CNPJ já existe na base (" + lista.map(c => (c.razaoSocial || "—") + (c.codigo ? " · ID " + c.codigo : "")).join("; ") + ") — entra como OUTRO cliente" });
     }
     const reg = { documento:n.doc, tipoDocumento:n.tipo, razaoSocial:it.razaoSocial, codigo:it.codigo, grupo:it.grupo,
       gerente:it.gerente || "", coordenador:it.coordenador || "", analista:it.analista || "" };
-    const ex = porDoc[n.doc];
     if(!ex){ novos.push(reg); return; }
     // Célula vazia na planilha não apaga o que já está na base — só valores preenchidos atualizam.
     const campos = CAMPOS_CLIENTE.map(c => c[0]).filter(k => reg[k] && reg[k] !== (ex[k] || ""));
     if(campos.length) atualizados.push({ existente:ex, novo:reg, campos }); else iguais.push(ex);
   });
-  return { novos, atualizados, iguais, invalidos };
+  return { novos, atualizados, iguais, invalidos, avisos };
 }
 function aplicarImportacao(base, analise){
   const atual = Object.fromEntries(analise.atualizados.map(a => [a.existente.id, a]));
@@ -2623,16 +2639,22 @@ function rodarAutoTestes(){
       r2.itens.length, r2.itens[0].gerente, r2.itens[0].analista, r2.rejeitados[0].motivo.includes("outra gerência")].join(" | "),
       "2 | Ariana Souza | Adriana Lima | Bia | Caio:é,Zé:não | 1 | 1 | Ariana Souza | Bia | true");
   });
-  t("Importação: CNPJ repetido no arquivo e ID repetido/já usado vão para 'Com problema'", () => {
+  t("Importação: mesmo CNPJ = clientes diferentes quando o ID (ou, sem ID, a razão social) é diferente", () => {
     const base = [{ id:"e1", documento:"11222333000181", codigo:"100", razaoSocial:"ALFA" }];
     const a = analisarImportacao(base, [
-      { documentoBruto:"11.222.333/0001-81", codigo:"100", razaoSocial:"ALFA NOVO NOME", _linha:1 },  // mesmo CNPJ e mesmo ID → atualização
-      { documentoBruto:"11444777000161", codigo:"200", razaoSocial:"BETA", _linha:2 },               // novo
-      { documentoBruto:"11444777000161", codigo:"200", razaoSocial:"BETA DE NOVO", _linha:3 },       // CNPJ repetido no arquivo
-      { documentoBruto:"45997418000153", codigo:"100", razaoSocial:"GAMA", _linha:4 },               // ID de outro CNPJ da base
-      { documentoBruto:"06990590000123", codigo:"200", razaoSocial:"DELTA", _linha:5 } ]);           // ID repetido no arquivo
-    return eq([a.atualizados.length, a.novos.map(r => r.razaoSocial).join(","), a.invalidos.map(r => r.linha + ":" + r.motivo.split(" ")[0]).join(",")].join(" | "),
-      "1 | BETA | 3:CNPJ/CPF,4:ID,5:ID");
+      { documentoBruto:"11.222.333/0001-81", codigo:"100", razaoSocial:"ALFA NOVO NOME", _linha:1 },       // mesmo ID → atualização
+      { documentoBruto:"60745411000138", codigo:"300", razaoSocial:"CAPRICORNIO - AUTONOMOS", _linha:2 }, // novo
+      { documentoBruto:"60745411000138", codigo:"301", razaoSocial:"CAPRICORNIO - PJ", _linha:3 },        // mesmo CNPJ, outro ID → novo
+      { documentoBruto:"45997418000153", codigo:"100", razaoSocial:"GAMA", _linha:4 },                    // ID de outro CNPJ da base → problema
+      { documentoBruto:"06990590000123", codigo:"300", razaoSocial:"DELTA", _linha:5 },                   // ID repetido no arquivo → problema
+      { documentoBruto:"11444777000161", razaoSocial:"BETA - AUTONOMOS", _linha:6 },                      // sem ID → novo
+      { documentoBruto:"11444777000161", razaoSocial:"BETA - PJ", _linha:7 },                             // sem ID, mesmo CNPJ, outro nome → novo + aviso
+      { documentoBruto:"11444777000161", razaoSocial:"BETA - PJ", _linha:8 } ]);                          // sem ID, CNPJ e nome repetidos → problema
+    const b = analisarImportacao([{ id:"x1", documento:"60745411000138", codigo:"300", razaoSocial:"X - AUTONOMOS" }],
+      [{ documentoBruto:"60745411000138", razaoSocial:"X - AUTONOMOS", grupo:"G", _linha:1 }, { documentoBruto:"60745411000138", razaoSocial:"X - PJ", _linha:2 }]);
+    return eq([a.atualizados.length, a.novos.map(r => r.razaoSocial).join(","), a.invalidos.map(r => r.linha + ":" + r.motivo.split(" ")[0]).join(","), a.avisos.map(v => v.linha).join(","),
+      b.atualizados.length + "/" + b.novos.length + "/" + b.avisos.length].join(" | "),
+      "1 | CAPRICORNIO - AUTONOMOS,CAPRICORNIO - PJ,BETA - AUTONOMOS,BETA - PJ | 4:ID,5:ID,8:CNPJ/CPF | 7 | 1/1/2"); // b: "já existe na base" + "mesmo CNPJ da linha 1"
   });
   t("Lixeira: 15 dias contados da exclusão", () => {
     const agora = new Date(2027, 2, 20, 12, 0);
@@ -2778,7 +2800,7 @@ function rodarAutoTestes(){
      build de lá (Vite/esbuild) — o Babel aqui é só pra rodar como arquivo único.
      ========================================================================= -->
 <script>
-/* Telas compiladas a partir de cronograma_v4.html em 26/09/2026 00:47 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
+/* Telas compiladas a partir de cronograma_v4.html em 28/09/2026 15:06 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
@@ -5703,27 +5725,33 @@ function VincularClientesModal({
   }
   function aplicarColagem() {
     const tokens = txt.split(/[\n\r\t;,]+/).map(s => s.trim()).filter(Boolean);
-    const porDoc = Object.fromEntries(base.map(c => [c.documento, c]));
+    const porDoc = {};
+    base.forEach(c => {
+      (porDoc[c.documento] = porDoc[c.documento] || []).push(c);
+    });
     const porCod = Object.fromEntries(base.filter(c => c.codigo).map(c => [normalizar(c.codigo), c]));
     const achados = [],
       naoAchados = [],
       ocupados = [];
     tokens.forEach(t => {
       const n = normalizarDocumento(t);
-      const c = n.valido && porDoc[n.doc] || porCod[normalizar(t)];
-      if (!c) {
+      // ID vale mais que CNPJ; um CNPJ com vários clientes (ex.: AUTÔNOMOS × PJ) marca todos os livres.
+      const lista = porCod[normalizar(t)] ? [porCod[normalizar(t)]] : n.valido ? porDoc[n.doc] || [] : [];
+      if (!lista.length) {
         naoAchados.push(t);
         return;
       }
-      if (c.ativo === false && !jaVinculados.has(c.id)) {
-        ocupados.push((c.razaoSocial || fmtDocumento(c.documento)) + " (inativo na base)");
-        return;
-      }
-      if (emOutro(c).length) {
-        ocupados.push((c.razaoSocial || fmtDocumento(c.documento)) + " → " + emOutro(c)[0].nome);
-        return;
-      }
-      achados.push(c.id);
+      lista.forEach(c => {
+        if (c.ativo === false && !jaVinculados.has(c.id)) {
+          ocupados.push((c.razaoSocial || fmtDocumento(c.documento)) + " (inativo na base)");
+          return;
+        }
+        if (emOutro(c).length) {
+          ocupados.push((c.razaoSocial || fmtDocumento(c.documento)) + " → " + emOutro(c)[0].nome);
+          return;
+        }
+        achados.push(c.id);
+      });
     });
     setSel(prev => new Set([...prev, ...achados]));
     setRelatorio({
@@ -6176,7 +6204,7 @@ function ImportarClientesModal({
     className: "doc-invalido"
   }, invalidos.length, " com problema (n\xE3o ser\xE3o importados)")), avisos.length > 0 && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 ", /*#__PURE__*/React.createElement("span", {
     className: "alerta"
-  }, avisos.length, " nome(s) de respons\xE1vel n\xE3o reconhecido(s) (n\xE3o ser\xE3o gravados)"))), /*#__PURE__*/React.createElement("div", {
+  }, avisos.length, " aviso(s) \u2014 veja a aba \u26A0 Avisos"))), /*#__PURE__*/React.createElement("div", {
     className: "toolbar",
     style: {
       marginBottom: 8
@@ -6213,12 +6241,12 @@ function ImportarClientesModal({
     style: {
       whiteSpace: "normal"
     }
-  }, a.rotulo || "—"), /*#__PURE__*/React.createElement("td", null, a.campo === "coordenador" ? "Coordenador" : "Analista"), /*#__PURE__*/React.createElement("td", null, a.nome), /*#__PURE__*/React.createElement("td", {
+  }, a.rotulo || "—"), /*#__PURE__*/React.createElement("td", null, a.campo === "coordenador" ? "Coordenador" : a.campo === "analista" ? "Analista" : "CNPJ"), /*#__PURE__*/React.createElement("td", null, a.nome), /*#__PURE__*/React.createElement("td", {
     className: "alerta",
     style: {
       whiteSpace: "normal"
     }
-  }, a.motivo, " \u2014 n\xE3o ser\xE1 gravado"))))))), /*#__PURE__*/React.createElement("div", {
+  }, a.motivo, a.campo === "cnpj" ? "" : " — não será gravado"))))))), /*#__PURE__*/React.createElement("div", {
     className: "wizard-actions"
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost",
@@ -6418,7 +6446,9 @@ function ClienteBaseForm({
   const nomeGer = id => (gerentes.find(g => g.id === id) || {}).nome || "";
   const original = useRef(JSON.stringify(f));
   const n = normalizarDocumento(f.documento);
-  const duplicado = n.valido && base.find(c => c.documento === n.doc && c.id !== inicial?.id);
+  // Mesmo CNPJ em outro cliente é permitido (ex.: AUTÔNOMOS × PJ) desde que os dois tenham ID para diferenciar.
+  const mesmoCnpj = n.valido ? base.filter(c => c.documento === n.doc && c.id !== inicial?.id) : [];
+  const duplicado = mesmoCnpj.find(c => !f.codigo.trim() || !normalizar(c.codigo).trim());
   const idRepetido = f.codigo.trim() && base.find(c => c.id !== inicial?.id && normalizar(c.codigo).trim() === normalizar(f.codigo).trim());
   const nomesDe = campo => [...new Set(base.map(c => c[campo]).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   function salvar() {
@@ -6427,7 +6457,7 @@ function ClienteBaseForm({
       return;
     }
     if (duplicado) {
-      ui.alert('Esse documento já está na base: "' + (duplicado.razaoSocial || fmtDocumento(duplicado.documento)) + '".');
+      ui.alert('Esse CNPJ/CPF já está na base em "' + (duplicado.razaoSocial || fmtDocumento(duplicado.documento)) + '". Para cadastrar outro cliente com o mesmo CNPJ (ex.: AUTÔNOMOS × PJ), preencha o ID dos dois.');
       return;
     }
     if (idRepetido) {
@@ -6510,7 +6540,13 @@ function ClienteBaseForm({
       fontSize: 11,
       marginTop: 3
     }
-  }, "Documento inv\xE1lido")), /*#__PURE__*/React.createElement("div", {
+  }, "Documento inv\xE1lido"), mesmoCnpj.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: duplicado ? "doc-invalido" : "muted",
+    style: {
+      fontSize: 11,
+      marginTop: 3
+    }
+  }, "Mesmo CNPJ de: ", mesmoCnpj.map(c => (c.razaoSocial || "—") + (c.codigo ? " (ID " + c.codigo + ")" : " (sem ID)")).join(", "), duplicado ? " — preencha o ID dos dois para diferenciar" : "")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "1fr 1fr",
@@ -6709,7 +6745,7 @@ function ClientesBaseTela({
     }
     setAnalise({
       ...a,
-      avisos: extra.avisos
+      avisos: [...(a.avisos || []), ...extra.avisos]
     });
   }
   async function escolherArquivo(e) {
@@ -9922,7 +9958,7 @@ function Ajuda({
 const AJUDA = {
   cronogramas: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Lista dos cronogramas ", /*#__PURE__*/React.createElement("strong", null, "do ano de trabalho"), " (seletor no menu). Voc\xEA v\xEA s\xF3 os da ", /*#__PURE__*/React.createElement("strong", null, "sua ger\xEAncia"), " \u2014 Administrador/Diretor v\xEA todos."), /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Contadores"), " (Todos, por status, Com alerta, Sem clientes\u2026): clique para filtrar."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Meus cronogramas"), ": em que voc\xEA \xE9 o analista, ou gerente/coordenador/analista de algum cliente vinculado."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "A\xE7\xF5es em massa"), ": marque as caixas \u2014 abrir o ano, exportar, mudar status, definir analista, aplicar Modelo atualizado, arquivar."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Novo cronograma"), ": sempre pelo assistente de datas-chave; ger\xEAncia obrigat\xF3ria."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Arquivar"), " s\xF3 tira da lista (volta quando quiser). ", /*#__PURE__*/React.createElement("strong", null, "Excluir"), " manda para a Lixeira por 15 dias."))),
   cronograma: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Cada cronograma tem ", /*#__PURE__*/React.createElement("strong", null, "uma vers\xE3o por ano"), " (chips 2026/2027\u2026). Editar um ano n\xE3o mexe nos outros. Clique em ", /*#__PURE__*/React.createElement("strong", null, "Salvar"), " (ou Ctrl+S) \u2014 nada vai para o banco antes disso."), /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Status"), ": Em desenvolvimento \u2192 Aguardando cliente \u2192 Aprovado pelo analista \u2192 Aguardando coordenador/gerente/diretor \u2192 Aprovado (trava a edi\xE7\xE3o). Enviar ao cliente e aprovar criam uma ", /*#__PURE__*/React.createElement("strong", null, "vers\xE3o"), " autom\xE1tica (aba Hist\xF3rico)."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Prazos (\u270E editar)"), ": dia fixo, N-\xE9simo dia \xFAtil, \xFAltimo/pen\xFAltimo \xFAtil, dia da semana do m\xEAs, \"N d.u. antes/depois de outra tarefa\", \"dia da semana antes/depois de outra tarefa\" (com m\xEDnimo de d.u.), v\xEDnculo com tarefa de ", /*#__PURE__*/React.createElement("strong", null, "outro bloco"), ", recorr\xEAncia semanal."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "+ limite"), ": \"ou N d.u. antes de X \u2014 o que vier primeiro\"."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Mudar a partir de\u2026"), ": nova regra de um m\xEAs em diante, sem mexer nos meses anteriores."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ajuste pontual"), ": data manual s\xF3 para uma compet\xEAncia."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ciclo semanal"), " (caixa no bloco): as tarefas seguem a 1\xAA tarefa semanal, ciclo a ciclo."), /*#__PURE__*/React.createElement("li", null, "Feriados considerados: S\xE3o Paulo capital. Alertas \u26A0 avisam o que foge das regras (ex.: folha depois do cont\xE1bil)."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Excel cliente"), " vai para valida\xE7\xE3o (sem dados internos); ", /*#__PURE__*/React.createElement("strong", null, "Excel interno"), " \xE9 para a equipe."))),
-  clientes: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ger\xEAncia (gerente) \xE9 obrigat\xF3ria"), ". Coordenador(es) e analista(s) s\xE3o opcionais, v\xEAm da lista de usu\xE1rios do painel daquela ger\xEAncia e servem ", /*#__PURE__*/React.createElement("strong", null, "s\xF3 para os filtros"), " \"Meus\"."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Um CNPJ pertence a um cronograma s\xF3"), ", em cada ano. O v\xEDnculo \xE9 feito dentro do cronograma."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Importar planilha / Colar do Excel"), ": CNPJ que j\xE1 existe \xE9 atualizado (c\xE9lula vazia n\xE3o apaga). CNPJ ou ID repetido e gerente que n\xE3o existe v\xE3o para \"Com problema\"; coordenador/analista inv\xE1lido aparece em \"Avisos\" e n\xE3o \xE9 gravado."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Sele\xE7\xE3o em lote"), ": definir ger\xEAncia, coordenador/analista, inativar/reativar, excluir."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Inativar"), " mant\xE9m o hist\xF3rico (cliente com cronograma n\xE3o pode ser exclu\xEDdo). Inativo n\xE3o aparece para novos v\xEDnculos."), /*#__PURE__*/React.createElement("li", null, "Filtros ", /*#__PURE__*/React.createElement("strong", null, "\u26A0 Sem ger\xEAncia"), " e ", /*#__PURE__*/React.createElement("strong", null, "\u26A0 Respons\xE1vel sem usu\xE1rio"), " mostram o que precisa ser acertado."))),
+  clientes: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ger\xEAncia (gerente) \xE9 obrigat\xF3ria"), ". Coordenador(es) e analista(s) s\xE3o opcionais, v\xEAm da lista de usu\xE1rios do painel daquela ger\xEAncia e servem ", /*#__PURE__*/React.createElement("strong", null, "s\xF3 para os filtros"), " \"Meus\"."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Um CNPJ pertence a um cronograma s\xF3"), ", em cada ano. O v\xEDnculo \xE9 feito dentro do cronograma."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Importar planilha / Colar do Excel"), ": o cliente \xE9 identificado pelo ", /*#__PURE__*/React.createElement("strong", null, "ID"), " \u2014 o mesmo CNPJ pode ter v\xE1rios clientes (ex.: AUT\xD4NOMOS \xD7 PJ), cada um com seu ID. Cliente que j\xE1 existe \xE9 atualizado (c\xE9lula vazia n\xE3o apaga). ID repetido, CNPJ repetido ", /*#__PURE__*/React.createElement("em", null, "sem ID"), " e gerente que n\xE3o existe v\xE3o para \"Com problema\"; coordenador/analista inv\xE1lido aparece em \"Avisos\" e n\xE3o \xE9 gravado."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Sele\xE7\xE3o em lote"), ": definir ger\xEAncia, coordenador/analista, inativar/reativar, excluir."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Inativar"), " mant\xE9m o hist\xF3rico (cliente com cronograma n\xE3o pode ser exclu\xEDdo). Inativo n\xE3o aparece para novos v\xEDnculos."), /*#__PURE__*/React.createElement("li", null, "Filtros ", /*#__PURE__*/React.createElement("strong", null, "\u26A0 Sem ger\xEAncia"), " e ", /*#__PURE__*/React.createElement("strong", null, "\u26A0 Respons\xE1vel sem usu\xE1rio"), " mostram o que precisa ser acertado."))),
   modelos: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, "Modelo \xE9 de ", /*#__PURE__*/React.createElement("strong", null, "toda a empresa"), " ou de ", /*#__PURE__*/React.createElement("strong", null, "uma ger\xEAncia"), ". Quem n\xE3o \xE9 Administrador edita s\xF3 os da pr\xF3pria ger\xEAncia; os da empresa ficam s\xF3 leitura \u2014 use ", /*#__PURE__*/React.createElement("strong", null, "Duplicar"), "."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Salvar"), " tem dupla confirma\xE7\xE3o: revis\xE3o de tudo o que mudou \u2192 confirma\xE7\xE3o final. Cada grava\xE7\xE3o guarda uma vers\xE3o (\uD83D\uDD58 Vers\xF5es)."), /*#__PURE__*/React.createElement("li", null, "Os cronogramas existentes ", /*#__PURE__*/React.createElement("strong", null, "n\xE3o mudam"), " ao salvar. Para levar a mudan\xE7a a eles: \"Aplicar Modelo atualizado\" (tela Cronogramas) ou o renomear que aparece ao salvar \u2014 voc\xEA escolhe quais, e fica em ", /*#__PURE__*/React.createElement("strong", null, "Aplica\xE7\xF5es recentes"), " com ", /*#__PURE__*/React.createElement("strong", null, "Desfazer"), "."), /*#__PURE__*/React.createElement("li", null, "Modelo ", /*#__PURE__*/React.createElement("strong", null, "em uso"), " n\xE3o pode ser removido \u2014 s\xF3 inativado (some do Novo cronograma)."), /*#__PURE__*/React.createElement("li", null, "Tarefas ", /*#__PURE__*/React.createElement("strong", null, "\uD83D\uDD12 padr\xE3o"), " n\xE3o podem ser renomeadas nem exclu\xEDdas dentro do cronograma de um cliente."))),
   pendencias: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Re\xFAne o que precisa de a\xE7\xE3o, s\xF3 da sua ger\xEAncia. Marque ", /*#__PURE__*/React.createElement("strong", null, "S\xF3 os meus"), " para ver apenas o que est\xE1 ligado a voc\xEA (como analista do cronograma ou respons\xE1vel de algum cliente)."), /*#__PURE__*/React.createElement("p", null, "Os prazos de \"aguardando cliente\" e \"parado\" s\xE3o ajust\xE1veis no topo. Clique no nome para abrir o cronograma.")),
   lixeira: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Cronogramas exclu\xEDdos ficam aqui por ", /*#__PURE__*/React.createElement("strong", null, "15 dias"), " e depois s\xE3o apagados sozinhos. Enquanto est\xE3o aqui, os clientes deles ficam livres para outro cronograma. ", /*#__PURE__*/React.createElement("strong", null, "Restaurar"), " devolve tudo (hist\xF3rico e vers\xF5es); se algum cliente foi para outro cronograma no mesmo ano, ele fica desvinculado deste.")),
