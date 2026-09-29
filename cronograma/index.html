@@ -432,9 +432,11 @@
      em localStorage "painel_teste::sinergy_auth_v1" / "painel_teste::sinergy_groups_v1".
      Vindo do painel (botão "📅 Cronograma"), o painel deixa em localStorage quem está logado
      (HANDOFF_KEY, vale 2 min) e o cronograma entra direto, conferindo se o usuário existe e está ativo. */
+  // Com o banco de verdade (supabase) o login é SEMPRE obrigatório — ?login=0 só vale no modo teste local
+  // (revisão de 29/09/2026: ?login=0 no site publicado entrava sem PIN, como Gerente/Administrador).
   const LOGIN_INTEGRADO = (() => {
-    const p = new URLSearchParams(window.location.search).get("login");
-    return p === "1" ? true : p === "0" ? false : MODO_ARMAZENAMENTO === "supabase";
+    if(MODO_ARMAZENAMENTO === "supabase") return true;
+    return new URLSearchParams(window.location.search).get("login") === "1";
   })();
   const HANDOFF_KEY = "sinergy_cronograma_handoff";
   const SESSAO_KEY = "sinergy_cronograma_sessao";
@@ -475,12 +477,25 @@
   const MAPA_GRUPOS_PAINEL = { coord: "coordenador" };
   function perfilDoGrupoPainel(groupId){ return MAPA_GRUPOS_PAINEL[groupId] || groupId || "analista"; }
 
+  // Lê TODAS as linhas de uma consulta, página a página. O Supabase corta a resposta no "Max rows" do projeto
+  // (padrão 1000) SEM erro — por isso pede a contagem (Content-Range) e continua até ter tudo.
+  async function kvBuscarTudo(filtro, acao){
+    const todas = [];
+    for(let volta = 0; volta < 200; volta++){
+      const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?" + filtro + "&select=id,value&order=id&offset=" + todas.length,
+        { headers: { ...KV_HEADERS, Prefer: "count=exact" }, cache: "no-store" });
+      if(!res.ok) throw await kvErro(res, acao);
+      const linhas = await res.json();
+      todas.push(...linhas);
+      const total = Number(((res.headers.get("content-range") || "").split("/")[1]) || NaN);
+      if(!linhas.length || !(total > todas.length)) break;
+    }
+    return todas;
+  }
   // Backup do BANCO (modo supabase): baixa tudo da tabela cronograma_kv no mesmo formato do backup local.
   async function lerTudoDoBanco(){
-    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?select=id,value&limit=100000", { headers: KV_HEADERS, cache: "no-store" });
-    if(!res.ok) throw await kvErro(res, "ler o banco");
     const dados = {};
-    (await res.json()).forEach(r => { if(!r.id.includes("_presenca_")) dados[r.id] = r.value; });
+    (await kvBuscarTudo("id=not.like.*_presenca_*", "ler o banco")).forEach(r => { if(!r.id.includes("_presenca_")) dados[r.id] = r.value; });
     return dados;
   }
   function baixarJsonBackup(dados, prefixo){
@@ -506,9 +521,7 @@
       }
       return out;
     }
-    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?id=like." + encodeURIComponent(prefixo) + "*&select=id,value&limit=100000", { headers: KV_HEADERS, cache: "no-store" });
-    if(!res.ok) throw await kvErro(res, "listar");
-    return (await res.json()).map(r => ({ id: r.id, value: typeof r.value === "string" ? parseTalvezDuplo(r.value) : r.value }));
+    return (await kvBuscarTudo("id=like." + encodeURIComponent(prefixo) + "*", "listar")).map(r => ({ id: r.id, value: typeof r.value === "string" ? parseTalvezDuplo(r.value) : r.value }));
   }
   // Grava só o que mudou entre duas listas de objetos com "id" (e apaga os que saíram).
   async function kvSincronizarLista(prefixo, antes, depois){
@@ -778,6 +791,7 @@ function resolveProcesso(processo, year, month, todos, pilha){
   const resolved = {}, resolvedSet = new Set(), results = {};
   const excKey = competenciaKey(year, month);
   const idsExistentes = new Set(processo.eventos.map(e => e.id));
+  const idCredito = processo.id === "folha_mensal" ? (acharEventoCredito(processo) || {}).id : null;
   const limitesDe = r => (r.tipo !== "recorrencia" && Array.isArray(r.ou)) ? r.ou.filter(o => o && idsExistentes.has(o.ref)) : [];
   let pendentes = processo.eventos.slice();
   let progresso = true;
@@ -845,7 +859,7 @@ function resolveProcesso(processo, year, month, todos, pilha){
       // Salário mensal: crédito até o 5º dia útil do mês seguinte à competência.
       // (Conta dias úteis seg–sex; se o sábado contar como útil, o limite real é
       // ainda mais cedo — então este aviso nunca dispara à toa.)
-      if(date && processo.id === "folha_mensal" && /credito/.test(normalizar(ev.nome))){
+      if(date && ev.id === idCredito){
         const prox = mesEfetivo(year, month, 1), limite = nthUtil(prox.y, prox.m, 5).date;
         if(date > limite) alertas.push("Crédito da folha depois do 5º dia útil do mês seguinte à competência (limite: " + fmtBR(limite) + "). Confira se o \"referente ao mês\" da regra está certo.");
         if(date < new Date(year, month - 1, 1)) alertas.push("Crédito da folha antes do início do mês da competência — confira o \"referente ao mês\" da regra.");
@@ -870,13 +884,13 @@ function resolveProcesso(processo, year, month, todos, pilha){
     processo.eventos.forEach(ev => {
       const r = results[ev.id];
       if(ev.ativo === false || !r || !r.data || categoriaDoEvento(processo, ev) !== "folha") return;
-      if(/credito|holerite/.test(normalizar(ev.nome))) return;
+      if(ev.id === idCredito || /holerite/.test(normalizar(ev.nome))) return;
       if(r.data > dataContabil) r.alertas.push("Etapa de folha depois da liberação do processo contábil (" + fmtBR(dataContabil) + "). A folha precisa fechar antes do contábil.");
     });
   }
   // Nenhuma etapa de folha (fechamento, arquivo bancário, relatórios...) depois
   // do crédito da folha — o pagamento depende delas. Holerite acompanha o crédito.
-  const credito = processo.id === "folha_mensal" ? processo.eventos.find(ev => ev.ativo !== false && /credito/.test(normalizar(ev.nome))) : null;
+  const credito = idCredito ? processo.eventos.find(ev => ev.id === idCredito) : null;
   const dataCredito = credito && results[credito.id] && results[credito.id].data;
   if(dataCredito){
     processo.eventos.forEach(ev => {
@@ -912,6 +926,17 @@ function resolverCicloSemanal(processo, year, month, todos, pilha){
   // começaram no mês anterior e tira os que terminam no mês seguinte).
   const pertenceFim = processo.ciclo.pertence === "fim";
   const comps = pertenceFim ? [mesEfetivo(year, month, -1), { y: year, m: month }] : [{ y: year, m: month }];
+  // Tarefas que dependem (direta ou indiretamente, pelo prazo ou por limite) do início do ciclo. As outras
+  // (ex.: uma tarefa mensal "dia 5" no mesmo bloco) NÃO são do ciclo: calculam uma vez, na competência, e
+  // não entram na conta de "a que mês o ciclo pertence" (revisão 29/09 — antes setembro mostrava os ciclos de agosto).
+  const refsDe = r => !r ? [] : [r.ref, ...((r.ou || []).map(o => o && o.ref))].filter(Boolean);
+  const doCiclo = new Set([inicio.id]);
+  for(let mudou = true; mudou; ){
+    mudou = false;
+    processo.eventos.forEach(e => { if(!doCiclo.has(e.id) && refsDe(regraVigente(e, month)).some(r => doCiclo.has(r))){ doCiclo.add(e.id); mudou = true; } });
+  }
+  const foraDoCiclo = processo.eventos.some(e => !doCiclo.has(e.id))
+    ? resolveProcesso({ ...processo, _cicloInterno: true }, year, month, todos, pilha) : [];
   let info = [];
   comps.forEach(({ y, m }) => {
     ocorrenciasRecorrencia(regraVigente(inicio, m), y, m).forEach(o => info.push({ o, calc: resolveProcesso({ ...processo, _cicloInterno: true,
@@ -919,7 +944,7 @@ function resolverCicloSemanal(processo, year, month, todos, pilha){
       y, m, todos, pilha) }));
   });
   if(pertenceFim) info = info.filter(({ o, calc }) => {
-    const fim = calc.filter(c => c && c.ativo !== false && c.data).reduce((mx, c) => c.data > mx ? c.data : mx, o.envio);
+    const fim = calc.filter(c => c && c.ativo !== false && c.data && doCiclo.has(c.id)).reduce((mx, c) => c.data > mx ? c.data : mx, o.envio);
     return fim.getFullYear() === year && fim.getMonth() + 1 === month;
   });
   const ocIni = info.map(x => x.o);
@@ -931,6 +956,7 @@ function resolverCicloSemanal(processo, year, month, todos, pilha){
         alertas: [...avisoExc, ...(ocIni.length ? [] : ["Nenhum início de ciclo nesta competência."])],
         vigenciaDesde: regraIni !== ev.regra ? vigenciaDesdeDe(ev, month) : null };
     }
+    if(!doCiclo.has(ev.id)) return foraDoCiclo.find(x => x && x.id === ev.id) || { ...ev, data: null, alertas: [] };
     const porCiclo = ciclos.map(c => c.find(x => x && x.id === ev.id)).filter(Boolean);
     const primeiro = porCiclo[0] || { ...ev, data: null, alertas: [] };
     if(regraVigente(ev, month).tipo === "recorrencia") // outra recorrência no bloco: segue sozinha, com aviso
@@ -977,21 +1003,26 @@ function mesesDoProcesso(processo){
    A grade é por competência, mas uma tarefa de Jan pode cair em Fev
    (mesOffset, deslocamentos longos). Aqui junta tudo o que cai de fato no mês
    calendário pedido, vindo das competências vizinhas também. */
-function eventosDoMesCalendario(cliente, ano, mes){
+// `registro` (com todas as versões): competência de OUTRO ano (dez do ano anterior em jan/fev, jan do seguinte em
+// dez) usa a versão DAQUELE ano — regras e ajustes pontuais dele. Sem versão daquele ano, fica de fora.
+function eventosDoMesCalendario(cliente, ano, mes, registro){
   const itens = [];
   for(let off=-2; off<=1; off++){
     const { y, m } = mesEfetivo(ano, mes, off);
-    cliente.processos.filter(p=>p.ativo).forEach(p => {
+    const cli = (y === ano || !registro) ? cliente : visaoDoAno(registro, y);
+    if(!cli) continue;
+    cli.processos.filter(p=>p.ativo).forEach(p => {
       if(!mesesDoProcesso(p).includes(m)) return;
-      const calc = resolveProcesso(p, y, m, cliente.processos);
+      const calc = resolveProcesso(p, y, m, cli.processos);
       p.eventos.forEach((ev, idx) => {
         if(ev.ativo === false) return;
         const c = calc[idx]; if(!c) return;
         const base = { processo:p.nome, processoId:p.id, evento:ev.nome, responsavel:ev.responsavel, categoria:categoriaDoEvento(p, ev),
           competencia:{ y, m }, temExcecao:!!c.temExcecao, alertas:c.alertas || [] };
-        if(ev.regra.tipo === "recorrencia" || c.ocorrencias){ // recorrência ou tarefa de ciclo semanal
+        const ehRec = regraVigente(ev, m).tipo === "recorrencia"; // a regra que VALE no mês (pode ter "a partir de")
+        if(ehRec || c.ocorrencias){ // recorrência ou tarefa de ciclo semanal
           (c.ocorrencias || []).forEach(o => {
-            itens.push({ ...base, data:o.envio, ...(ev.regra.tipo === "recorrencia" ? { rotulo:"envio" } : {}) });
+            itens.push({ ...base, data:o.envio, ...(ehRec ? { rotulo:"envio" } : {}) });
             if(o.prazo.getTime() !== o.envio.getTime()) itens.push({ ...base, data:o.prazo, rotulo:"prazo SLA" });
           });
         } else if(c.data) itens.push({ ...base, data:c.data });
@@ -1004,9 +1035,9 @@ function eventosDoMesCalendario(cliente, ano, mes){
 // Conflito = mesmo dia calendário, tarefas de 2+ processos diferentes.
 // Com soSinergy, só contam as entregas da SINERGY (as do cliente não disputam
 // a mesma equipe — era a principal fonte de falso alarme).
-function detectarConflitos(cliente, ano, mes, soSinergy){
+function detectarConflitos(cliente, ano, mes, soSinergy, registro){
   const porData = {};
-  eventosDoMesCalendario(cliente, ano, mes)
+  eventosDoMesCalendario(cliente, ano, mes, registro)
     .filter(i => !soSinergy || ehSinergy(i.responsavel))
     .forEach(i => { const k = toISO(i.data); (porData[k] = porData[k] || []).push(i); });
   return Object.entries(porData)
@@ -1088,7 +1119,7 @@ function removerEventoDaCadeia(processo, idx){
       repontados.add(ev.id);
       return { ...ev, regra: { ...ev.regra, ref: rr.ref, dias: Math.abs(total), direcao: total < 0 ? "antes" : "depois" } };
     });
-    if(repontados.size) aviso = repontados.size + ' tarefa(s) que dependiam dela passam a contar a partir de "' + nomeDe(rr.ref) + '", somando os prazos — as datas delas não mudam.';
+    if(repontados.size) aviso = repontados.size + ' tarefa(s) que dependiam dela passam a contar a partir de "' + nomeDe(rr.ref) + '", somando os prazos.';
   } else if(dependentes.length){
     // Herdeira: de preferência uma tarefa na MESMA data da âncora (prazo 0) e
     // nunca o holerite (ele não pode virar referência de outras tarefas).
@@ -1097,7 +1128,8 @@ function removerEventoDaCadeia(processo, idx){
       || dependentes.find(ev => !ehHolerite(ev)) || dependentes[0];
     const sH = herdeira.regra.direcao === "antes" ? -1 : 1, dH = herdeira.regra.dias;
     novos = restantes.map(ev => {
-      if(ev === herdeira) return { ...ev, regra: clonar(rr) };
+      // herdeira fica com a regra da âncora + os limites dela e os próprios (sem limite apontando para si mesma)
+      if(ev === herdeira) return { ...ev, regra: { ...clonar(rr), ou: [...(rr.ou || []), ...(ev.regra.ou || [])].filter(o => o && o.ref !== ev.id && o.ref !== removida.id) } };
       if(dependentes.includes(ev)){ repontados.add(ev.id); return { ...ev, regra: { ...ev.regra, ref: herdeira.id } }; }
       // Quem já contava a partir da herdeira: compensa o prazo dela (que agora
       // passa a cair na data da âncora), pra essas tarefas não se deslocarem.
@@ -1109,8 +1141,8 @@ function removerEventoDaCadeia(processo, idx){
     });
     aviso = "Ela é a âncora de " + dependentes.length + ' tarefa(s). "' + herdeira.nome + '" herda a regra de data dela (' +
       descreverRegra(rr, eventos0) + ") e vira a nova âncora" +
-      (dH ? " — ela passa a cair na data da âncora removida (hoje fica " + dH + " d.u. " + (sH < 0 ? "antes" : "depois") + "). As demais tarefas não mudam de data." :
-        (dependentes.length > 1 ? '; as demais passam a contar a partir de "' + herdeira.nome + '", sem mudar de data.' : "."));
+      (dH ? " — ela passa a cair na data da âncora removida (hoje fica " + dH + " d.u. " + (sH < 0 ? "antes" : "depois") + ")." :
+        (dependentes.length > 1 ? '; as demais passam a contar a partir de "' + herdeira.nome + '".' : "."));
   }
   // Quem foi re-apontado pra alguém que não é o anterior físico vira referência manual,
   // senão o renormalizarRefs desfaria a correção.
@@ -1118,7 +1150,30 @@ function removerEventoDaCadeia(processo, idx){
     ? { ...ev, regra: { ...ev.regra, refManual: true } } : ev);
   const porSemana = restantes.filter(ev => ev.regra.tipo === "semana_rel" && ev.regra.ref === removida.id);
   if(porSemana.length) aviso = (aviso ? aviso + "\n\n" : "") + "⚠ " + porSemana.map(e => '"' + e.nome + '"').join(", ") + " usa(m) \"dia da semana antes/depois\" desta tarefa e vai(ão) ficar sem data — ajuste o prazo delas depois.";
+  // Limites ("no mínimo N d.u. antes de…") que apontavam para ela saem — e o aviso diz quais.
+  const comLimite = novos.filter(ev => (ev.regra.ou || []).some(o => o && o.ref === removida.id));
+  if(comLimite.length){
+    novos = novos.map(ev => comLimite.includes(ev) ? { ...ev, regra: { ...ev.regra, ou: ev.regra.ou.filter(o => o && o.ref !== removida.id) } } : ev);
+    aviso = (aviso ? aviso + "\n\n" : "") + "⚠ O limite que " + comLimite.map(e => '"' + e.nome + '"').join(", ") + " tinha em relação a ela deixa de existir.";
+  }
+  const porVigencia = restantes.filter(ev => (ev.vigencias || []).some(v => v.regra && (v.regra.ref === removida.id || (v.regra.ou || []).some(o => o && o.ref === removida.id))));
+  if(porVigencia.length) aviso = (aviso ? aviso + "\n\n" : "") + "⚠ " + porVigencia.map(e => '"' + e.nome + '"').join(", ") + " tem regra \u201ca partir de\u201d que conta a partir dela — confira depois.";
   return { processo: { ...processo, eventos: renormalizarRefs(novos) }, aviso };
+}
+// Compara as datas do bloco antes/depois de uma mudança (meses do bloco, no ano), para o aviso ser verdadeiro.
+function datasQueMudam(antes, depois, ano, todos, ignorarId){
+  const out = [];
+  const tA = todos ? todos.map(p => p.id === antes.id ? antes : p) : null, tD = todos ? todos.map(p => p.id === depois.id ? depois : p) : null;
+  mesesDoProcesso(antes).forEach(m => {
+    const a = resolveProcesso(antes, ano, m, tA), d = resolveProcesso(depois, ano, m, tD);
+    const porId = Object.fromEntries(d.filter(Boolean).map(x => [x.id, x]));
+    a.forEach(x => {
+      if(!x || x.id === ignorarId || x.ativo === false) return;
+      const y = porId[x.id], fa = x.data ? toISO(x.data) : "", fd = y && y.data ? toISO(y.data) : "";
+      if(fa !== fd) out.push('"' + x.nome + '" ' + MESES[m-1] + ": " + (fa ? fmtBR(x.data) : "sem data") + " → " + (fd ? fmtBR(y.data) : "sem data"));
+    });
+  });
+  return out;
 }
 
 // Troca a âncora de uma cadeia "de cima pra baixo" (ex.: Benefícios, onde o
@@ -1627,7 +1682,16 @@ function registrarVersoesDeModelos(versoes, antes, depois, quem, motivo){
   return out.slice().reverse().filter(v => (cont[v.modeloId] = (cont[v.modeloId] || 0) + 1) <= MAX_VERSOES_POR_MODELO).reverse();
 }
 function processosDoModelo(modelo){ return clonar(modelo.processos); }
-function acharEventoCredito(processo){ return processo.eventos.find(e => /cr[eé]dito/i.test(e.nome)) || null; }
+// Tarefa de CRÉDITO do bloco: pelo id do Modelo (fmp8 folha, ade8 adiantamento, t1h/t2i 13º) ou marca ev.papel;
+// sem isso, a que começa com "Data do crédito"; por último, qualquer uma com "crédito" no nome. Só tarefas ativas.
+// (Antes era a 1ª com "crédito" no nome — uma "Conferência de crédito consignado" antes dela confundia os alertas.)
+const IDS_CREDITO = ["fmp8", "ade8", "t1h", "t2i"];
+function acharEventoCredito(processo){
+  const ativos = (processo.eventos || []).filter(e => e.ativo !== false);
+  return ativos.find(e => e.papel === "credito" || IDS_CREDITO.includes(e.id))
+    || ativos.find(e => /^data d[oa] credito/.test(normalizar(e.nome)))
+    || ativos.find(e => /credito/.test(normalizar(e.nome))) || null;
+}
 function normalizar(s){ return String(s||"").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase(); }
 // Tarefas de eSocial e de GFD/FGTS dentro da Folha Mensal (pelo nome, pra funcionar com Modelos já salvos).
 function acharEventoGfd(processo){ return processo.eventos.find(e => /gfd|fgts/.test(normalizar(e.nome))) || null; }
@@ -1720,18 +1784,27 @@ function pessoaPorNome(nome, usuarios){
 //  - Gerente que não existe (ou de outra gerência, para quem não é Administrador) → a linha não entra.
 //  - Coordenador/Analista que não existe ou é de outra gerência → o nome não é gravado e vira aviso.
 //  - Nomes reconhecidos ficam com a grafia do painel. Sem Gerente, quem não é Administrador importa na própria gerência.
+// Cliente que JÁ existe: sem coluna Gerente, vale a gerência dele (antes a checagem era pulada — item 7 da revisão).
+// Gerente diferente do atual = troca de gerência: só o Administrador faz (vira aviso); os demais, "Com problema".
 function validarResponsaveisImportacao(itens, opcoes){
-  const { gerentes, usuarios, grupos, escopo } = opcoes;
+  const { gerentes, usuarios, grupos, escopo, existenteDe } = opcoes;
   const avisos = [], rejeitados = [], ok = [];
   itens.forEach((it, i) => {
     const linha = it._linha || (i + 1), rotulo = it.razaoSocial || it.documentoBruto;
+    const ex = existenteDe ? existenteDe(it) : null;
+    const gidEx = ex ? gerenciaDoCliente(ex, gerentes) : null;
     let gid = null;
     if(it.gerente){
       const g = gerentePorNome(it.gerente, gerentes);
       if(!g){ rejeitados.push({ ...it, linha, motivo: 'Gerente "' + it.gerente + '" não existe entre os gerentes do painel' }); return; }
       if(escopo !== "all" && g.id !== escopo){ rejeitados.push({ ...it, linha, motivo: 'Gerente "' + g.nome + '" é de outra gerência' }); return; }
+      if(gidEx && gidEx !== g.id){
+        const nomeEx = (gerentes.find(x => x.id === gidEx) || {}).nome || "outra";
+        if(escopo !== "all"){ rejeitados.push({ ...it, linha, motivo: "Cliente é da gerência " + nomeEx + " — só o Administrador troca a gerência" }); return; }
+        avisos.push({ linha, rotulo, campo:"gerencia", nome: nomeEx + " → " + g.nome, motivo: "troca de gerência" });
+      }
       gid = g.id;
-    } else if(escopo !== "all") gid = escopo;
+    } else gid = gidEx || (escopo !== "all" ? escopo : null);
     const novo = { ...it, gerente: gid ? (gerentes.find(g => g.id === gid) || {}).nome || "" : "" };
     ["coordenador", "analista"].forEach(campo => {
       const bons = [];
@@ -1810,17 +1883,21 @@ function fmtDocumento(d){
 }
 // Texto colado do Excel (tabulação) ou CSV (; ou ,) → matriz de células.
 function parseTabelaTexto(txt){
-  const linhas = String(txt || "").split(/\r?\n/).filter(l => l.trim());
+  // guarda o número real da linha (_linha) — linhas vazias saem, mas a numeração continua a do arquivo
+  const linhas = String(txt || "").split(/\r?\n/).map((l, i) => ({ l, n: i + 1 })).filter(x => x.l.trim());
   if(!linhas.length) return [];
-  const l0 = linhas[0];
+  const l0 = linhas.slice(0, 10).map(x => x.l).join("\n"); // separador pelas primeiras linhas (pode haver um título antes)
   const sep = l0.includes("\t") ? "\t" : (l0.split(";").length >= l0.split(",").length ? ";" : ",");
-  return linhas.map(l => l.split(sep).map(c => c.trim().replace(/^"(.*)"$/, "$1")));
+  return linhas.map(x => { const r = x.l.split(sep).map(c => c.trim().replace(/^"(.*)"$/, "$1")); r._linha = x.n; return r; });
 }
 // Matriz de células → registros de cliente. Reconhece o cabeçalho pelos nomes
 // (CNPJ/CPF/documento, razão social/nome, código, grupo); sem cabeçalho,
 // adivinha a coluna do documento pelo conteúdo.
 function mapearLinhasClientes(rows){
   if(!rows.length) return [];
+  // Cabeçalho pode vir depois de um título (até a 5ª linha): o que estiver acima dele é ignorado.
+  const iCab = rows.slice(0, 5).findIndex(r => (r || []).map(normalizar).some(c => /cnpj|cpf|documento|inscri/.test(c)));
+  if(iCab > 0) rows = rows.slice(iCab);
   const cab = rows[0].map(normalizar);
   const achar = re => cab.findIndex(c => re.test(c));
   let iDoc = achar(/cnpj|cpf|documento|inscri/);
@@ -1841,7 +1918,9 @@ function mapearLinhasClientes(rows){
     iCod = -1; iGrupo = -1; iGerente = -1; iCoord = -1; iAnalista = -1;
   }
   const col = (r, i) => i >= 0 ? String(r[i] || "").trim() : "";
-  return dados.map(r => ({
+  const desloc = dados === rows ? 1 : 2; // número da linha como no Excel (quando a leitura não trouxe o número real)
+  return dados.map((r, i) => ({
+    _linha: r._linha || (i + desloc),
     documentoBruto: r[iDoc] || "",
     razaoSocial: col(r, iNome), codigo: col(r, iCod), grupo: col(r, iGrupo),
     gerente: col(r, iGerente), coordenador: col(r, iCoord), analista: col(r, iAnalista),
@@ -2111,11 +2190,12 @@ function diferencasDoPadrao(procCron, ev, procModelo){
 }
 // Quantas tarefas de um processo estão fora do padrão / faltando em relação ao Modelo.
 function resumoPadraoProcesso(procCron, procModelo){
-  if(!procModelo) return { fora:0, extras:0, faltando:0 };
+  if(!procModelo) return { fora:0, extras:0, faltando:0, saiuDoModelo:0 };
   let fora = 0, extras = 0;
   procCron.eventos.forEach(ev => { const d = diferencasDoPadrao(procCron, ev, procModelo); if(d){ d.extra ? extras++ : fora++; } });
   const faltando = procModelo.eventos.filter(m => !procCron.eventos.some(e => e.id === m.id)).length;
-  return { fora, extras, faltando };
+  const saiuDoModelo = procCron.eventos.filter(e => (e.padrao || e.bloqueada) && !procModelo.eventos.some(m => m.id === e.id)).length;
+  return { fora, extras, faltando, saiuDoModelo };
 }
 
 // Aplica num cronograma o que mudou no Modelo DESDE que o cronograma foi
@@ -2147,12 +2227,18 @@ function aplicarModeloAtualizado(cronograma, modelo){
 
 // "↺ Atualizar bloco pelo Modelo" (decisão do usuário, 29/09/2026): troca as tarefas de UM bloco do cronograma
 // pelas do Modelo atual — nomes, responsáveis, prazos, 🔒 e tarefas novas. Do cronograma ficam: nome do bloco,
-// ativo, FREQUÊNCIA/MESES (cada cliente negocia os seus) e as tarefas que só existem no cronograma (vão pro fim).
+// ativo, FREQUÊNCIA/MESES (cada cliente negocia os seus) e as tarefas CRIADAS no cronograma (vão pro fim).
+// Tarefa que veio do Modelo (tem `padrao` ou 🔒) e não existe mais nele SAI do bloco (bug de 29/09: a "Data de
+// pagamento" antiga ficava duplicada com a "Data do crédito" nova, travada e sem poder excluir).
 // Ajustes pontuais e regras "a partir de" das tarefas trocadas se perdem (a tela avisa antes).
+const veioDoModelo = e => !!(e.padrao || e.bloqueada);
 function atualizarBlocoPeloModelo(procCron, procModelo){
   const idsModelo = new Set(procModelo.eventos.map(e => e.id));
-  const extras = procCron.eventos.filter(e => !idsModelo.has(e.id));
+  const fora = procCron.eventos.filter(e => !idsModelo.has(e.id));
+  const extras = fora.filter(e => !veioDoModelo(e));
+  const removidas = fora.filter(veioDoModelo);
   const linhas = [], perdidos = [];
+  removidas.forEach(e => linhas.push('− sai (não existe mais no Modelo): "' + e.nome + '"'));
   procModelo.eventos.forEach(m => {
     const e = procCron.eventos.find(x => x.id === m.id);
     if(!e){ linhas.push('+ tarefa nova: "' + m.nome + '"'); return; }
@@ -2163,10 +2249,19 @@ function atualizarBlocoPeloModelo(procCron, procModelo){
     if((e.vigencias || []).length) perdidos.push('"' + e.nome + '": regra “a partir de”');
   });
   if(!!procCron.ciclo !== !!procModelo.ciclo) linhas.push(procModelo.ciclo ? "Liga o ciclo semanal (como no Modelo)" : "Desliga o ciclo semanal (como no Modelo)");
-  const eventos = procModelo.eventos.map(m => ({ ...clonar(m), excecoes: {}, padrao: { nome:m.nome, responsavel:m.responsavel, regra:clonar(m.regra) } })).concat(extras);
+  // Tarefas próprias ficam com a referência fixa (vão pro fim — reordenar não pode re-apontá-las) e avisam se
+  // contavam a partir de uma tarefa que saiu.
+  const idsRem = new Set(removidas.map(e => e.id));
+  extras.forEach(e => {
+    const refs = [e.regra, ...(e.vigencias || []).map(v => v.regra)].flatMap(r => !r ? [] : [r.ref, ...((r.ou || []).map(o => o && o.ref))]).filter(Boolean);
+    const quebrada = refs.find(r => idsRem.has(r));
+    if(quebrada) linhas.push('⚠ "' + e.nome + '" (só deste cronograma) conta a partir de "' + (removidas.find(x => x.id === quebrada) || {}).nome + '", que sai — ajuste o prazo dela depois.');
+  });
+  const extrasFixas = extras.map(e => e.regra && e.regra.tipo === "deslocamento" && !e.regra.refManual ? { ...e, regra: { ...e.regra, refManual: true } } : e);
+  const eventos = procModelo.eventos.map(m => ({ ...clonar(m), excecoes: {}, padrao: { nome:m.nome, responsavel:m.responsavel, regra:clonar(m.regra) } })).concat(extrasFixas);
   const { ciclo, ...resto } = procCron;
   const processo = { ...resto, eventos, ...(procModelo.ciclo ? { ciclo: clonar(procModelo.ciclo) } : {}) };
-  return { processo, linhas, perdidos, extras: extras.map(e => e.nome) };
+  return { processo, linhas, perdidos, extras: extras.map(e => e.nome), removidas: removidas.map(e => e.nome) };
 }
 
 // Migração: cronogramas criados antes da base de clientes guardavam CNPJ
@@ -2454,6 +2549,70 @@ function rodarAutoTestes(){
     const contabil = f.eventos.find(e => e.id === "fmp12").regra.dia, credito = f.eventos.find(e => e.id === "fmp8").regra.dia;
     return contabil === 20 && credito === 4 && r.alteradas.length === 1 && r.personalizadas === 1 ? true : JSON.stringify({ contabil, credito, alteradas:r.alteradas, pers:r.personalizadas });
   });
+  t("Revisão 17: ciclo 'fim' com tarefa mensal fora do ciclo — ciclos certos e a mensal com 1 data só", () => {
+    const semanal = d => ({ tipo:"recorrencia", modo:"semanal", diaSemana:d, slaDias:0, ajuste:"prev" });
+    const p0 = { id:"av", nome:"Avulso", ativo:true, frequencia:{tipo:"mensal"}, eventos:[
+      { id:"e1", nome:"Envio", regra: semanal(1) }, { id:"e2", nome:"Processamento", regra: semanal(2) },
+      { id:"e3", nome:"Arquivos", regra: semanal(3) }, { id:"e4", nome:"Crédito", regra: semanal(5) } ] };
+    const conv = converterParaCicloSemanal(p0);
+    const p = { ...conv.processo, ciclo: { tipo:"semanal", pertence:"fim" },
+      eventos: [...conv.processo.eventos, { id:"m1", nome:"Mensal dia 5", regra:{ tipo:"dia_fixo", dia:5, ajuste:"prev", mesOffset:1 } }] };
+    const c = porId(resolveProcesso(p, 2026, 9));
+    return eq(c.e1.ocorrencias.map(o => iso(o.envio).slice(5)).join(" ") + " | " + iso(c.m1.data) + " | " + ((c.m1.ocorrencias || []).length),
+      "08-31 09-04 09-14 09-21 | 2026-10-05 | 0");
+  });
+  t("Revisão 18: calendário de janeiro usa a versão do ano ANTERIOR (regras e ajustes) para a competência de dezembro", () => {
+    const px = regra => ({ id:"px", nome:"Bloco", ativo:true, frequencia:{tipo:"mensal"}, eventos:[{ id:"x", nome:"Tarefa X", responsavel:"SINERGY", regra }] });
+    const p26 = px({ tipo:"dia_fixo", dia:10, ajuste:"prev", mesOffset:1 }); p26.eventos[0].excecoes = { "2026-12": { data:"2027-01-12", motivo:"t" } };
+    const p27 = px({ tipo:"dia_fixo", dia:20, ajuste:"prev", mesOffset:1 });
+    const reg = { id:"r", nome:"R", versoes:{ 2026:{ processos:[p26] }, 2027:{ processos:[p27] } } };
+    const v27 = visaoDoAno(reg, 2027);
+    const com = eventosDoMesCalendario(v27, 2027, 1, reg).map(i => fmtBR(i.data)).join(",");
+    const sem = eventosDoMesCalendario(v27, 2027, 1).map(i => fmtBR(i.data)).join(",");
+    return eq(com + " | " + sem, "12/01/2027 | 20/01/2027");
+  });
+  t("Revisão 19: recorrência com \u201ca partir de\u201d outro tipo aparece no calendário e na prévia anual", () => {
+    const p = { id:"pr", nome:"Bloco", ativo:true, frequencia:{tipo:"mensal"}, eventos:[{ id:"r1", nome:"Envio", responsavel:"SINERGY",
+      regra:{ tipo:"recorrencia", modo:"semanal", diaSemana:1, slaDias:0, ajuste:"prev" }, vigencias:[{ aPartirDe:7, regra:{ tipo:"dia_fixo", dia:10, ajuste:"prev", mesOffset:0 } }] }] };
+    const cli = { processos:[p] };
+    const cal = eventosDoMesCalendario(cli, 2026, 7).map(i => fmtBR(i.data)).join(",");
+    const cel = celulaGrade(p.eventos[0], resolveProcesso(p, 2026, 7)[0], 7);
+    return eq(cal + " | " + cel, "10/07/2026 | 10/07/2026");
+  });
+  t("Revisão 20: excluir tarefa tira o limite que apontava para ela, avisa e mostra as datas que mudam", () => {
+    const p = { id:"pl", nome:"Bloco", ativo:true, frequencia:{tipo:"mensal"}, eventos:[
+      { id:"a", nome:"Âncora", regra:{ tipo:"dia_fixo", dia:25, ajuste:"prev", mesOffset:0 } },
+      { id:"b", nome:"Crédito", regra: offAfterManual("a", 3) },
+      { id:"c", nome:"Relatórios", regra:{ ...offBeforeManual("a", 1), ou:[{ ref:"b", dias:6, direcao:"antes" }] } } ] };
+    const r = removerEventoDaCadeia(p, 1);
+    const c = r.processo.eventos.find(e => e.id === "c");
+    const mud = datasQueMudam(p, r.processo, 2026, null, "b");
+    return eq([(c.regra.ou || []).length, /limite/.test(r.aviso || ""), mud.length > 0].join(" | "), "0 | true | true");
+  });
+  t("Revisão (baixo): o crédito da folha é achado pelo id do Modelo, não pela 1ª tarefa com \u201ccrédito\u201d no nome", () => {
+    const p = { id:"folha_mensal", nome:"Folha", eventos:[
+      { id:"x1", nome:"Conferência de crédito consignado", regra:{} }, { id:"fmp8", nome:"Data do crédito da folha de pagamento", regra:{} } ] };
+    const q = { id:"outro", nome:"Outro", eventos:[{ id:"y1", nome:"Conferência de crédito", regra:{} }, { id:"y2", nome:"Data do crédito", regra:{} }] };
+    return eq(acharEventoCredito(p).id + "," + acharEventoCredito(q).id, "fmp8,y2");
+  });
+  t("Revisão (baixo): numeração das linhas da importação = linha do Excel (cabeçalho e linhas vazias contam)", () => {
+    const rows = [["CNPJ", "Razão social"], ["11222333000181", "ALFA"], ["", ""], ["60745411000138", "BETA"]];
+    return eq(mapearLinhasClientes(rows).map(x => x._linha).join(","), "2,4");
+  });
+  t("Revisão 2 (baixo): numeração com título acima do cabeçalho e linhas vazias no meio (texto colado)", () => {
+    const rows = parseTabelaTexto("Clientes da carteira\n\nCNPJ\tRazão social\n11222333000181\tALFA\n\n\n60745411000138\tBETA");
+    return eq(mapearLinhasClientes(rows).map(x => x._linha + ":" + x.razaoSocial).join(","), "4:ALFA,7:BETA");
+  });
+  t("Revisão 7: importação sem coluna Gerente valida o analista pela gerência do cliente que já existe; troca de gerência só Administrador", () => {
+    const gerentes = [{ id:"gA", nome:"Ariana" }, { id:"gB", nome:"Matheus" }];
+    const usuarios = [{ id:"u1", name:"Caio", gerenteId:"gB" }, { id:"u2", name:"Bia", gerenteId:"gA" }];
+    const alfa = { id:"c1", codigo:"10", razaoSocial:"ALFA", gerenteId:"gA" };
+    const existenteDe = it => it.codigo === "10" ? alfa : null;
+    const a = validarResponsaveisImportacao([{ codigo:"10", razaoSocial:"ALFA", analista:"Caio", _linha:2 }], { gerentes, usuarios, grupos:[], escopo:"all", existenteDe });
+    const b = validarResponsaveisImportacao([{ codigo:"10", razaoSocial:"ALFA", gerente:"Matheus", analista:"Caio", _linha:2 }], { gerentes, usuarios, grupos:[], escopo:"all", existenteDe });
+    const c = validarResponsaveisImportacao([{ codigo:"10", razaoSocial:"ALFA", gerente:"Matheus", _linha:2 }], { gerentes, usuarios, grupos:[], escopo:"gB", existenteDe });
+    return eq([a.itens[0].analista || "-", a.avisos.length, b.itens[0].analista, b.avisos.map(x => x.campo).join(","), c.rejeitados.length].join(" | "), "- | 1 | Caio | gerencia | 1");
+  });
   t("Atualizar bloco pelo Modelo: tarefas do Modelo (inclusive novas), mantém meses e tarefas extras, perde ajustes", () => {
     const mod = { id:"plr", nome:"PLR", frequencia:{tipo:"meses_especificos", meses:[]}, eventos:[
       { id:"a", nome:"Inputs", responsavel:"CLIENTE", regra:offBeforeManual("b",1) },
@@ -2462,13 +2621,14 @@ function rodarAutoTestes(){
     const cron = { id:"plr", nome:"PLR cliente", ativo:true, frequencia:{tipo:"meses_especificos", meses:[4]}, eventos:[
       { id:"a", nome:"Inputs", responsavel:"SINERGY", regra:{tipo:"dia_fixo", dia:15, ajuste:"next"}, excecoes:{ "2026-04":{ data:"2026-04-10", motivo:"x" } } },
       { id:"c", nome:"Crédito", responsavel:"CLIENTE", regra:offAfter("a",3) },
-      { id:"z", nome:"Extra do cliente", responsavel:"SINERGY", regra:{tipo:"dia_fixo", dia:1} } ] };
+      { id:"z", nome:"Extra do cliente", responsavel:"SINERGY", regra:{tipo:"dia_fixo", dia:1} },
+      { id:"velha", nome:"Data de pagamento", responsavel:"CLIENTE", bloqueada:true, padrao:{ nome:"Data de pagamento" }, regra:offAfter("a",3) } ] };
     const r = atualizarBlocoPeloModelo(cron, mod);
     const p = r.processo;
     const d = resolveProcesso(p, 2026, 4, [p]);
     return eq([p.nome, p.frequencia.meses.join(","), p.eventos.map(e => e.id + ":" + e.responsavel).join(","), Object.keys(p.eventos[0].excecoes).length,
-      !!p.eventos[0].padrao, r.linhas.length, r.perdidos.length, r.extras.join(","), d.map(x => x && x.data ? fmtBR(x.data) : "-").join(",")].join(" | "),
-      "PLR cliente | 4 | a:CLIENTE,b:CLIENTE,c:CLIENTE,z:SINERGY | 0 | true | 3 | 1 | Extra do cliente | 28/04/2026,29/04/2026,30/04/2026,01/04/2026");
+      !!p.eventos[0].padrao, r.linhas.length, r.perdidos.length, r.extras.join(",") + "/" + r.removidas.join(","), d.map(x => x && x.data ? fmtBR(x.data) : "-").join(",")].join(" | "),
+      "PLR cliente | 4 | a:CLIENTE,b:CLIENTE,c:CLIENTE,z:SINERGY | 0 | true | 4 | 1 | Extra do cliente/Data de pagamento | 28/04/2026,29/04/2026,30/04/2026,01/04/2026");
   });
   t("v4 · Aplicar Modelo atualizado não mexe em cronograma antigo (sem referência de origem)", () => {
     const mod = modeloTeste(), mod2 = clonar(mod);
@@ -2858,7 +3018,7 @@ function rodarAutoTestes(){
      build de lá (Vite/esbuild) — o Babel aqui é só pra rodar como arquivo único.
      ========================================================================= -->
 <script>
-/* Telas compiladas a partir de cronograma_v4.html em 29/09/2026 13:49 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
+/* Telas compiladas a partir de cronograma_v4.html em 29/09/2026 17:15 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
@@ -2894,6 +3054,12 @@ const ui = {
     tipo: "prompt",
     msg,
     valorInicial,
+    ...opts
+  }),
+  // 3 botões: devolve true (okLabel), "extra" (extraLabel) ou false (cancelar).
+  escolher: (msg, opts = {}) => abrirDialogo({
+    tipo: "confirm",
+    msg,
     ...opts
   })
 };
@@ -2956,7 +3122,10 @@ function DialogHost() {
   }, d.tipo !== "alert" && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost",
     onClick: cancelar
-  }, d.cancelLabel || "Cancelar"), /*#__PURE__*/React.createElement("button", {
+  }, d.cancelLabel || "Cancelar"), d.extraLabel && /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-outline",
+    onClick: () => fechar("extra")
+  }, d.extraLabel), /*#__PURE__*/React.createElement("button", {
     autoFocus: d.tipo !== "prompt",
     className: "btn " + (d.perigo ? "btn-danger" : "btn-primary"),
     onClick: ok
@@ -3671,7 +3840,8 @@ function ProcessoCard({
   const padrao = useMemo(() => modoAtual === "cliente" ? resumoPadraoProcesso(processo, processoModelo) : {
     fora: 0,
     extras: 0,
-    faltando: 0
+    faltando: 0,
+    saiuDoModelo: 0
   }, [processo, processoModelo, modoAtual]);
   const resumo = useMemo(() => resumoDoProcesso(processo, preview), [processo, preview]);
 
@@ -3771,9 +3941,11 @@ function ProcessoCard({
       eventos: renormalizarRefs(eventos)
     });
   }
+  // 🔒 só trava enquanto a tarefa existe no Modelo do cronograma; "+ fora do Modelo" pode ser renomeada/excluída.
+  const estaTravada = ev => !!ev.bloqueada && modoAtual === "cliente" && !(processoModelo && !processoModelo.eventos.some(m => m.id === ev.id));
   async function remover(idx) {
     const alvo = processo.eventos[idx];
-    if (alvo.bloqueada && modoAtual === "cliente") {
+    if (estaTravada(alvo)) {
       ui.alert("Esta é uma tarefa-padrão bloqueada — não pode ser excluída aqui. Ajuste no cadastro de Modelos, se for o caso.");
       return;
     }
@@ -3781,7 +3953,11 @@ function ProcessoCard({
       processo: novo,
       aviso
     } = removerEventoDaCadeia(processo, idx);
-    const ok = await ui.confirm('Remover a tarefa "' + alvo.nome + '"?' + (aviso ? "\n\n" + aviso : ""), {
+    // Vínculos de OUTROS blocos que usam esta tarefa ficam sem data.
+    const vincs = (todosProcessos || []).filter(p => p.id !== processo.id).flatMap(p => p.eventos.filter(e => [e.regra, ...(e.vigencias || []).map(v => v.regra)].some(r => r && r.tipo === "vinculo" && r.processoRef === processo.id && r.eventoRef === alvo.id)).map(e => '"' + e.nome + '" (' + p.nome + ")"));
+    const mud = modoAtual === "cliente" || modoAtual === "modelo" ? datasQueMudam(processo, novo, ano, todosProcessos, alvo.id) : [];
+    const txtMud = mud.length ? "⚠ Datas que mudam (" + mud.length + "):\n• " + mud.slice(0, 10).join("\n• ") + (mud.length > 10 ? "\n• … e mais " + (mud.length - 10) : "") : "✓ Nenhuma outra data do bloco muda.";
+    const ok = await ui.confirm('Remover a tarefa "' + alvo.nome + '"?' + (aviso ? "\n\n" + aviso : "") + (vincs.length ? "\n\n⚠ Tarefas de outros blocos que usam a data dela vão ficar sem data: " + vincs.join(", ") + "." : "") + "\n\n" + txtMud, {
       titulo: "Remover tarefa",
       okLabel: "Remover",
       perigo: true
@@ -3894,13 +4070,25 @@ function ProcessoCard({
       flex: 1,
       minWidth: 220
     }
-  }, onAlternar && /*#__PURE__*/React.createElement("button", {
-    type: "button",
+  }, onAlternar && /*#__PURE__*/React.createElement("span", {
+    role: "button",
+    tabIndex: 0,
     className: "proc-toggle",
+    style: {
+      cursor: "pointer",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center"
+    },
     onClick: onAlternar,
+    onKeyDown: e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onAlternar();
+      }
+    },
     "aria-expanded": estaAberto,
-    title: estaAberto ? "Recolher" : "Expandir",
-    disabled: false
+    title: estaAberto ? "Recolher" : "Expandir"
   }, estaAberto ? "▾" : "▸"), estaAberto ? /*#__PURE__*/React.createElement("input", {
     type: "text",
     className: "nome-editavel",
@@ -3918,10 +4106,20 @@ function ProcessoCard({
       flex: 1,
       minWidth: 180
     }
-  }) : /*#__PURE__*/React.createElement("button", {
-    type: "button",
+  }) : /*#__PURE__*/React.createElement("span", {
+    role: "button",
+    tabIndex: 0,
     className: "proc-titulo",
-    onClick: onAlternar
+    style: {
+      cursor: "pointer"
+    },
+    onClick: onAlternar,
+    onKeyDown: e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onAlternar && onAlternar();
+      }
+    }
   }, processo.nome), !somenteLeitura && /*#__PURE__*/React.createElement("button", {
     type: "button",
     className: "link-btn",
@@ -4056,7 +4254,7 @@ function ProcessoCard({
     }
   }, "\u26A0 Ciclo semanal sem tarefa de in\xEDcio (recorr\xEAncia semanal)."), padrao.faltando > 0 && /*#__PURE__*/React.createElement("span", {
     className: "badge badge-padrao"
-  }, padrao.faltando, " tarefa(s) do Modelo removida(s) deste cronograma"), onAtualizarPeloModelo && processoModelo && !somenteLeitura && (padrao.fora + padrao.faltando > 0 || !!processo.ciclo !== !!processoModelo.ciclo) && /*#__PURE__*/React.createElement("button", {
+  }, padrao.faltando, " tarefa(s) do Modelo removida(s) deste cronograma"), onAtualizarPeloModelo && processoModelo && !somenteLeitura && (padrao.fora + padrao.faltando + padrao.saiuDoModelo > 0 || !!processo.ciclo !== !!processoModelo.ciclo) && /*#__PURE__*/React.createElement("button", {
     type: "button",
     className: "btn btn-sm btn-outline",
     title: "Troca as tarefas deste bloco pelas do Modelo atual (os meses escolhidos e as tarefas s\xF3 deste cronograma ficam)",
@@ -4098,8 +4296,8 @@ function ProcessoCard({
     }
   }))), /*#__PURE__*/React.createElement("tbody", null, processo.eventos.map((ev, idx) => {
     const calc = preview[idx];
-    const previewTxt = calc && calc.ocorrencias && calc.ocorrencias.length ? formatarOcorrencias(calc.ocorrencias) : ev.regra.tipo === "recorrencia" ? RECORRENCIA_LABEL(ev.regra) : calc && calc.data ? fmtBR(calc.data) : "—";
-    const travada = !!ev.bloqueada && modoAtual === "cliente";
+    const previewTxt = calc && calc.ocorrencias && calc.ocorrencias.length ? formatarOcorrencias(calc.ocorrencias) : regraVigente(ev, mesPreview || 1).tipo === "recorrencia" ? RECORRENCIA_LABEL(regraVigente(ev, mesPreview || 1)) : calc && calc.data ? fmtBR(calc.data) : "—";
+    const travada = estaTravada(ev);
     const excecaoAtual = mesPreview && ev.excecoes ? ev.excecoes[competenciaKey(ano, mesPreview)] : null;
     const dif = modoAtual === "cliente" ? diferencasDoPadrao(processo, ev, processoModelo) : null;
     const editando = regraEditando === ev.id && !somenteLeitura;
@@ -4368,10 +4566,11 @@ function ProcessoCard({
 }
 
 /* ---------- Prévia anual (por competência) ---------- */
-function celulaGrade(ev, calc) {
+function celulaGrade(ev, calc, mes) {
   if (ev.ativo === false) return "—";
   if (calc && calc.ocorrencias && calc.ocorrencias.length) return formatarOcorrencias(calc.ocorrencias);
-  if (ev.regra.tipo === "recorrencia") return RECORRENCIA_LABEL(ev.regra);
+  const rv = regraVigente(ev, mes || 1);
+  if (rv.tipo === "recorrencia") return RECORRENCIA_LABEL(rv);
   const txt = calc && calc.data ? fmtBR(calc.data) : "—";
   return calc && calc.temExcecao ? txt + " ✱" : txt;
 }
@@ -4436,7 +4635,7 @@ function GradeAnual({
           className: "muted"
         }, "\u2014");
         const calc = porMes[mNum][idx];
-        const foraDoMes = calc && calc.data && ev.regra.tipo !== "recorrencia" && !calc.ocorrencias && (calc.data.getMonth() + 1 !== mNum || calc.data.getFullYear() !== ano);
+        const foraDoMes = calc && calc.data && regraVigente(ev, mNum).tipo !== "recorrencia" && !calc.ocorrencias && (calc.data.getMonth() + 1 !== mNum || calc.data.getFullYear() !== ano);
         return /*#__PURE__*/React.createElement("td", {
           key: m,
           style: foraDoMes ? {
@@ -4444,7 +4643,7 @@ function GradeAnual({
             color: "var(--texto-sec)"
           } : undefined,
           title: foraDoMes ? "Competência " + m + ", data real em " + MESES[calc.data.getMonth()] : undefined
-        }, celulaGrade(ev, calc), /*#__PURE__*/React.createElement(Alertas, {
+        }, celulaGrade(ev, calc, mNum), /*#__PURE__*/React.createElement(Alertas, {
           lista: calc && calc.alertas
         }));
       }));
@@ -4470,13 +4669,14 @@ function estiloChip(it) {
 }
 function CalendarioMensal({
   cliente,
+  registro,
   ano,
   mes,
   soSinergy,
   onSoSinergy,
   onNavegar
 }) {
-  const itens = useMemo(() => eventosDoMesCalendario(cliente, ano, mes), [cliente, ano, mes]);
+  const itens = useMemo(() => eventosDoMesCalendario(cliente, ano, mes, registro), [cliente, registro, ano, mes]);
   const [ocultas, setOcultas] = useState(() => new Set());
   const porResp = soSinergy ? itens.filter(i => ehSinergy(i.responsavel)) : itens;
   const categoriasDoMes = [];
@@ -4863,8 +5063,8 @@ function adicionarAbaCronograma(wb, nomeAba, cliente, ano, clientesVinculados, m
           return;
         }
         const calc = porMes[mNum][idx];
-        if (ev.regra.tipo === "recorrencia" || calc && calc.ocorrencias || !calc || !calc.data) {
-          cell.value = celulaGrade(ev, calc);
+        if (regraVigente(ev, mNum).tipo === "recorrencia" || calc && calc.ocorrencias || !calc || !calc.data) {
+          cell.value = celulaGrade(ev, calc, mNum);
           return;
         }
         cell.value = dataExcel(calc.data);
@@ -5966,7 +6166,8 @@ function VincularClientesModal({
 function NovoCronogramaForm({
   modelos,
   base,
-  vinculoDe,
+  vinculoDe: vinculoDaTela,
+  vinculoDoAno,
   ano,
   anosEstado,
   onCancelar,
@@ -6141,7 +6342,7 @@ function NovoCronogramaForm({
     base: usaGerencia ? base.filter(c => c.gerenteId === gerenteId) : base,
     selecionadosIniciais: clientesIds,
     cronogramaId: null,
-    vinculoDe: vinculoDe,
+    vinculoDe: vinculoDoAno ? vinculoDoAno(anoNovo) : vinculoDaTela,
     onFechar: () => setEscolhendo(false),
     onConfirmar: ids => {
       setClientesIds(ids);
@@ -6174,7 +6375,9 @@ async function lerArquivoTabela(arquivo) {
     ws.eachRow({
       includeEmpty: false
     }, row => {
-      rows.push((row.values || []).slice(1).map(celulaTexto));
+      const r = (row.values || []).slice(1).map(celulaTexto);
+      r._linha = row.number;
+      rows.push(r);
     });
     return rows;
   }
@@ -6305,12 +6508,12 @@ function ImportarClientesModal({
     style: {
       whiteSpace: "normal"
     }
-  }, a.rotulo || "—"), /*#__PURE__*/React.createElement("td", null, a.campo === "coordenador" ? "Coordenador" : a.campo === "analista" ? "Analista" : "CNPJ"), /*#__PURE__*/React.createElement("td", null, a.nome), /*#__PURE__*/React.createElement("td", {
+  }, a.rotulo || "—"), /*#__PURE__*/React.createElement("td", null, a.campo === "coordenador" ? "Coordenador" : a.campo === "analista" ? "Analista" : a.campo === "gerencia" ? "Gerência" : "CNPJ"), /*#__PURE__*/React.createElement("td", null, a.nome), /*#__PURE__*/React.createElement("td", {
     className: "alerta",
     style: {
       whiteSpace: "normal"
     }
-  }, a.motivo, a.campo === "cnpj" ? "" : " — não será gravado"))))))), /*#__PURE__*/React.createElement("div", {
+  }, a.motivo, a.campo === "coordenador" || a.campo === "analista" ? " — não será gravado" : ""))))))), /*#__PURE__*/React.createElement("div", {
     className: "wizard-actions"
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn btn-ghost",
@@ -6770,7 +6973,7 @@ function ClientesBaseTela({
   function analisarLinhas(rows) {
     let itens = mapearLinhasClientes(rows).map((x, i) => ({
       ...x,
-      _linha: i + 1
+      _linha: x._linha || i + 1
     }));
     if (!itens.length) {
       ui.alert("Não encontrei nenhuma linha com CNPJ/CPF nessa tabela.");
@@ -6780,12 +6983,28 @@ function ClientesBaseTela({
       avisos: [],
       rejeitados: []
     };
+    // Mesmo critério de identidade da importação: ID; sem ID, CNPJ + razão social (único).
+    const existenteDe = it => {
+      const k = normalizar(it.codigo).trim();
+      const doc = soDigitos(it.documentoBruto) ? normalizarDocumento(it.documentoBruto).doc : "";
+      if (k) {
+        // com ID: pelo ID; senão só adota o ÚNICO cliente daquele CNPJ que ainda não tem ID (igual à importação)
+        const c = baseTodos.find(c => normalizar(c.codigo).trim() === k);
+        if (c) return c;
+        const semId = doc ? baseTodos.filter(c => c.documento === doc && !normalizar(c.codigo).trim()) : [];
+        return semId.length === 1 ? semId[0] : null;
+      }
+      const rs = normalizar(it.razaoSocial).trim();
+      const mesmos = baseTodos.filter(c => (c.documento || "") === doc && (doc || rs) && (!rs || normalizar(c.razaoSocial).trim() === rs));
+      return mesmos.length === 1 ? mesmos[0] : null;
+    };
     if (usaGerencia) {
       extra = validarResponsaveisImportacao(itens, {
         gerentes,
         usuarios: usuariosPainel,
         grupos: gruposPainel,
-        escopo
+        escopo,
+        existenteDe
       });
       itens = extra.itens;
     }
@@ -6831,24 +7050,32 @@ function ClientesBaseTela({
     setAnalise(null);
     // Gerência: pelo nome da coluna "Gerente" (casado com os gerentes do painel); quem não é Administrador importa na própria gerência.
     const padrao = escopo !== "all" ? escopo : null;
-    const comGerencia = lista => !usaGerencia ? lista : lista.map(c => {
-      const gid = padrao && !c.gerenteId ? padrao : gerenciaDoCliente(c, gerentes);
-      return gid ? {
-        ...c,
-        gerenteId: gid,
-        gerente: nomeGer(gid)
-      } : c;
-    });
+    // Só os clientes criados/alterados NESTA importação recebem gerência (antes a base inteira — clientes "sem
+    // gerência" de fora da planilha iam para a gerência de quem importou: item 4 da revisão). O nome da coluna
+    // Gerente vale primeiro (troca feita pelo Administrador), depois a gerência atual, depois a de quem importa.
     const semGer = usaGerencia && !padrao ? a.novos.filter(r => !gerentePorNome(r.gerente, gerentes)).length : 0;
-    await onAtualizarBase(b => comGerencia(aplicarImportacao(b, analisarImportacao(b, [...a.novos, ...a.atualizados.map(x => x.novo)].map(r => ({
-      documentoBruto: r.documento,
-      razaoSocial: r.razaoSocial,
-      codigo: r.codigo,
-      grupo: r.grupo,
-      gerente: r.gerente,
-      coordenador: r.coordenador,
-      analista: r.analista
-    }))))), a.novos.length + " cliente(s) importado(s)" + (a.atualizados.length ? ", " + a.atualizados.length + " atualizado(s)" : "") + (semGer ? " · " + semGer + " sem gerência reconhecida (use o filtro \u201cSem gerência\u201d)" : "") + ".");
+    await onAtualizarBase(b => {
+      const antes = Object.fromEntries(b.map(c => [c.id, JSON.stringify(c)]));
+      const depois = aplicarImportacao(b, analisarImportacao(b, [...a.novos, ...a.atualizados.map(x => x.novo)].map(r => ({
+        documentoBruto: r.documento,
+        razaoSocial: r.razaoSocial,
+        codigo: r.codigo,
+        grupo: r.grupo,
+        gerente: r.gerente,
+        coordenador: r.coordenador,
+        analista: r.analista
+      }))));
+      if (!usaGerencia) return depois;
+      return depois.map(c => {
+        if (antes[c.id] === JSON.stringify(c)) return c;
+        const gid = (gerentePorNome(c.gerente, gerentes) || {}).id || c.gerenteId || padrao;
+        return gid ? {
+          ...c,
+          gerenteId: gid,
+          gerente: nomeGer(gid)
+        } : c;
+      });
+    }, a.novos.length + " cliente(s) importado(s)" + (a.atualizados.length ? ", " + a.atualizados.length + " atualizado(s)" : "") + (semGer ? " · " + semGer + " sem gerência reconhecida (use o filtro \u201cSem gerência\u201d)" : "") + ".");
     setColarAberto(false);
     setTxt("");
   }
@@ -8088,7 +8315,8 @@ function ClientesVinculadosTab({
   mesReferencia,
   somenteLeitura,
   onEditar,
-  onAlterarVinculos
+  onAlterarVinculos,
+  ocultarResponsaveis
 }) {
   const [escolhendo, setEscolhendo] = useState(false);
   const [busca, setBusca] = useState("");
@@ -8137,7 +8365,7 @@ function ClientesVinculadosTab({
       maxHeight: 360,
       overflow: "auto"
     }
-  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Raz\xE3o social"), /*#__PURE__*/React.createElement("th", null, "CNPJ/CPF"), /*#__PURE__*/React.createElement("th", null, "ID"), /*#__PURE__*/React.createElement("th", null, "Grupo"), /*#__PURE__*/React.createElement("th", null, "Gerente"), /*#__PURE__*/React.createElement("th", null, "Coordenador"), /*#__PURE__*/React.createElement("th", null, "Analista"), !somenteLeitura && /*#__PURE__*/React.createElement("th", {
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Raz\xE3o social"), /*#__PURE__*/React.createElement("th", null, "CNPJ/CPF"), /*#__PURE__*/React.createElement("th", null, "ID"), /*#__PURE__*/React.createElement("th", null, "Grupo"), !ocultarResponsaveis && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", null, "Gerente"), /*#__PURE__*/React.createElement("th", null, "Coordenador"), /*#__PURE__*/React.createElement("th", null, "Analista")), !somenteLeitura && /*#__PURE__*/React.createElement("th", {
     style: {
       width: 40
     }
@@ -8150,7 +8378,7 @@ function ClientesVinculadosTab({
   }, c.razaoSocial || "—", c.ativo === false && /*#__PURE__*/React.createElement(React.Fragment, null, " ", /*#__PURE__*/React.createElement("span", {
     className: "badge badge-off",
     title: "Inativo na base de clientes"
-  }, "inativo"))), /*#__PURE__*/React.createElement("td", null, fmtDocumento(c.documento)), /*#__PURE__*/React.createElement("td", null, c.codigo || "—"), /*#__PURE__*/React.createElement("td", null, c.grupo || "—"), /*#__PURE__*/React.createElement("td", null, c.gerente || "—"), /*#__PURE__*/React.createElement("td", null, c.coordenador || "—"), /*#__PURE__*/React.createElement("td", null, c.analista || "—"), !somenteLeitura && /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("button", {
+  }, "inativo"))), /*#__PURE__*/React.createElement("td", null, fmtDocumento(c.documento)), /*#__PURE__*/React.createElement("td", null, c.codigo || "—"), /*#__PURE__*/React.createElement("td", null, c.grupo || "—"), !ocultarResponsaveis && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("td", null, c.gerente || "—"), /*#__PURE__*/React.createElement("td", null, c.coordenador || "—"), /*#__PURE__*/React.createElement("td", null, c.analista || "—")), !somenteLeitura && /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("button", {
     className: "btn btn-sm btn-ghost",
     title: "Desvincular",
     "aria-label": "Desvincular",
@@ -9489,7 +9717,7 @@ function BarraStatus({
     key: s.id,
     value: s.id,
     disabled: s.id === "aprovado" && !podeAprovar
-  }, s.label))), /*#__PURE__*/React.createElement("button", {
+  }, s.label))), onHistorico && /*#__PURE__*/React.createElement("button", {
     className: "link-btn",
     onClick: onHistorico
   }, "ver hist\xF3rico"));
@@ -10288,6 +10516,18 @@ function App({
   const [clientesCache, setClientesCache] = useState({});
   const [snapshots, setSnapshots] = useState({});
   const [conhecidoServidor, setConhecidoServidor] = useState({});
+  // Cópias síncronas: quem carrega e já salva no mesmo clique (ações em massa, fila de aprovações) precisa enxergar
+  // o que acabou de carregar — o estado do React só chega no próximo render.
+  const snapshotsRef = useRef({});
+  snapshotsRef.current = {
+    ...snapshotsRef.current,
+    ...snapshots
+  };
+  const conhecidoRef = useRef({});
+  conhecidoRef.current = {
+    ...conhecidoRef.current,
+    ...conhecidoServidor
+  };
   const [modelos, setModelos] = useState([]);
   const [modelosAtualizadoEm, setModelosAtualizadoEm] = useState(null);
   // Modelos salvos em outra sessão enquanto esta tinha alterações não salvas na página Modelos (não troca o rascunho).
@@ -10360,7 +10600,7 @@ function App({
   // Usuários/grupos do painel (gerências). Integrado: vêm do login; modo teste: lidos aqui (usuários falsos, se houver).
   const [pessoasLocais, setPessoasLocais] = useState(null);
   useEffect(() => {
-    if (usuariosPainel) return;
+    if (usuariosPainel || consulta) return; // link de consulta (cliente, sem login) não baixa a lista de usuários
     carregarUsuariosDoPainel().then(r => setPessoasLocais({
       usuarios: (r.usuarios || []).filter(u => u && u.active !== false),
       grupos: r.grupos || []
@@ -10468,10 +10708,61 @@ function App({
     } : r);
   }
   // Troca o ano mantendo a tela (e o cronograma/aba) em que você está.
-  function setAno(y) {
+  async function setAno(y) {
+    if (!(await liberarTrocaDeAno(y))) return;
     gravarLocal("cronograma_ano", y);
     navegar(rota.tela === "cronograma" ? linkCronograma(rota.id, rota.aba, y) : linkTela(rota.tela, y));
   }
+  // Trocar de ano com alterações NÃO salvas no ano aberto: pergunta (salvar / descartar / cancelar).
+  const liberadoAnoRef = useRef(null);
+  function anoSujo(id, a) {
+    const c = cacheRef.current[id],
+      s = snapshotsRef.current[id];
+    if (!c || !s) return false;
+    return JSON.stringify((c.versoes || {})[a]) !== JSON.stringify((JSON.parse(s).versoes || {})[a]);
+  }
+  async function liberarTrocaDeAno(novoAno) {
+    if (rota.tela !== "cronograma" || !clienteId || Number(novoAno) === Number(ano)) return true;
+    if (liberadoAnoRef.current === clienteId + ":" + novoAno) {
+      liberadoAnoRef.current = null;
+      return true;
+    }
+    if (!anoSujo(clienteId, ano)) return true;
+    const r = await ui.escolher("Há alterações NÃO salvas em " + ano + ". O que fazer antes de ir para " + novoAno + "?", {
+      titulo: "Alterações não salvas",
+      okLabel: "Salvar e trocar",
+      extraLabel: "Descartar e trocar",
+      cancelLabel: "Cancelar"
+    });
+    if (r === true) {
+      const v = visaoDoAno(cacheRef.current[clienteId], ano);
+      if (!v || !(await salvarCliente(v))) return false;
+    } else if (r === "extra") {
+      const orig = (JSON.parse(snapshotsRef.current[clienteId]).versoes || {})[ano];
+      const cr = cacheRef.current[clienteId];
+      const novo = {
+        ...cr,
+        versoes: {
+          ...cr.versoes,
+          [ano]: orig
+        }
+      };
+      cacheRef.current = {
+        ...cacheRef.current,
+        [clienteId]: novo
+      };
+      setClientesCache(prev => ({
+        ...prev,
+        [clienteId]: novo
+      }));
+    } else return false;
+    liberadoAnoRef.current = clienteId + ":" + novoAno;
+    return true;
+  }
+  const liberarTrocaRef = useRef(null);
+  liberarTrocaRef.current = liberarTrocaDeAno;
+  const rotaAtualRef = useRef(null); // preenchido depois que clienteId/aba existem (abaixo)
+
   async function restaurarBackup(e) {
     const arq = e.target.files && e.target.files[0];
     e.target.value = "";
@@ -10566,13 +10857,14 @@ function App({
 
   // clienteBaseId -> [{id, nome}] — vem do índice (sem abrir cada cronograma) e,
   // pros cronogramas abertos, da versão em edição.
-  const vinculoDe = useMemo(() => {
+  // Vínculos de QUALQUER ano (o Novo cronograma confere no ano escolhido, não no ano da tela — item 8 da revisão).
+  function vinculoDoAno(a) {
     const porId = {};
     clientesResumo.forEach(r => {
       if (!r.excluido) porId[r.id] = {
         id: r.id,
         nome: r.nome,
-        clientesIds: linhaDoAno(r, ano).clientesIds
+        clientesIds: linhaDoAno(r, a).clientesIds
       };
     });
     Object.values(clientesCache).forEach(c => {
@@ -10580,7 +10872,7 @@ function App({
         delete porId[c.id];
         return;
       }
-      const v = visaoDoAno(c, ano);
+      const v = visaoDoAno(c, a);
       porId[c.id] = {
         id: c.id,
         nome: c.nome,
@@ -10595,7 +10887,39 @@ function App({
       });
     }));
     return m;
-  }, [clientesResumo, clientesCache, ano]); // um CNPJ = um cronograma, dentro de cada ano
+  }
+  const vinculoDe = useMemo(() => vinculoDoAno(ano), [clientesResumo, clientesCache, ano]); // um CNPJ = um cronograma, dentro de cada ano
+  // Conferência "de verdade" antes de gravar vínculos: relê o índice do BANCO (outra pessoa pode ter vinculado agora).
+  // Devolve { clienteId: { id, nome } } dos cronogramas (fora da lixeira) que usam o cliente no ano.
+  async function clientesOcupadosNoAno(a) {
+    let resumos;
+    try {
+      resumos = (await kvListar(PREF_RESUMO)).map(p => p.value).filter(Boolean).map(r => migrarResumo(r, anoTrabalhoPadrao()));
+    } catch (e) {
+      resumos = resumoRef.current;
+    }
+    const m = {};
+    resumos.forEach(r => {
+      if (r.excluido) return;
+      (linhaDoAno(r, a).clientesIds || []).forEach(id => {
+        if (!m[id]) m[id] = {
+          id: r.id,
+          nome: r.nome
+        };
+      });
+    });
+    Object.values(cacheRef.current).forEach(c => {
+      if (c.excluido) return;
+      const v = visaoDoAno(c, a);
+      (v && v.clientesIds || []).forEach(id => {
+        if (!m[id]) m[id] = {
+          id: c.id,
+          nome: c.nome
+        };
+      });
+    });
+    return m;
+  }
   // Base com a gerência resolvida (clientes antigos: o nome do gerente casa com o gerente do painel).
   const baseClientesG = useMemo(() => !usaGerencia ? baseClientes : baseClientes.map(c => {
     const gid = gerenciaDoCliente(c, gerentes);
@@ -10649,6 +10973,12 @@ function App({
   const somenteLeitura = !podeEditar || clienteAtual && clienteAtual.status === "aprovado" || travado;
   const sujos = useMemo(() => new Set(Object.keys(clientesCache).filter(id => snapshots[id] !== undefined && JSON.stringify(clientesCache[id]) !== snapshots[id])), [clientesCache, snapshots]);
   const atualSujo = clienteAtual ? sujos.has(clienteAtual.id) : false;
+  rotaAtualRef.current = {
+    rota,
+    ano,
+    clienteId,
+    aba
+  };
   const modeloAtual = clienteAtual ? modelos.find(m => m.id === clienteAtual.modeloId) : null;
 
   // Linhas da carteira: o índice, com a versão em edição por cima quando o cronograma está aberto.
@@ -10744,6 +11074,14 @@ function App({
     toastTimer.current = setTimeout(() => setToast(null), 3800);
   }
   function marcarSalvo(c) {
+    snapshotsRef.current = {
+      ...snapshotsRef.current,
+      [c.id]: JSON.stringify(c)
+    };
+    if (c.atualizadoEm) conhecidoRef.current = {
+      ...conhecidoRef.current,
+      [c.id]: c.atualizadoEm
+    };
     setSnapshots(prev => ({
       ...prev,
       [c.id]: JSON.stringify(c)
@@ -10757,7 +11095,18 @@ function App({
   // Rotas
   useEffect(() => {
     if (consulta) return;
-    const h = () => setRota(lerRota());
+    const h = async () => {
+      const nova = lerRota(),
+        atual = rotaAtualRef.current;
+      // Link de outro ano do MESMO cronograma (chips de ano) com alterações pendentes: pergunta antes.
+      if (atual && atual.clienteId && nova.tela === "cronograma" && nova.id === atual.clienteId && Number(nova.ano) !== Number(atual.ano)) {
+        if (!(await liberarTrocaRef.current(nova.ano))) {
+          history.replaceState(null, "", linkCronograma(atual.clienteId, atual.aba, atual.ano));
+          return;
+        }
+      }
+      setRota(lerRota());
+    };
     window.addEventListener("hashchange", h);
     return () => window.removeEventListener("hashchange", h);
   }, []);
@@ -10773,7 +11122,8 @@ function App({
       lixeira: "Lixeira",
       pendencias: "Pendências"
     };
-    document.title = (rota.tela === "cronograma" ? registroAtual ? registroAtual.nome : "Cronograma" : nomes[rota.tela]) + " " + ano + " · Cronograma Operacional";
+    const t = rota.tela === "cronograma" ? registroAtual ? registroAtual.nome : "Cronograma" : nomes[rota.tela] || "";
+    document.title = t + (String(t).includes(String(ano)) ? "" : " " + ano) + " · Cronograma Operacional";
   }, [rota, registroAtual && registroAtual.nome, ano]);
 
   // Carrega UM cronograma sob demanda (a tela inicial não precisa abrir nenhum).
@@ -10799,6 +11149,14 @@ function App({
       ...prev,
       [id]: cr
     });
+    if (!snapshotsRef.current[id]) snapshotsRef.current = {
+      ...snapshotsRef.current,
+      [id]: JSON.stringify(cr)
+    };
+    conhecidoRef.current = {
+      ...conhecidoRef.current,
+      [id]: c.atualizadoEm
+    };
     setSnapshots(prev => prev[id] ? prev : {
       ...prev,
       [id]: JSON.stringify(cr)
@@ -10848,7 +11206,7 @@ function App({
           const em = new Date().toISOString();
           setModelos(lista);
           setModelosAtualizadoEm(em);
-          kvSave(KV_MODELOS_KEY, {
+          if (!consulta) kvSave(KV_MODELOS_KEY, {
             modelos: lista,
             atualizadoEm: em
           }).catch(() => {});
@@ -10868,7 +11226,7 @@ function App({
         const vig = a && a.anoVigente || anoCalendarioAtual() + 1;
         ANO_VIGENTE = vig;
         setAnoVigenteCfg(vig);
-        if (!a || !a.anoVigente) kvSave(KV_ANOS_KEY, {
+        if ((!a || !a.anoVigente) && !consulta) kvSave(KV_ANOS_KEY, {
           ...(a || {}),
           anos: a && a.anos || {},
           anoVigente: vig,
@@ -10905,18 +11263,30 @@ function App({
         console.warn("Seções indisponíveis:", e.message);
       }
       let base = [];
-      try {
-        base = await kvCarregarLista(PREF_BASE, KV_BASE_CLIENTES_KEY);
-      } catch (e) {
-        console.warn("Base de clientes indisponível:", e.message);
+      // Link de consulta: NÃO baixa a base inteira — só os clientes deste cronograma (abaixo).
+      if (!consulta) {
+        try {
+          base = await kvCarregarLista(PREF_BASE, KV_BASE_CLIENTES_KEY);
+        } catch (e) {
+          console.warn("Base de clientes indisponível:", e.message);
+        }
       }
       try {
         if (consulta && clienteFixadoPorUrl) {
           const c0 = await kvLoad(kvKeyCliente(clienteFixadoPorUrl));
           if (c0) {
             const c = migrarParaVersoes(c0, anoTrabalhoPadrao());
-            const ids = new Set(anosDoCronograma(c).flatMap(a => c.versoes[a].clientesIds || []));
-            setBaseClientes(base.filter(x => ids.has(x.id)));
+            const ids = [...new Set(anosDoCronograma(c).flatMap(a => c.versoes[a].clientesIds || []))];
+            const dosIds = (await Promise.all(ids.map(id => kvLoad(PREF_BASE + id).catch(() => null)))).filter(Boolean);
+            // o cliente só vê razão social / documento / ID (sem gerência nem responsáveis internos)
+            setBaseClientes(dosIds.map(x => ({
+              id: x.id,
+              documento: x.documento,
+              tipoDocumento: x.tipoDocumento,
+              razaoSocial: x.razaoSocial,
+              codigo: x.codigo,
+              ativo: x.ativo
+            })));
             setClientesCache({
               [c.id]: c
             });
@@ -11043,7 +11413,7 @@ function App({
     const onKey = e => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        if (podeEditar && clienteAtual && !salvando) salvarCliente(clienteAtual);
+        if (podeEditar && clienteAtual && !salvando && atualSujo) salvarCliente(clienteAtual);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -11061,8 +11431,18 @@ function App({
     const lidos = base;
     base = base.map(r => migrarResumo(r, anoTrabalhoPadrao()));
     const nova = fn(base.slice());
-    await kvSincronizarLista(PREF_RESUMO, lidos, nova);
+    try {
+      await kvSincronizarLista(PREF_RESUMO, lidos, nova);
+    } catch (e) {
+      await new Promise(r => setTimeout(r, 800));
+      await kvSincronizarLista(PREF_RESUMO, lidos, nova);
+    } // 2ª tentativa
     setClientesResumo(nova);
+  }
+  // O índice é a base da trava "1 cliente por cronograma em cada ano" — falha NÃO pode passar em silêncio.
+  function avisarFalhaIndice(e) {
+    console.warn("Índice não atualizado:", e && e.message);
+    setErroBanco("⚠ O cronograma foi gravado, mas a lista de cronogramas (índice) não foi atualizada no banco" + (e && e.message ? " (" + e.message + ")" : "") + ". Recarregue a página antes de vincular clientes; se o aviso voltar, avise o administrador.");
   }
   async function atualizarBase(fn, msgOk) {
     try {
@@ -11118,6 +11498,18 @@ function App({
   function visaoAtualDe(id) {
     return cacheRef.current[id] ? visaoDoAno(cacheRef.current[id], ano) : null;
   }
+  // Operação em lote recusada pela trava: o cronograma volta a como estava ANTES dela (com as edições pendentes).
+  function voltarCache(id, reg) {
+    if (!reg) return;
+    cacheRef.current = {
+      ...cacheRef.current,
+      [id]: reg
+    };
+    setClientesCache(prev => ({
+      ...prev,
+      [id]: reg
+    }));
+  }
   async function carregarVisao(id) {
     const r = await carregarCronograma(id);
     return r ? visaoDoAno(cacheRef.current[id] || r, ano) : null;
@@ -11127,12 +11519,69 @@ function App({
   }
 
   // Salva com checagem de concorrência, gera o log de edições e atualiza o índice.
+  // TRAVAS CENTRAIS (revisão 29/09/2026) — valem para a tela, ações em massa, fila de aprovações e restaurar:
+  //  • ano encerrado (sem reabertura): a versão do ano não muda (campos do topo — nome, analista, arquivado — podem);
+  //  • aprovado: blocos/tarefas/clientes/Modelo não mudam enquanto continuar aprovado (volte o status para editar);
+  //  • aprovar exige a permissão "aprova";
+  //  • grava SÓ o ano salvo: edições pendentes de outros anos continuam pendentes (não vão junto, sem histórico);
+  //  • nada mudou → não grava (Ctrl+S à toa quebrava o "Desfazer" de lotes e gerava conflito falso).
+  // opcoes.recusas (lista): em vez de alertar, anota o motivo (para operações em lote).
   async function salvarCliente(cliente, opcoes) {
     const silencioso = opcoes && opcoes.silencioso;
+    const recusar = msg => {
+      if (opcoes && opcoes.recusas) opcoes.recusas.push(cliente.nome + " — " + msg);else ui.alert(msg);
+      return false;
+    };
     setSalvando(true);
     try {
-      const noServidor = await kvLoad(kvKeyCliente(cliente.id)).catch(() => null);
-      const conhecido = conhecidoServidor[cliente.id];
+      let noServidor;
+      try {
+        noServidor = await kvLoad(kvKeyCliente(cliente.id));
+      } catch (e) {
+        return recusar("não consegui ler o banco agora (" + e.message + ") — nada foi gravado; tente de novo em instantes.");
+      }
+      const servidorReg = noServidor ? migrarParaVersoes(noServidor, anoTrabalhoPadrao()) : null;
+      const anoV = cliente.ano || ano;
+      const snap = snapshotsRef.current[cliente.id];
+      const antesReg = snap ? migrarParaVersoes(JSON.parse(snap), anoTrabalhoPadrao()) : servidorReg;
+      const antes = antesReg ? visaoDoAno(antesReg, anoV) : null;
+      if (antesReg) {
+        const antesV = (antesReg.versoes || {})[anoV] || null;
+        const depoisV = gravarVisao(antesReg, anoV, cliente).versoes[anoV];
+        const semMeta = v => JSON.stringify({
+          ...(v || {}),
+          atualizadoEm: null,
+          acoes: null
+        });
+        if (JSON.stringify(gravarVisao(antesReg, anoV, cliente)) === JSON.stringify(antesReg)) {
+          if (!silencioso) showToast("Nada para salvar.");
+          return true;
+        }
+        if (antesV && semMeta(antesV) !== semMeta(depoisV) && anoTravado(anoV, antesV, anosEstado) && anoTravado(anoV, depoisV, anosEstado)) return recusar(anoV + " está encerrado — reabra o ano deste cronograma para alterar.");
+        const conteudo = v => JSON.stringify({
+          p: v.processos || [],
+          c: v.clientesIds || [],
+          m: v.modeloId || null
+        });
+        if (antes && antes.status === "aprovado" && cliente.status === "aprovado" && conteudo(antes) !== conteudo(cliente)) return recusar("cronograma aprovado — volte o status para uma etapa anterior para alterar.");
+        if (cliente.status === "aprovado" && (!antes || antes.status !== "aprovado") && !podeAprovar) return recusar("seu grupo de acesso não aprova cronogramas.");
+      }
+      const novosIds = (cliente.clientesIds || []).filter(id => !(antes && antes.clientesIds || []).includes(id));
+      if (novosIds.length) {
+        const oc = await clientesOcupadosNoAno(anoV);
+        const conf = novosIds.filter(id => oc[id] && oc[id].id !== cliente.id);
+        if (conf.length) return recusar("cliente(s) já em outro cronograma em " + anoV + ": " + conf.map(id => nomeClienteBase(id) + " → " + oc[id].nome).join(", ") + ". Tire-os deste cronograma para salvar.");
+      }
+      // A versão do BANCO também manda: aprovado/encerrado em outra sessão enquanto você editava não é desfeito por
+      // "Sobrescrever" (as travas acima olham a versão que você abriu).
+      if (servidorReg && servidorReg !== antesReg) {
+        const sv = (servidorReg.versoes || {})[anoV];
+        const antesStatus = antes ? antes.status : null;
+        if (sv && sv.status === "aprovado" && antesStatus !== "aprovado") return recusar("foi APROVADO em outra sessão enquanto você editava. Recarregue a página; para revisar, volte o status pela barra (com confirmação).");
+        const av = antesReg ? (antesReg.versoes || {})[anoV] : null;
+        if (sv && anoTravado(anoV, sv, anosEstado) && !(av && anoTravado(anoV, av, anosEstado)) && anoTravado(anoV, gravarVisao(servidorReg, anoV, cliente).versoes[anoV], anosEstado)) return recusar(anoV + " foi travado em outra sessão enquanto você editava — recarregue a página.");
+      }
+      const conhecido = conhecidoRef.current[cliente.id];
       if (noServidor && conhecido && noServidor.atualizadoEm && noServidor.atualizadoEm !== conhecido) {
         const ok = await ui.confirm('"' + cliente.nome + '" foi salvo em outra sessão às ' + fmtHora(noServidor.atualizadoEm) + ", depois da última vez que você carregou.\n\nSalvar agora vai SOBRESCREVER essas mudanças.", {
           titulo: "Conflito de edição",
@@ -11142,9 +11591,6 @@ function App({
         if (!ok) return false;
       }
       const agora = new Date().toISOString();
-      const anoV = cliente.ano || ano;
-      const antesReg = snapshots[cliente.id] ? migrarParaVersoes(JSON.parse(snapshots[cliente.id]), anoTrabalhoPadrao()) : null;
-      const antes = antesReg ? visaoDoAno(antesReg, anoV) : null;
       const mudancas = antes ? diffClientes(antes, cliente, nomeClienteBase) : [];
       const quem = usuario.nome || null;
       const visaoFinal = {
@@ -11161,7 +11607,8 @@ function App({
         const g = gerenciaDoCronograma(null, visaoFinal.clientesIds, basePorId);
         if (g) visaoFinal.gerenteId = g;
       }
-      const reg0 = cacheRef.current[cliente.id] || migrarParaVersoes(cliente, anoV);
+      // Base = o que está no BANCO (os outros anos ficam como estão lá); sem registro, o cache.
+      const reg0 = servidorReg || antesReg || cacheRef.current[cliente.id] || migrarParaVersoes(cliente, anoV);
       const paraSalvar = gravarVisao(reg0, anoV, visaoFinal);
       paraSalvar.atualizadoEm = agora;
       paraSalvar.versoes[anoV] = {
@@ -11169,13 +11616,31 @@ function App({
         atualizadoEm: agora
       };
       await kvSave(kvKeyCliente(cliente.id), paraSalvar);
+      // No cache, os outros anos que você editou e não salvou continuam pendentes.
+      const cacheAtual = cacheRef.current[cliente.id];
+      let cacheNovo = paraSalvar;
+      if (cacheAtual && antesReg) {
+        const versoes = {
+          ...paraSalvar.versoes
+        };
+        Object.keys(cacheAtual.versoes || {}).forEach(a => {
+          if (Number(a) === Number(anoV)) return;
+          const ed = cacheAtual.versoes[a],
+            orig = (antesReg.versoes || {})[a];
+          if (JSON.stringify(ed) !== JSON.stringify(orig)) versoes[a] = ed;
+        });
+        cacheNovo = {
+          ...paraSalvar,
+          versoes
+        };
+      }
       cacheRef.current = {
         ...cacheRef.current,
-        [cliente.id]: paraSalvar
+        [cliente.id]: cacheNovo
       };
       setClientesCache(prev => ({
         ...prev,
-        [cliente.id]: paraSalvar
+        [cliente.id]: cacheNovo
       }));
       marcarSalvo(paraSalvar);
       // Versão automática ao ENVIAR ao cliente e ao APROVAR (conteúdo igual = mesmo número, só mais um marco).
@@ -11184,7 +11649,7 @@ function App({
         aprovado: "aprovacao"
       }[visaoFinal.status] : null;
       if (tipoFoto) await registrarFoto(cliente.id, anoV, visaoFinal, tipoFoto).catch(e => console.warn("Não consegui gravar a versão:", e.message));
-      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar))).catch(() => {});
+      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar))).catch(avisarFalhaIndice);
       if (!silencioso) showToast('"' + paraSalvar.nome + '" salvo' + (mudancas.length ? " (" + mudancas.length + " alteração(ões) no histórico)." : "."));
       return true;
     } catch (e) {
@@ -11201,6 +11666,20 @@ function App({
     if (anoEncerrado(anoV, anosEstado)) {
       ui.alert(anoV + " está encerrado — crie o cronograma num ano aberto.");
       return;
+    }
+    if ((c.clientesIds || []).length) {
+      const oc = await clientesOcupadosNoAno(anoV);
+      const tirar = c.clientesIds.filter(id => oc[id]);
+      if (tirar.length) {
+        if (!(await ui.confirm("Estes clientes já estão em outro cronograma em " + anoV + " e vão ficar de fora:\n• " + tirar.map(id => nomeClienteBase(id) + " → " + oc[id].nome).join("\n• ") + "\n\nCriar o cronograma sem eles?", {
+          titulo: "Cliente já vinculado em " + anoV,
+          okLabel: "Criar sem eles"
+        }))) return;
+        c = {
+          ...c,
+          clientesIds: c.clientesIds.filter(id => !oc[id])
+        };
+      }
     }
     const {
       versoes: _v,
@@ -11228,11 +11707,12 @@ function App({
     navegar(linkCronograma(c.id, "parametrizar", anoV));
     try {
       await kvSave(kvKeyCliente(c.id), paraSalvar);
-      marcarSalvo(paraSalvar);
-      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar)));
     } catch (e) {
-      showToast("Cronograma criado localmente; falhou salvar: " + e.message);
+      showToast("Cronograma criado nesta tela, mas NÃO foi gravado no banco: " + e.message + " — clique Salvar para tentar de novo.");
+      return;
     }
+    marcarSalvo(paraSalvar);
+    await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar))).catch(avisarFalhaIndice);
   }
   function novoClienteBase(dados, modelo, extra) {
     return {
@@ -11317,7 +11797,31 @@ function App({
   // Excluir = mandar para a LIXEIRA (15 dias). Os CNPJs ficam livres para outro cronograma nesse meio-tempo.
   async function excluirCliente() {
     if (!clienteAtual) return;
+    if (!podeLixeira) {
+      ui.alert("Só quem tem a permissão \u201cLixeira\u201d (padrão: Gerente e Administrador/Diretor) exclui cronogramas.");
+      return;
+    }
     const alvo = clienteAtual;
+    let reg;
+    try {
+      const x = await kvLoad(kvKeyCliente(alvo.id));
+      reg = x ? migrarParaVersoes(x, anoTrabalhoPadrao()) : null;
+    } catch (e) {
+      ui.alert("Não consegui ler o banco agora (" + e.message + "). Tente de novo em instantes.");
+      return;
+    }
+    if (!reg) {
+      ui.alert("Não encontrei o cronograma salvo.");
+      return;
+    }
+    const aprovados = anosDoCronograma(reg).filter(a => (reg.versoes[a] || {}).status === "aprovado");
+    const encerrados = anosDoCronograma(reg).filter(a => anoTravado(a, reg.versoes[a], anosEstado));
+    if (aprovados.length || encerrados.length) {
+      ui.alert("Não dá para excluir \"" + alvo.nome + "\":" + (aprovados.length ? "\n• versão aprovada em " + aprovados.join(", ") + " — volte o status antes;" : "") + (encerrados.length ? "\n• ano encerrado: " + encerrados.join(", ") + " — o histórico desses anos precisa ficar." : "") + "\n\nSe só quiser tirar da lista, use Arquivar.", {
+        titulo: "Excluir cronograma"
+      });
+      return;
+    }
     const ok = await ui.confirm('Mandar o cronograma "' + alvo.nome + '" (todos os anos) para a LIXEIRA?\n\n• Fica lá por ' + LIXEIRA_DIAS + " dias; depois é apagado de vez, sozinho.\n• Gerente ou Administrador/Diretor podem restaurar nesse prazo.\n• Os clientes continuam na base e ficam livres para outro cronograma." + (sujos.has(alvo.id) ? "\n• As alterações ainda não salvas serão descartadas." : "") + "\n\nSe só quiser tirar da lista, use Arquivar.", {
       titulo: "Excluir cronograma",
       okLabel: "Mandar para a lixeira",
@@ -11341,7 +11845,7 @@ function App({
         atualizadoEm: agora
       };
       await kvSave(kvKeyCliente(alvo.id), paraSalvar);
-      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar)));
+      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar))).catch(avisarFalhaIndice);
       kvDelete(kvKeyPresenca(alvo.id)).catch(() => {});
       cacheRef.current = {
         ...cacheRef.current,
@@ -11358,6 +11862,11 @@ function App({
       showToast("Erro ao excluir: " + e.message);
     }
   }
+  // Cronograma de outra gerência (quem não é Administrador só mexe na própria).
+  function foraDaMinhaGerencia(reg) {
+    if (!usaGerencia || escopo === "all" || !reg) return false;
+    return gerenciaDoCronograma(reg.gerenteId, Object.values(reg.versoes || {}).flatMap(v => v && v.clientesIds || []), basePorId) !== escopo;
+  }
   async function restaurarDaLixeira(id) {
     if (!podeLixeira) {
       ui.alert("Seu grupo de acesso não restaura da lixeira.");
@@ -11367,6 +11876,10 @@ function App({
       const reg0 = await kvLoad(kvKeyCliente(id));
       if (!reg0 || !reg0.excluido) {
         ui.alert("Esse cronograma não está mais na lixeira.");
+        return;
+      }
+      if (foraDaMinhaGerencia(migrarParaVersoes(reg0, anoTrabalhoPadrao()))) {
+        ui.alert("Esse cronograma é de outra gerência — só a gerência dele (ou o Administrador) restaura.");
         return;
       }
       let reg = migrarParaVersoes(reg0, anoTrabalhoPadrao());
@@ -11414,7 +11927,7 @@ function App({
         atualizadoEm: agora
       };
       await kvSave(kvKeyCliente(id), paraSalvar);
-      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar)));
+      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar))).catch(avisarFalhaIndice);
       cacheRef.current = {
         ...cacheRef.current,
         [id]: paraSalvar
@@ -11440,6 +11953,13 @@ function App({
       delete n[id];
       return n;
     });
+    {
+      const n = {
+        ...snapshotsRef.current
+      };
+      delete n[id];
+      snapshotsRef.current = n;
+    }
     setSnapshots(prev => {
       const n = {
         ...prev
@@ -11454,6 +11974,14 @@ function App({
       ui.alert("Seu grupo de acesso não exclui definitivamente.");
       return;
     }
+    const deOutra = ids.filter(id => {
+      const r = clientesResumo.find(x => x.id === id);
+      return r && foraDaMinhaGerencia(r);
+    });
+    if (deOutra.length) {
+      ui.alert(deOutra.length + " cronograma(s) selecionado(s) são de outra gerência — só a gerência dele(s) (ou o Administrador) exclui.");
+      return;
+    }
     const nomes = ids.map(id => (clientesResumo.find(r => r.id === id) || {}).nome || id);
     if (!(await ui.confirm("Excluir DEFINITIVAMENTE " + ids.length + " cronograma(s), inclusive histórico e versões? Não dá para desfazer.\n\n• " + nomes.slice(0, 10).join("\n• ") + (nomes.length > 10 ? "\n… e mais " + (nomes.length - 10) : ""), {
       titulo: "Excluir definitivamente",
@@ -11461,7 +11989,7 @@ function App({
       perigo: true
     }))) return;
     for (const id of ids) await apagarDeVez(id, true);
-    await atualizarIndice(lista => lista.filter(c => !ids.includes(c.id))).catch(() => {});
+    await atualizarIndice(lista => lista.filter(c => !ids.includes(c.id))).catch(avisarFalhaIndice);
     showToast(ids.length + " cronograma(s) excluído(s) definitivamente.");
   }
   // Limpeza automática: o que está na lixeira há mais de 15 dias é apagado de vez (uma vez por abertura).
@@ -11472,8 +12000,20 @@ function App({
     const vencidos = clientesResumo.filter(r => r.excluido && diasRestantesLixeira(r.excluido) === 0).map(r => r.id);
     if (!vencidos.length) return;
     (async () => {
-      for (const id of vencidos) await apagarDeVez(id, true);
-      await atualizarIndice(lista => lista.filter(c => !vencidos.includes(c.id))).catch(() => {});
+      // Confere o REGISTRO antes de apagar: o índice pode estar desatualizado (ex.: restaurado com falha no índice).
+      const apagados = [],
+        corrigir = [];
+      for (const id of vencidos) {
+        const reg = await kvLoad(kvKeyCliente(id)).catch(() => undefined);
+        if (reg === undefined) continue; // não deu pra ler agora: tenta na próxima abertura
+        if (reg && !(reg.excluido && diasRestantesLixeira(reg.excluido) === 0)) {
+          corrigir.push(resumoDe(migrarParaVersoes(reg, anoTrabalhoPadrao())));
+          continue;
+        }
+        await apagarDeVez(id, true);
+        apagados.push(id);
+      }
+      if (apagados.length || corrigir.length) await atualizarIndice(lista => corrigir.reduce((l, x) => upsertResumo(l, x), lista.filter(c => !apagados.includes(c.id)))).catch(avisarFalhaIndice);
     })();
   }, [carregando]);
   function updateProcesso(processoId, novoProcesso) {
@@ -11485,7 +12025,7 @@ function App({
   async function atualizarBlocoDoModelo(processo, procModelo) {
     const r = atualizarBlocoPeloModelo(processo, procModelo);
     const lista = l => l.slice(0, 15).map(x => "• " + x).join("\n") + (l.length > 15 ? "\n• … e mais " + (l.length - 15) : "");
-    if (!(await ui.confirm('Atualizar o bloco "' + processo.nome + '" com as tarefas do Modelo "' + (modeloAtual ? modeloAtual.nome : "") + '"?\n\n' + (r.linhas.length ? "O que muda:\n" + lista(r.linhas) : "Só ajustes internos.") + "\n\nFicam como estão: nome do bloco e meses escolhidos neste cronograma." + (r.extras.length ? "\nTarefas só deste cronograma (continuam, no fim do bloco): " + r.extras.join(", ") + "." : "") + (r.perdidos.length ? "\n\n⚠ Serão perdidos:\n" + lista(r.perdidos) : "") + "\n\nAntes de trocar, o estado atual é guardado como versão (aba Histórico). A mudança só é gravada ao clicar Salvar.", {
+    if (!(await ui.confirm('Atualizar o bloco "' + processo.nome + '" com as tarefas do Modelo "' + (modeloAtual ? modeloAtual.nome : "") + '"?\n\n' + (r.linhas.length ? "O que muda:\n" + lista(r.linhas) : "Só ajustes internos.") + "\n\nFicam como estão: nome do bloco e meses escolhidos neste cronograma." + (r.extras.length ? "\nTarefas criadas só neste cronograma (continuam, no fim do bloco): " + r.extras.join(", ") + "." : "") + (r.perdidos.length ? "\n\n⚠ Serão perdidos:\n" + lista(r.perdidos) : "") + "\n\nAntes de trocar, o estado atual é guardado como versão (aba Histórico). A mudança só é gravada ao clicar Salvar.", {
       titulo: "Atualizar bloco pelo Modelo",
       okLabel: "Atualizar bloco"
     }))) return;
@@ -11532,10 +12072,31 @@ function App({
       }]
     };
   }
-  function pedirMudancaStatus(alvoId) {
+  async function pedirMudancaStatus(alvoId) {
     if (!clienteAtual || alvoId === clienteAtual.status) return;
     if (alvoId === "aprovado" && !podeAprovar) {
       ui.alert("Seu grupo de acesso não aprova cronogramas.");
+      return;
+    }
+    // Tirar da aprovação (decisão do usuário 29/09: o analista pode — cliente pede revisão durante o ano), com
+    // confirmação em 2 passos; o motivo vai para o histórico.
+    if (clienteAtual.status === "aprovado") {
+      const alvo = STATUS_FLOW.find(s => s.id === alvoId);
+      if (!(await ui.confirm('"' + clienteAtual.nome + '" (' + ano + ') está APROVADO.\n\nVoltar para "' + alvo.label + '" destrava a edição, e o cronograma terá de passar de novo pela aprovação.\n\nContinuar?', {
+        titulo: "Tirar da aprovação (1 de 2)",
+        okLabel: "Continuar"
+      }))) return;
+      const motivo = await ui.prompt('Confirme a volta para "' + alvo.label + '". Motivo (opcional — ex.: cliente pediu revisão; vai para o histórico):', "", {
+        titulo: "Tirar da aprovação (2 de 2)",
+        okLabel: "Voltar para " + alvo.label,
+        perigo: true
+      });
+      if (motivo === null) return;
+      const novo = comNovoStatus(clienteAtual, alvoId, motivo.trim() || "revisão depois da aprovação");
+      gravarNoCache(novo);
+      if (await salvarCliente(novo, {
+        silencioso: true
+      })) showToast('Status voltou para "' + alvo.label + '" — edição destravada.');
       return;
     }
     setModalStatus({
@@ -11554,8 +12115,20 @@ function App({
     if (ok) showToast('Status atualizado para "' + alvo.label + '" e salvo.');
   }
   async function aprovarDaFila(linha) {
+    if (!podeAprovar) {
+      ui.alert("Seu grupo de acesso não aprova cronogramas.");
+      return;
+    }
+    if (sujos.has(linha.id)) {
+      ui.alert('"' + linha.nome + '" tem alterações não salvas abertas nesta sessão. Abra o cronograma e salve (ou descarte) antes de aprovar.');
+      return;
+    }
     const c = await carregarVisao(linha.id);
     if (!c) return;
+    if (anoTravado(ano, (cacheRef.current[c.id].versoes || {})[ano], anosEstado)) {
+      ui.alert(ano + " está encerrado — não dá para aprovar.");
+      return;
+    }
     const n = alertasDoAno(c, ano).length;
     const ok = await ui.confirm('Aprovar "' + c.nome + '"?' + (n ? "\n\n⚠ Este cronograma tem " + n + " alerta(s) em " + ano + ". Revise antes, se for o caso." : "") + "\n\nA aprovação trava a edição e marca o cronograma como pronto para gerar tarefas.", {
       titulo: "Aprovar cronograma",
@@ -11569,8 +12142,20 @@ function App({
     })) showToast('"' + c.nome + '" aprovado.');
   }
   async function devolverDaFila(linha) {
+    if (!podeAprovar) {
+      ui.alert("Seu grupo de acesso não devolve cronogramas.");
+      return;
+    }
+    if (sujos.has(linha.id)) {
+      ui.alert('"' + linha.nome + '" tem alterações não salvas abertas nesta sessão. Abra o cronograma e salve (ou descarte) antes.');
+      return;
+    }
     const c = await carregarVisao(linha.id);
     if (!c) return;
+    if (anoTravado(ano, (cacheRef.current[c.id].versoes || {})[ano], anosEstado)) {
+      ui.alert(ano + " está encerrado — não dá para devolver.");
+      return;
+    }
     const motivo = await ui.prompt('Devolver "' + c.nome + '" para "Em desenvolvimento". Motivo (opcional, vai pro histórico):', "", {
       titulo: "Devolver cronograma",
       okLabel: "Devolver"
@@ -11602,6 +12187,16 @@ function App({
       return false;
     }
     if (tipo === "abrirAno") return abrirAnoPara(ids);
+    if (["status", "modelo"].includes(tipo) && anoEncerrado(ano, anosEstado)) {
+      ui.alert(ano + " está encerrado — não dá para mudar status nem aplicar Modelo. Reabra o ano (ou a versão do cronograma) antes.");
+      return false;
+    }
+    const recusas = [];
+    const avisarRecusas = () => {
+      if (recusas.length) ui.alert("Ficaram de fora (" + recusas.length + "):\n• " + recusas.slice(0, 15).join("\n• ") + (recusas.length > 15 ? "\n… e mais " + (recusas.length - 15) : ""), {
+        titulo: "Alguns não foram alterados"
+      });
+    };
     if (tipo === "status") {
       const opcoes = STATUS_FLOW.filter(s => s.id !== "aprovado" || podeAprovar).map((s, i) => i + 1 + " = " + s.label).join("\n");
       const r = await ui.prompt("Mudar o status de " + ids.length + " cronograma(s) para qual etapa?\n\n" + opcoes + avisoPendentes, "", {
@@ -11618,18 +12213,27 @@ function App({
       if (!(await ui.confirm("Mudar " + ids.length + " cronograma(s) para \"" + alvo.label + "\"?", {
         okLabel: "Mudar status"
       }))) return false;
+      const aprovadosSel = alvo.id !== "aprovado" ? linhasCarteira.filter(l => ids.includes(l.id) && l.status === "aprovado") : [];
+      if (aprovadosSel.length && !(await ui.confirm(aprovadosSel.length + " deles estão APROVADOS e vão ser destravados (voltam a passar pela aprovação):\n• " + aprovadosSel.slice(0, 10).map(l => l.nome).join("\n• ") + (aprovadosSel.length > 10 ? "\n• … e mais " + (aprovadosSel.length - 10) : "") + "\n\nConfirmar?", {
+        titulo: "Tirar da aprovação (2 de 2)",
+        okLabel: "Confirmar",
+        perigo: true
+      }))) return false;
       const crs = await carregarVisoes(ids);
       let n = 0;
       for (const c0 of crs) {
         const c = visaoAtualDe(c0.id) || c0;
         if (c.status === alvo.id) continue;
+        const antesOp = cacheRef.current[c.id];
         const novo = comNovoStatus(c, alvo.id);
         gravarNoCache(novo);
         if (await salvarCliente(novo, {
-          silencioso: true
-        })) n++;
+          silencioso: true,
+          recusas
+        })) n++;else voltarCache(c.id, antesOp);
       }
       showToast(n + " cronograma(s) movido(s) para \"" + alvo.label + "\".");
+      avisarRecusas();
       return true;
     }
     if (tipo === "analista") {
@@ -11642,16 +12246,19 @@ function App({
       let n = 0;
       for (const c0 of crs) {
         const c = visaoAtualDe(c0.id) || c0;
+        const antesOp = cacheRef.current[c.id];
         const novo = {
           ...c,
           analista: nome.trim()
         };
         gravarNoCache(novo);
         if (await salvarCliente(novo, {
-          silencioso: true
-        })) n++;
+          silencioso: true,
+          recusas
+        })) n++;else voltarCache(c.id, antesOp);
       }
       showToast("Analista definido em " + n + " cronograma(s).");
+      avisarRecusas();
       return true;
     }
     if (tipo === "arquivar") {
@@ -11663,16 +12270,19 @@ function App({
       let n = 0;
       for (const c0 of crs) {
         const c = visaoAtualDe(c0.id) || c0;
+        const antesOp = cacheRef.current[c.id];
         const novo = {
           ...c,
           arquivado: arquivar
         };
         gravarNoCache(novo);
         if (await salvarCliente(novo, {
-          silencioso: true
-        })) n++;
+          silencioso: true,
+          recusas
+        })) n++;else voltarCache(c.id, antesOp);
       }
       showToast(n + " cronograma(s) " + (arquivar ? "arquivado(s)." : "desarquivado(s)."));
+      avisarRecusas();
       return true;
     }
     if (tipo === "modelo") {
@@ -11687,6 +12297,12 @@ function App({
         if (c.status === "aprovado") return {
           c,
           motivo: "aprovado (travado)"
+        };
+        if (anoTravado(ano, (cacheRef.current[c.id] || {
+          versoes: {}
+        }).versoes[ano], anosEstado)) return {
+          c,
+          motivo: "ano encerrado"
         };
         return {
           c,
@@ -11729,10 +12345,14 @@ function App({
                 quem: usuario.nome || null
               }]
             };
+            const antesOp = cacheRef.current[p.c.id];
             gravarNoCache(novo);
-            if (await salvarCliente(novo, {
-              silencioso: true
-            })) {
+            const okSalvo = await salvarCliente(novo, {
+              silencioso: true,
+              recusas
+            });
+            if (!okSalvo) voltarCache(p.c.id, antesOp);
+            if (okSalvo) {
               n++;
               if (f) itensLote.push({
                 cronogramaId: p.c.id,
@@ -11751,6 +12371,7 @@ function App({
             itens: itensLote
           });
           showToast("Modelo atualizado aplicado em " + n + " cronograma(s). Dá para desfazer em Modelos → Aplicações recentes.");
+          avisarRecusas();
         }
       });
       return false;
@@ -11764,23 +12385,71 @@ function App({
       ui.alert(ano + " está encerrado — não dá pra abrir versão nele.");
       return false;
     }
-    const regs = await carregarVarios(ids);
-    const alvos = regs.map(r => cacheRef.current[r.id] || r).filter(r => !(r.versoes || {})[ano] && anosDoCronograma(r).length);
+    // Parte do que está NO BANCO (não da memória): não leva edições pendentes de outros anos nem passa por cima de
+    // gravação de outra sessão. Cronograma com alteração não salva aqui fica de fora (salve antes).
+    const regs0 = await carregarVarios(ids);
+    const deFora = regs0.filter(r => sujos.has(r.id)).map(r => r.nome + " (alterações não salvas)");
+    const regs = [];
+    for (const r of regs0.filter(r => !sujos.has(r.id))) {
+      const x = await kvLoad(kvKeyCliente(r.id)).catch(() => undefined);
+      if (x === undefined) {
+        deFora.push(r.nome + " (não consegui ler do banco)");
+        continue;
+      }
+      if (x && !x.excluido) regs.push(migrarParaVersoes(x, anoTrabalhoPadrao()));
+    }
+    const alvos = regs.filter(r => !(r.versoes || {})[ano] && anosDoCronograma(r).length);
     const jaTem = regs.length - alvos.length;
     if (!alvos.length) {
-      ui.alert("Todos os selecionados já têm versão " + ano + ".");
+      ui.alert((jaTem ? "Os selecionados já têm versão " + ano + "." : "Nada para abrir.") + (deFora.length ? "\n\nFicaram de fora: " + deFora.join(", ") + "." : ""));
       return false;
     }
-    const ok = await ui.confirm("Abrir a versão " + ano + " de " + alvos.length + " cronograma(s)?\n\nCada um copia a versão anterior mais recente (as regras que valiam em dezembro), com os mesmos clientes, e começa \"Em desenvolvimento\" — passa de novo pela aprovação." + (jaTem ? "\n\n" + jaTem + " já têm versão " + ano + " e ficam como estão." : ""), {
+    // Cliente que já está em OUTRO cronograma em {ano}, ou inativo na base, não é copiado (item 3 da revisão).
+    const oc = await clientesOcupadosNoAno(ano);
+    const planos = alvos.map(r => {
+      const {
+        cronograma
+      } = abrirAno(r, ano, usuario.nome || null);
+      const ids = cronograma.versoes[ano].clientesIds || [];
+      const fora = ids.filter(id => oc[id] && oc[id].id !== r.id || basePorId[id] && basePorId[id].ativo === false);
+      const ficam = ids.filter(id => !fora.includes(id));
+      ficam.forEach(id => {
+        oc[id] = {
+          id: r.id,
+          nome: r.nome
+        };
+      });
+      const motivo = id => oc[id] && oc[id].id !== r.id ? "já em " + oc[id].nome : "inativo na base";
+      if (fora.length) {
+        const v = cronograma.versoes[ano];
+        cronograma.versoes[ano] = {
+          ...v,
+          clientesIds: ficam,
+          acoes: [...(v.acoes || []), {
+            tipo: "edicao",
+            descricao: "Ao abrir " + ano + ", ficaram de fora: " + fora.map(id => nomeClienteBase(id) + " (" + motivo(id) + ")").join(", ") + ".",
+            em: new Date().toISOString(),
+            quem: usuario.nome || null
+          }]
+        };
+      }
+      return {
+        r,
+        cronograma,
+        foraTxt: fora.map(id => r.nome + ": " + nomeClienteBase(id) + " (" + motivo(id) + ")")
+      };
+    });
+    const foraTodos = planos.flatMap(p => p.foraTxt);
+    const ok = await ui.confirm("Abrir a versão " + ano + " de " + alvos.length + " cronograma(s)?\n\nCada um copia a versão anterior mais recente (as regras que valiam em dezembro), com os mesmos clientes, e começa \"Em desenvolvimento\" — passa de novo pela aprovação." + (foraTodos.length ? "\n\n⚠ Clientes que NÃO serão copiados (" + foraTodos.length + "):\n• " + foraTodos.slice(0, 12).join("\n• ") + (foraTodos.length > 12 ? "\n• … e mais " + (foraTodos.length - 12) : "") : "") + (jaTem ? "\n\n" + jaTem + " já têm versão " + ano + " e ficam como estão." : "") + (deFora.length ? "\n\nFicam de fora: " + deFora.join(", ") + "." : ""), {
       titulo: "Abrir " + ano,
       okLabel: "Abrir " + ano
     });
     if (!ok) return false;
     let n = 0;
-    for (const r of alvos) {
-      const {
-        cronograma
-      } = abrirAno(r, ano, usuario.nome || null);
+    for (const {
+      r,
+      cronograma
+    } of planos) {
       const agora = new Date().toISOString();
       const paraSalvar = {
         ...cronograma,
@@ -11788,20 +12457,21 @@ function App({
       };
       try {
         await kvSave(kvKeyCliente(r.id), paraSalvar);
-        cacheRef.current = {
-          ...cacheRef.current,
-          [r.id]: paraSalvar
-        };
-        setClientesCache(prev => ({
-          ...prev,
-          [r.id]: paraSalvar
-        }));
-        marcarSalvo(paraSalvar);
-        await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar)));
-        n++;
       } catch (e) {
         showToast("Falhou abrir " + ano + " de \"" + r.nome + "\": " + e.message);
+        continue;
       }
+      cacheRef.current = {
+        ...cacheRef.current,
+        [r.id]: paraSalvar
+      };
+      setClientesCache(prev => ({
+        ...prev,
+        [r.id]: paraSalvar
+      }));
+      marcarSalvo(paraSalvar);
+      n++;
+      await atualizarIndice(lista => upsertResumo(lista, resumoDe(paraSalvar))).catch(avisarFalhaIndice);
     }
     showToast("Versão " + ano + " aberta em " + n + " cronograma(s).");
     return true;
@@ -11863,22 +12533,22 @@ function App({
 
   // Estado dos anos: relê do servidor, aplica a mudança e grava (como o índice).
   async function salvarAnosEstado(fn) {
-    let atual;
-    try {
-      const s = await kvLoad(KV_ANOS_KEY);
-      atual = s && s.anos || {};
-    } catch (e) {
-      atual = anosEstado;
-    }
+    const s = await kvLoad(KV_ANOS_KEY); // sem conseguir ler, NÃO grava (senão apagava o histórico do vigente)
     const novo = fn({
-      ...atual
+      ...(s && s.anos || {})
     });
+    const vig = s && s.anoVigente || anoVigente(); // o vigente do banco (outra aba pode ter mudado)
     await kvSave(KV_ANOS_KEY, {
+      ...(s || {}),
       anos: novo,
-      anoVigente: anoVigente(),
+      anoVigente: vig,
       atualizadoEm: new Date().toISOString()
     });
     setAnosEstado(novo);
+    if (vig !== anoVigente()) {
+      ANO_VIGENTE = vig;
+      setAnoVigenteCfg(vig);
+    }
   }
   // Troca do ano vigente (Gerente/Administrador).
   async function mudarAnoVigente(sugestao) {
@@ -11897,15 +12567,11 @@ function App({
       return;
     }
     try {
-      let atual;
-      try {
-        atual = await kvLoad(KV_ANOS_KEY);
-      } catch (e) {
-        atual = null;
-      }
+      const atual = await kvLoad(KV_ANOS_KEY); // sem conseguir ler, NÃO grava (podia desfazer um encerramento de outra sessão)
+      if (atual && atual.anos) setAnosEstado(atual.anos);
       await kvSave(KV_ANOS_KEY, {
         ...(atual || {}),
-        anos: atual && atual.anos || anosEstado,
+        anos: atual && atual.anos || {},
         anoVigente: novo,
         atualizadoEm: new Date().toISOString(),
         historicoVigente: [...(atual && atual.historicoVigente || []), {
@@ -12100,7 +12766,17 @@ function App({
       itensLote = [];
     let nTarefas = 0;
     for (const r0 of regs) {
-      const r = cacheRef.current[r0.id] || r0;
+      if (sujos.has(r0.id)) {
+        pulados.push(r0.nome);
+        continue;
+      }
+      // Relê do banco: a cópia da memória pode estar velha (outra sessão salvou depois) — não passar por cima.
+      const x = await kvLoad(kvKeyCliente(r0.id)).catch(() => undefined);
+      if (!x) {
+        if (x === undefined) pulados.push(r0.nome + " (não consegui ler do banco)");
+        continue;
+      }
+      const r = migrarParaVersoes(x, anoTrabalhoPadrao());
       const versoes = {
         ...(r.versoes || {})
       };
@@ -12167,14 +12843,14 @@ function App({
         showToast('Falhou renomear em "' + r.nome + '": ' + e.message);
       }
     }
-    if (resumos.length) await atualizarIndice(lista => resumos.reduce((l, x) => upsertResumo(l, x), lista)).catch(() => {});
+    if (resumos.length) await atualizarIndice(lista => resumos.reduce((l, x) => upsertResumo(l, x), lista)).catch(avisarFalhaIndice);
     if (itensLote.length) await gravarLote({
       tipo: "renomear",
       descricao: "Renomear tarefa: " + renomes.map(x => "\"" + x.de + "\" → \"" + x.para + "\"").join("; "),
       itens: itensLote
     });
     showToast(nTarefas + " tarefa(s) renomeada(s) em " + resumos.length + " cronograma(s). Dá para desfazer em Modelos → Aplicações recentes.");
-    if (pulados.length) ui.alert("Ficaram de fora por terem alterações não salvas (salve e rode de novo, ou renomeie à mão):\n" + pulados.join(", "), {
+    if (pulados.length) ui.alert("Ficaram de fora (alterações não salvas ou falha de leitura — salve e rode de novo, ou renomeie à mão):\n" + pulados.join(", "), {
       titulo: "Renomear nos cronogramas"
     });
   }
@@ -12473,8 +13149,16 @@ function App({
           pulados.push(it.nome + " (alterado depois)");
           continue;
         }
-        const fotos = await carregarFotos(it.cronogramaId);
         let r = migrarParaVersoes(reg0, anoTrabalhoPadrao());
+        const bloqueio = it.anos.map(a => {
+          const v = (r.versoes || {})[a.ano];
+          return !v ? null : anoTravado(a.ano, v, anosEstado) ? a.ano + " encerrado" : v.status === "aprovado" ? "aprovado em " + a.ano : null;
+        }).find(Boolean);
+        if (bloqueio) {
+          pulados.push(it.nome + " (" + bloqueio + ")");
+          continue;
+        }
+        const fotos = await carregarFotos(it.cronogramaId);
         const agora = new Date().toISOString();
         it.anos.forEach(a => {
           const f = fotos.find(x => x.id === a.fotoId),
@@ -12510,7 +13194,7 @@ function App({
         pulados.push(it.nome + " (" + e.message + ")");
       }
     }
-    if (resumos.length) await atualizarIndice(lista => resumos.reduce((l, x) => upsertResumo(l, x), lista)).catch(() => {});
+    if (resumos.length) await atualizarIndice(lista => resumos.reduce((l, x) => upsertResumo(l, x), lista)).catch(avisarFalhaIndice);
     try {
       const atual = await kvLoad(KV_LOTES_KEY).catch(() => null);
       const lista = (atual && atual.lotes || lotes).map(l => l.id === lote.id ? {
@@ -12540,7 +13224,7 @@ function App({
   function setAba(a) {
     if (clienteId) navegar(linkCronograma(clienteId, a));
   }
-  const conflitos = useMemo(() => clienteAtual ? detectarConflitos(clienteAtual, ano, mesReferencia, soSinergy) : [], [clienteAtual, ano, mesReferencia, soSinergy]);
+  const conflitos = useMemo(() => clienteAtual ? detectarConflitos(clienteAtual, ano, mesReferencia, soSinergy, registroAtual) : [], [clienteAtual, ano, mesReferencia, soSinergy, registroAtual]);
   const alertasAtual = useMemo(() => clienteAtual ? alertasDoAno(clienteAtual, ano) : [], [clienteAtual, ano]);
   const vinculadosAtual = clienteAtual ? (clienteAtual.clientesIds || []).map(id => basePorId[id]).filter(Boolean) : [];
   // Gerente/coordenador/analista vindos da base de clientes (o mais frequente entre os CNPJs vinculados).
@@ -13072,6 +13756,15 @@ function App({
     }
   }, carregandoCrono ? "Abrindo o cronograma…" : /*#__PURE__*/React.createElement(React.Fragment, null, "Cronograma n\xE3o encontrado. ", /*#__PURE__*/React.createElement("a", {
     href: linkTela("inicio")
+  }, "Voltar para a lista"))) : semAcessoGerencia ? /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      marginTop: 24
+    }
+  }, /*#__PURE__*/React.createElement("h3", null, "Sem acesso a este cronograma"), /*#__PURE__*/React.createElement("p", {
+    className: "muted"
+  }, "Ele \xE9 de outra ger\xEAncia. ", /*#__PURE__*/React.createElement("a", {
+    href: linkTela("inicio")
   }, "Voltar para a lista"))) : registroAtual.excluido ? /*#__PURE__*/React.createElement("div", {
     className: "card",
     style: {
@@ -13169,7 +13862,7 @@ function App({
     title: "Ir para " + (ano + 1) + " (lá você pode abrir a versão)"
   }, "+ ", ano + 1)), /*#__PURE__*/React.createElement("div", {
     className: "sub"
-  }, usaGerencia && /*#__PURE__*/React.createElement(React.Fragment, null, "Ger\xEAncia: ", gerAtual ? /*#__PURE__*/React.createElement("strong", {
+  }, usaGerencia && !consulta && /*#__PURE__*/React.createElement(React.Fragment, null, "Ger\xEAncia: ", gerAtual ? /*#__PURE__*/React.createElement("strong", {
     style: {
       fontWeight: 600
     }
@@ -13189,7 +13882,7 @@ function App({
     value: g.id
   }, g.nome)))), gerenciasDosClientes.length > 1 && /*#__PURE__*/React.createElement("span", {
     className: "alerta"
-  }, " \u26A0 clientes de ger\xEAncias diferentes"), " · "), "Modelo: ", clienteAtual.modeloBase, " \xB7 ", vinculadosAtual.length, " CNPJ(s) \xB7", " ", /*#__PURE__*/React.createElement("label", null, "Analista: ", /*#__PURE__*/React.createElement("input", {
+  }, " \u26A0 clientes de ger\xEAncias diferentes"), " · "), !consulta && /*#__PURE__*/React.createElement(React.Fragment, null, "Modelo: ", clienteAtual.modeloBase, " \xB7 "), vinculadosAtual.length, " CNPJ(s)", !consulta && /*#__PURE__*/React.createElement(React.Fragment, null, " · ", /*#__PURE__*/React.createElement("label", null, "Analista: ", /*#__PURE__*/React.createElement("input", {
     type: "text",
     list: "lista-analistas",
     value: clienteAtual.analista || "",
@@ -13203,17 +13896,17 @@ function App({
       padding: "2px 6px"
     },
     "aria-label": "Analista respons\xE1vel"
-  })), respBase.analista && respBase.analista !== (clienteAtual.analista || "") && podeEditar && /*#__PURE__*/React.createElement(React.Fragment, null, " ", /*#__PURE__*/React.createElement("button", {
+  }))), respBase.analista && respBase.analista !== (clienteAtual.analista || "") && podeEditar && /*#__PURE__*/React.createElement(React.Fragment, null, " ", /*#__PURE__*/React.createElement("button", {
     className: "link-btn",
     onClick: () => updateClienteAtual({
       analista: respBase.analista
     }),
     title: "Analista cadastrado na base de clientes para os CNPJs deste cronograma"
-  }, "usar \"", respBase.analista, "\" (da base)")), respBase.coordenador && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 Coordenador: ", /*#__PURE__*/React.createElement("strong", {
+  }, "usar \"", respBase.analista, "\" (da base)")), respBase.coordenador && !consulta && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 Coordenador: ", /*#__PURE__*/React.createElement("strong", {
     style: {
       fontWeight: 600
     }
-  }, respBase.coordenador)), !usaGerencia && respBase.gerente && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 Gerente: ", /*#__PURE__*/React.createElement("strong", {
+  }, respBase.coordenador)), !usaGerencia && !consulta && respBase.gerente && /*#__PURE__*/React.createElement(React.Fragment, null, " \xB7 Gerente: ", /*#__PURE__*/React.createElement("strong", {
     style: {
       fontWeight: 600
     }
@@ -13230,10 +13923,10 @@ function App({
   }, "Duplicar"), " · ", /*#__PURE__*/React.createElement("button", {
     className: "link-btn",
     onClick: alternarArquivado
-  }, clienteAtual.arquivado ? "Desarquivar" : "Arquivar"), " · ", /*#__PURE__*/React.createElement("button", {
+  }, clienteAtual.arquivado ? "Desarquivar" : "Arquivar"), podeLixeira && /*#__PURE__*/React.createElement(React.Fragment, null, " · ", /*#__PURE__*/React.createElement("button", {
     className: "link-btn perigo",
     onClick: excluirCliente
-  }, "Excluir")))), /*#__PURE__*/React.createElement("div", {
+  }, "Excluir"))))), /*#__PURE__*/React.createElement("div", {
     className: "toolbar"
   }, /*#__PURE__*/React.createElement("button", {
     className: "btn " + (alertasAtual.length ? "btn-alerta" : "btn-outline"),
@@ -13243,7 +13936,7 @@ function App({
     className: "btn btn-outline",
     title: "Para enviar ao cliente validar: sem modelo base, status nem respons\xE1veis internos",
     onClick: () => exportarExcel(clienteAtual, ano, vinculadosAtual, "cliente").catch(e => showToast("Erro ao gerar o Excel: " + e.message))
-  }, "\u2B07 Excel cliente"), /*#__PURE__*/React.createElement("button", {
+  }, "\u2B07 Excel cliente"), !consulta && /*#__PURE__*/React.createElement("button", {
     className: "btn btn-outline",
     title: "Uso interno: com modelo base, status, data de gera\xE7\xE3o e gerente/coordenador/analista",
     onClick: () => exportarExcel(clienteAtual, ano, vinculadosAtual, "interno").catch(e => showToast("Erro ao gerar o Excel: " + e.message))
@@ -13252,7 +13945,7 @@ function App({
     podeMudar: podeEditar && !travado,
     podeAprovar: podeAprovar,
     onPedir: pedirMudancaStatus,
-    onHistorico: () => setAba("historico")
+    onHistorico: consulta ? null : () => setAba("historico")
   }), /*#__PURE__*/React.createElement("div", {
     className: "abas",
     role: "tablist"
@@ -13375,7 +14068,7 @@ function App({
     soSinergy: soSinergy,
     onSoSinergy: setSoSinergy
   }), processosAtivos.map(processo => /*#__PURE__*/React.createElement(ProcessoCard, {
-    key: clienteAtual.id + ":" + processo.id,
+    key: clienteAtual.id + ":" + ano + ":" + processo.id,
     processo: processo,
     todosProcessos: clienteAtual.processos,
     mesReferencia: mesReferencia,
@@ -13399,6 +14092,7 @@ function App({
     className: "muted"
   }, "Nenhum processo ativo \u2014 ative no \xEDndice ao lado."))), aba === "calendario" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(CalendarioMensal, {
     cliente: clienteAtual,
+    registro: registroAtual,
     ano: ano,
     mes: mesReferencia,
     soSinergy: soSinergy,
@@ -13417,13 +14111,14 @@ function App({
     key: clienteAtual.id,
     cliente: clienteAtual,
     vinculoDe: vinculoDe,
+    ocultarResponsaveis: consulta,
     base: usaGerencia && gerAtual ? baseClientesG.filter(c => c.gerenteId === gerAtual || (clienteAtual.clientesIds || []).includes(c.id)) : escopo === "all" ? baseClientesG : baseVisivel.concat(baseClientesG.filter(c => (clienteAtual.clientesIds || []).includes(c.id) && c.gerenteId !== escopo)),
     ano: ano,
     mesReferencia: mesReferencia,
     somenteLeitura: somenteLeitura,
     onEditar: () => setAba("parametrizar"),
     onAlterarVinculos: vincularComGerencia
-  }), aba === "historico" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(VersoesCard, {
+  }), aba === "historico" && !consulta && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(VersoesCard, {
     fotos: fotosAtual,
     ano: ano,
     podeEditar: podeEditar && !travado,
@@ -13465,6 +14160,7 @@ function App({
     modelos: modelosVisiveis.filter(m => m.ativo !== false),
     base: baseVisivel.filter(c => c.ativo !== false),
     vinculoDe: vinculoDe,
+    vinculoDoAno: vinculoDoAno,
     gerentes: gerentes,
     escopo: escopo,
     ano: ano,
