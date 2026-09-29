@@ -398,7 +398,7 @@
       const s = localStorage.getItem(LOCAL_PREFIXO + key);
       return s == null ? null : JSON.parse(s);
     }
-    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?id=eq." + encodeURIComponent(key) + "&select=value", { headers: KV_HEADERS });
+    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?id=eq." + encodeURIComponent(key) + "&select=value", { headers: KV_HEADERS, cache: "no-store" });
     if(!res.ok) throw await kvErro(res, "carregar");
     const rows = await res.json();
     if(!rows.length || rows[0].value == null) return null;
@@ -446,7 +446,7 @@
       return { usuarios: ler("sinergy_auth_v1") || [], grupos: ler("sinergy_groups_v1") || [] };
     }
     // SÓ LEITURA da tabela kv do painel.
-    const res = await fetch(SUPABASE_URL + "/rest/v1/kv?id=in.(sinergy_auth_v1,sinergy_groups_v1)&select=id,value", { headers: KV_HEADERS });
+    const res = await fetch(SUPABASE_URL + "/rest/v1/kv?id=in.(sinergy_auth_v1,sinergy_groups_v1)&select=id,value", { headers: KV_HEADERS, cache: "no-store" });
     if(!res.ok) throw await kvErro(res, "carregar os usuários do painel");
     const por = Object.fromEntries((await res.json()).map(r => [r.id, parseTalvezDuplo(r.value)]));
     return { usuarios: Array.isArray(por.sinergy_auth_v1) ? por.sinergy_auth_v1 : [], grupos: Array.isArray(por.sinergy_groups_v1) ? por.sinergy_groups_v1 : [] };
@@ -477,7 +477,7 @@
 
   // Backup do BANCO (modo supabase): baixa tudo da tabela cronograma_kv no mesmo formato do backup local.
   async function lerTudoDoBanco(){
-    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?select=id,value&limit=100000", { headers: KV_HEADERS });
+    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?select=id,value&limit=100000", { headers: KV_HEADERS, cache: "no-store" });
     if(!res.ok) throw await kvErro(res, "ler o banco");
     const dados = {};
     (await res.json()).forEach(r => { if(!r.id.includes("_presenca_")) dados[r.id] = r.value; });
@@ -506,7 +506,7 @@
       }
       return out;
     }
-    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?id=like." + encodeURIComponent(prefixo) + "*&select=id,value&limit=100000", { headers: KV_HEADERS });
+    const res = await fetch(SUPABASE_URL + "/rest/v1/" + KV_TABELA + "?id=like." + encodeURIComponent(prefixo) + "*&select=id,value&limit=100000", { headers: KV_HEADERS, cache: "no-store" });
     if(!res.ok) throw await kvErro(res, "listar");
     return (await res.json()).map(r => ({ id: r.id, value: typeof r.value === "string" ? parseTalvezDuplo(r.value) : r.value }));
   }
@@ -1676,6 +1676,7 @@ function soDigitos(s){ return String(s == null ? "" : s).replace(/\D/g, ""); }
 // Responsáveis por cliente (importáveis pela planilha) e campos atualizáveis na importação.
 const RESPONSAVEIS = [["gerente","Gerente"], ["coordenador","Coordenador"], ["analista","Analista responsável"]];
 const CAMPOS_CLIENTE = [["razaoSocial","Razão social"], ["codigo","ID"], ["grupo","Grupo"], ...RESPONSAVEIS];
+const ROTULO_CAMPO_IMPORT = { documento: "CNPJ/CPF", tipoDocumento: "Tipo de documento" };
 // Vários responsáveis no mesmo campo: "Ana, Bia" (vírgula ou ponto e vírgula). Mantém planilha/Excel como texto.
 function nomesDoCampo(v){ return String(v || "").split(/\s*[,;]\s*/).map(s => s.trim()).filter(Boolean); }
 function juntarNomes(lista){ return [...new Set((lista || []).map(s => String(s).trim()).filter(Boolean))].join(", "); }
@@ -1850,6 +1851,8 @@ function mapearLinhasClientes(rows){
 // IDENTIDADE DO CLIENTE = ID (o mesmo CNPJ pode ter vários clientes: ex. "X – AUTÔNOMOS" e "X – PJ", matriz/filial).
 //  - Linha COM ID: casa pelo ID (senão, adota o único cliente daquele CNPJ que ainda não tem ID). ID repetido no
 //    arquivo, ou ID que já é de OUTRO CNPJ na base → "Com problema".
+//  - CNPJ/CPF é OPCIONAL (decisão do usuário): sem documento, a linha é identificada pelo ID ou, sem ID, pela
+//    razão social. Só documento PREENCHIDO e inválido é problema.
 //  - Linha SEM ID: casa por CNPJ + razão social. Mesmo CNPJ com razão social diferente = OUTRO cliente (vira aviso,
 //    recomendando o ID). Só é problema CNPJ + razão social repetidos no arquivo, ou vários clientes iguais na base.
 function analisarImportacao(base, itens){
@@ -1861,35 +1864,39 @@ function analisarImportacao(base, itens){
   const nomeN = v => normalizar(v).trim();
   itens.forEach((it, i) => {
     const linha = it._linha || (i + 1);
-    const n = normalizarDocumento(it.documentoBruto);
-    if(!n.valido){ invalidos.push({ ...it, linha, motivo: n.doc ? n.tipo + " inválido (" + n.doc + ")" : "sem documento" }); return; }
+    const temDoc = soDigitos(it.documentoBruto).length > 0;
+    const n = temDoc ? normalizarDocumento(it.documentoBruto) : { doc: "", tipo: "", valido: true };
+    if(!n.valido){ invalidos.push({ ...it, linha, motivo: n.tipo + " inválido (" + n.doc + ")" }); return; }
     const kId = chaveId(it.codigo);
+    if(!temDoc && !kId && !nomeN(it.razaoSocial)){ invalidos.push({ ...it, linha, motivo: "linha sem documento, sem ID e sem razão social" }); return; }
     let ex = null;
     if(kId){
       if(idsNoArquivo[kId]){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" repetido no arquivo (já aparece na linha ' + idsNoArquivo[kId] + ")" }); return; }
       idsNoArquivo[kId] = linha;
       ex = porId[kId] || null;
-      if(ex && ex.documento !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" já pertence a ' + (ex.razaoSocial || "outro cliente") + " (" + fmtDocumento(ex.documento) + ")" }); return; }
-      if(!ex){ const semId = (porDoc[n.doc] || []).filter(c => !chaveId(c.codigo)); if(semId.length === 1) ex = semId[0]; } // dá o ID a quem ainda não tinha
+      if(ex && n.doc && ex.documento && ex.documento !== n.doc){ invalidos.push({ ...it, linha, motivo: 'ID "' + it.codigo + '" já pertence a ' + (ex.razaoSocial || "outro cliente") + " (" + fmtDocumento(ex.documento) + ")" }); return; }
+      if(!ex && n.doc){ const semId = (porDoc[n.doc] || []).filter(c => !chaveId(c.codigo)); if(semId.length === 1) ex = semId[0]; } // dá o ID a quem ainda não tinha
     } else {
       const kNome = n.doc + "|" + nomeN(it.razaoSocial);
-      if(docsSemId[kNome]){ invalidos.push({ ...it, linha, motivo: "CNPJ/CPF e razão social repetidos no arquivo (linha " + docsSemId[kNome] + ")" }); return; }
+      if(docsSemId[kNome]){ invalidos.push({ ...it, linha, motivo: (n.doc ? "CNPJ/CPF e razão social" : "Razão social (sem documento e sem ID)") + " repetidos no arquivo (linha " + docsSemId[kNome] + ")" }); return; }
       docsSemId[kNome] = linha;
       const rotulo = it.razaoSocial || fmtDocumento(n.doc);
-      if(docsNoArquivoSemId[n.doc]) avisos.push({ linha, rotulo, campo:"cnpj", nome: fmtDocumento(n.doc), motivo: "mesmo CNPJ da linha " + docsNoArquivoSemId[n.doc] + " — entram como clientes diferentes (recomendado preencher o ID)" });
+      if(n.doc && docsNoArquivoSemId[n.doc]) avisos.push({ linha, rotulo, campo:"cnpj", nome: fmtDocumento(n.doc), motivo: "mesmo CNPJ da linha " + docsNoArquivoSemId[n.doc] + " — entram como clientes diferentes (recomendado preencher o ID)" });
       else docsNoArquivoSemId[n.doc] = linha;
-      const lista = porDoc[n.doc] || [];
+      // Sem documento: procura pela razão social entre os clientes sem documento.
+      const lista = n.doc ? (porDoc[n.doc] || []) : base.filter(c => !c.documento);
       const mesmoNome = lista.filter(c => nomeN(c.razaoSocial) === nomeN(it.razaoSocial));
       if(mesmoNome.length > 1){ invalidos.push({ ...it, linha, motivo: "Há " + mesmoNome.length + " clientes com este CNPJ e esta razão social — preencha o ID para saber qual atualizar" }); return; }
       if(mesmoNome.length === 1) ex = mesmoNome[0];
-      else if(lista.length === 1 && !nomeN(it.razaoSocial)) ex = lista[0];
-      else if(lista.length) avisos.push({ linha, rotulo, campo:"cnpj", nome: fmtDocumento(n.doc), motivo: "CNPJ já existe na base (" + lista.map(c => (c.razaoSocial || "—") + (c.codigo ? " · ID " + c.codigo : "")).join("; ") + ") — entra como OUTRO cliente" });
+      else if(n.doc && lista.length === 1 && !nomeN(it.razaoSocial)) ex = lista[0];
+      else if(n.doc && lista.length) avisos.push({ linha, rotulo, campo:"cnpj", nome: fmtDocumento(n.doc), motivo: "CNPJ já existe na base (" + lista.map(c => (c.razaoSocial || "—") + (c.codigo ? " · ID " + c.codigo : "")).join("; ") + ") — entra como OUTRO cliente" });
     }
     const reg = { documento:n.doc, tipoDocumento:n.tipo, razaoSocial:it.razaoSocial, codigo:it.codigo, grupo:it.grupo,
       gerente:it.gerente || "", coordenador:it.coordenador || "", analista:it.analista || "" };
     if(!ex){ novos.push(reg); return; }
     // Célula vazia na planilha não apaga o que já está na base — só valores preenchidos atualizam.
     const campos = CAMPOS_CLIENTE.map(c => c[0]).filter(k => reg[k] && reg[k] !== (ex[k] || ""));
+    if(reg.documento && !ex.documento) campos.push("documento", "tipoDocumento"); // cliente sem CNPJ ganha o CNPJ
     if(campos.length) atualizados.push({ existente:ex, novo:reg, campos }); else iguais.push(ex);
   });
   return { novos, atualizados, iguais, invalidos, avisos };
@@ -2136,6 +2143,30 @@ function aplicarModeloAtualizado(cronograma, modelo){
     return e;
   }) }));
   return { cronograma: { ...cronograma, processos }, alteradas, semReferencia, personalizadas };
+}
+
+// "↺ Atualizar bloco pelo Modelo" (decisão do usuário, 29/09/2026): troca as tarefas de UM bloco do cronograma
+// pelas do Modelo atual — nomes, responsáveis, prazos, 🔒 e tarefas novas. Do cronograma ficam: nome do bloco,
+// ativo, FREQUÊNCIA/MESES (cada cliente negocia os seus) e as tarefas que só existem no cronograma (vão pro fim).
+// Ajustes pontuais e regras "a partir de" das tarefas trocadas se perdem (a tela avisa antes).
+function atualizarBlocoPeloModelo(procCron, procModelo){
+  const idsModelo = new Set(procModelo.eventos.map(e => e.id));
+  const extras = procCron.eventos.filter(e => !idsModelo.has(e.id));
+  const linhas = [], perdidos = [];
+  procModelo.eventos.forEach(m => {
+    const e = procCron.eventos.find(x => x.id === m.id);
+    if(!e){ linhas.push('+ tarefa nova: "' + m.nome + '"'); return; }
+    const d = diferencasDoPadrao(procCron, e, procModelo);
+    if(d) linhas.push('≠ "' + e.nome + '": ' + d.itens.join("; "));
+    const nExc = Object.keys(e.excecoes || {}).length;
+    if(nExc) perdidos.push('"' + e.nome + '": ' + nExc + " ajuste(s) pontual(is)");
+    if((e.vigencias || []).length) perdidos.push('"' + e.nome + '": regra “a partir de”');
+  });
+  if(!!procCron.ciclo !== !!procModelo.ciclo) linhas.push(procModelo.ciclo ? "Liga o ciclo semanal (como no Modelo)" : "Desliga o ciclo semanal (como no Modelo)");
+  const eventos = procModelo.eventos.map(m => ({ ...clonar(m), excecoes: {}, padrao: { nome:m.nome, responsavel:m.responsavel, regra:clonar(m.regra) } })).concat(extras);
+  const { ciclo, ...resto } = procCron;
+  const processo = { ...resto, eventos, ...(procModelo.ciclo ? { ciclo: clonar(procModelo.ciclo) } : {}) };
+  return { processo, linhas, perdidos, extras: extras.map(e => e.nome) };
 }
 
 // Migração: cronogramas criados antes da base de clientes guardavam CNPJ
@@ -2423,6 +2454,22 @@ function rodarAutoTestes(){
     const contabil = f.eventos.find(e => e.id === "fmp12").regra.dia, credito = f.eventos.find(e => e.id === "fmp8").regra.dia;
     return contabil === 20 && credito === 4 && r.alteradas.length === 1 && r.personalizadas === 1 ? true : JSON.stringify({ contabil, credito, alteradas:r.alteradas, pers:r.personalizadas });
   });
+  t("Atualizar bloco pelo Modelo: tarefas do Modelo (inclusive novas), mantém meses e tarefas extras, perde ajustes", () => {
+    const mod = { id:"plr", nome:"PLR", frequencia:{tipo:"meses_especificos", meses:[]}, eventos:[
+      { id:"a", nome:"Inputs", responsavel:"CLIENTE", regra:offBeforeManual("b",1) },
+      { id:"b", nome:"Validação", responsavel:"CLIENTE", regra:offBeforeManual("c",1) },
+      { id:"c", nome:"Crédito", responsavel:"CLIENTE", regra:{tipo:"ultimo_util", mesOffset:0} } ] };
+    const cron = { id:"plr", nome:"PLR cliente", ativo:true, frequencia:{tipo:"meses_especificos", meses:[4]}, eventos:[
+      { id:"a", nome:"Inputs", responsavel:"SINERGY", regra:{tipo:"dia_fixo", dia:15, ajuste:"next"}, excecoes:{ "2026-04":{ data:"2026-04-10", motivo:"x" } } },
+      { id:"c", nome:"Crédito", responsavel:"CLIENTE", regra:offAfter("a",3) },
+      { id:"z", nome:"Extra do cliente", responsavel:"SINERGY", regra:{tipo:"dia_fixo", dia:1} } ] };
+    const r = atualizarBlocoPeloModelo(cron, mod);
+    const p = r.processo;
+    const d = resolveProcesso(p, 2026, 4, [p]);
+    return eq([p.nome, p.frequencia.meses.join(","), p.eventos.map(e => e.id + ":" + e.responsavel).join(","), Object.keys(p.eventos[0].excecoes).length,
+      !!p.eventos[0].padrao, r.linhas.length, r.perdidos.length, r.extras.join(","), d.map(x => x && x.data ? fmtBR(x.data) : "-").join(",")].join(" | "),
+      "PLR cliente | 4 | a:CLIENTE,b:CLIENTE,c:CLIENTE,z:SINERGY | 0 | true | 3 | 1 | Extra do cliente | 28/04/2026,29/04/2026,30/04/2026,01/04/2026");
+  });
   t("v4 · Aplicar Modelo atualizado não mexe em cronograma antigo (sem referência de origem)", () => {
     const mod = modeloTeste(), mod2 = clonar(mod);
     mod2.processos.find(p => p.id === "folha_mensal").eventos.find(e => e.id === "fmp12").regra.dia = 20;
@@ -2639,6 +2686,17 @@ function rodarAutoTestes(){
       r2.itens.length, r2.itens[0].gerente, r2.itens[0].analista, r2.rejeitados[0].motivo.includes("outra gerência")].join(" | "),
       "2 | Ariana Souza | Adriana Lima | Bia | Caio:é,Zé:não | 1 | 1 | Ariana Souza | Bia | true");
   });
+  t("Importação: CNPJ/CPF opcional — sem documento entra; documento preenchido e errado é problema", () => {
+    const base = [{ id:"e1", documento:"", codigo:"", razaoSocial:"TM SERVICOS" }];
+    const a = analisarImportacao(base, [
+      { documentoBruto:"", razaoSocial:"SALENTO BAR", _linha:1 },                 // sem doc, novo
+      { documentoBruto:"", razaoSocial:"TM SERVICOS", grupo:"G1", _linha:2 },      // sem doc, casa pela razão social → atualiza
+      { documentoBruto:"", razaoSocial:"SALENTO BAR", _linha:3 },                 // sem doc e razão social repetida → problema
+      { documentoBruto:"123", razaoSocial:"ERRADO", _linha:4 },                   // documento preenchido inválido → problema
+      { documentoBruto:"", codigo:"900", razaoSocial:"COM ID", _linha:5 },        // sem doc com ID → novo
+      { documentoBruto:"", razaoSocial:"", _linha:6 } ]);                         // nada → problema
+    return eq([a.novos.map(r => r.razaoSocial).join(","), a.atualizados.length, a.invalidos.map(r => r.linha).join(",")].join(" | "), "SALENTO BAR,COM ID | 1 | 3,4,6");
+  });
   t("Importação: mesmo CNPJ = clientes diferentes quando o ID (ou, sem ID, a razão social) é diferente", () => {
     const base = [{ id:"e1", documento:"11222333000181", codigo:"100", razaoSocial:"ALFA" }];
     const a = analisarImportacao(base, [
@@ -2800,7 +2858,7 @@ function rodarAutoTestes(){
      build de lá (Vite/esbuild) — o Babel aqui é só pra rodar como arquivo único.
      ========================================================================= -->
 <script>
-/* Telas compiladas a partir de cronograma_v4.html em 28/09/2026 15:06 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
+/* Telas compiladas a partir de cronograma_v4.html em 29/09/2026 13:49 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
@@ -3592,7 +3650,8 @@ function ProcessoCard({
   aberto,
   onAlternar,
   destaqueEventoId,
-  todosProcessos
+  todosProcessos,
+  onAtualizarPeloModelo
 }) {
   const modoAtual = modo || "cliente";
   const estaAberto = aberto === undefined ? true : aberto;
@@ -3892,7 +3951,7 @@ function ProcessoCard({
     className: "badge badge-on"
   }, "todo m\xEAs") : /*#__PURE__*/React.createElement("span", {
     className: "badge badge-months"
-  }, "meses espec\xEDficos", previewForaDoMes ? " · prévia em " + MESES[mesPreview - 1] : ""), processo.ciclo && /*#__PURE__*/React.createElement("span", {
+  }, "meses espec\xEDficos", !mesPreview ? " · nenhum mês marcado" : previewForaDoMes ? " · prévia em " + MESES[mesPreview - 1] : ""), processo.ciclo && /*#__PURE__*/React.createElement("span", {
     className: "badge badge-on",
     title: "Tarefas calculadas ciclo a ciclo a partir da 1\xAA tarefa semanal"
   }, "\uD83D\uDD01 ciclo semanal"), resumo.alertas > 0 && /*#__PURE__*/React.createElement("span", {
@@ -3997,7 +4056,12 @@ function ProcessoCard({
     }
   }, "\u26A0 Ciclo semanal sem tarefa de in\xEDcio (recorr\xEAncia semanal)."), padrao.faltando > 0 && /*#__PURE__*/React.createElement("span", {
     className: "badge badge-padrao"
-  }, padrao.faltando, " tarefa(s) do Modelo removida(s) deste cronograma")), /*#__PURE__*/React.createElement("div", {
+  }, padrao.faltando, " tarefa(s) do Modelo removida(s) deste cronograma"), onAtualizarPeloModelo && processoModelo && !somenteLeitura && (padrao.fora + padrao.faltando > 0 || !!processo.ciclo !== !!processoModelo.ciclo) && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    className: "btn btn-sm btn-outline",
+    title: "Troca as tarefas deste bloco pelas do Modelo atual (os meses escolhidos e as tarefas s\xF3 deste cronograma ficam)",
+    onClick: () => onAtualizarPeloModelo(processo, processoModelo)
+  }, "\u21BA Atualizar bloco pelo Modelo")), /*#__PURE__*/React.createElement("div", {
     className: "table-wrap"
   }, /*#__PURE__*/React.createElement("table", {
     className: "ev-table",
@@ -6227,7 +6291,7 @@ function ImportarClientesModal({
     style: {
       whiteSpace: "normal"
     }
-  }, a.campos.map(k => (CAMPOS_CLIENTE.find(c => c[0] === k) || [k, k])[1] + ': "' + (a.existente[k] || "—") + '" → "' + a.novo[k] + '"').join(" · ")))))), ver === "invalidos" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Linha"), /*#__PURE__*/React.createElement("th", null, "Raz\xE3o social"), /*#__PURE__*/React.createElement("th", null, "Documento"), /*#__PURE__*/React.createElement("th", null, "Problema"))), /*#__PURE__*/React.createElement("tbody", null, invalidos.map((r, i) => /*#__PURE__*/React.createElement("tr", {
+  }, a.campos.filter(k => k !== "tipoDocumento").map(k => (CAMPOS_CLIENTE.find(c => c[0] === k) || [k, ROTULO_CAMPO_IMPORT[k] || k])[1] + ': "' + (a.existente[k] || "—") + '" → "' + a.novo[k] + '"').join(" · ")))))), ver === "invalidos" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Linha"), /*#__PURE__*/React.createElement("th", null, "Raz\xE3o social"), /*#__PURE__*/React.createElement("th", null, "Documento"), /*#__PURE__*/React.createElement("th", null, "Problema"))), /*#__PURE__*/React.createElement("tbody", null, invalidos.map((r, i) => /*#__PURE__*/React.createElement("tr", {
     key: i
   }, /*#__PURE__*/React.createElement("td", null, r.linha), /*#__PURE__*/React.createElement("td", {
     style: {
@@ -6452,8 +6516,12 @@ function ClienteBaseForm({
   const idRepetido = f.codigo.trim() && base.find(c => c.id !== inicial?.id && normalizar(c.codigo).trim() === normalizar(f.codigo).trim());
   const nomesDe = campo => [...new Set(base.map(c => c[campo]).filter(Boolean))].sort((a, b) => a.localeCompare(b, "pt-BR"));
   function salvar() {
-    if (!n.valido) {
-      ui.alert("CNPJ/CPF inválido — confira os dígitos.");
+    if (f.documento.trim() && !n.valido) {
+      ui.alert("CNPJ/CPF inválido — confira os dígitos (ou deixe em branco: o documento é opcional).");
+      return;
+    }
+    if (!f.documento.trim() && !f.razaoSocial.trim()) {
+      ui.alert("Sem CNPJ/CPF, preencha ao menos a razão social.");
       return;
     }
     if (duplicado) {
@@ -6488,8 +6556,8 @@ function ClienteBaseForm({
     onSalvar({
       ...(inicial || {}),
       razaoSocial: f.razaoSocial.trim(),
-      documento: n.doc,
-      tipoDocumento: n.tipo,
+      documento: f.documento.trim() ? n.doc : "",
+      tipoDocumento: f.documento.trim() ? n.tipo : "",
       codigo: f.codigo.trim(),
       grupo: f.grupo.trim(),
       gerente: usaGerencia ? nomeGer(f.gerenteId) : f.gerente.trim(),
@@ -6524,7 +6592,7 @@ function ClienteBaseForm({
     })
   })), /*#__PURE__*/React.createElement("div", {
     className: "wizard-q"
-  }, /*#__PURE__*/React.createElement("label", null, "CNPJ/CPF"), /*#__PURE__*/React.createElement("input", {
+  }, /*#__PURE__*/React.createElement("label", null, "CNPJ/CPF (opcional)"), /*#__PURE__*/React.createElement("input", {
     type: "text",
     style: {
       width: "100%"
@@ -7129,7 +7197,7 @@ function ClientesBaseTela({
     }
   }))), /*#__PURE__*/React.createElement("tbody", null, lista.map(c => {
     const v = vinculoDe[c.id] || [];
-    const valido = normalizarDocumento(c.documento).valido;
+    const valido = !c.documento || normalizarDocumento(c.documento).valido;
     return /*#__PURE__*/React.createElement("tr", {
       key: c.id
     }, podeEditar && /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
@@ -7240,7 +7308,10 @@ function ModeloAdmin({
   escopo = "all",
   usoModelos = {},
   lotes = [],
-  onDesfazerLote
+  onDesfazerLote,
+  onSujo,
+  outraSessao,
+  onCarregarAtual
 }) {
   const usaGerencia = gerentes.length > 0;
   const nomeGer = id => (gerentes.find(g => g.id === id) || {}).nome || "";
@@ -7267,6 +7338,12 @@ function ModeloAdmin({
     setRestaurados({});
     setModeloId(id => modelos.some(m => m.id === id && visivel(m)) ? id : primeiroVisivel(modelos));
   }, [modelos]);
+  useEffect(() => {
+    if (onSujo) onSujo(sujo);
+  }, [sujo]);
+  useEffect(() => () => {
+    if (onSujo) onSujo(false);
+  }, []);
   // Sair da página com alterações não salvas pede confirmação (links do menu e fechar/recarregar a aba).
   useEffect(() => {
     if (!sujo) return;
@@ -7523,7 +7600,30 @@ function ModeloAdmin({
     style: {
       alignItems: "center"
     }
-  }, acoes)), /*#__PURE__*/React.createElement("div", {
+  }, acoes)), outraSessao && /*#__PURE__*/React.createElement("div", {
+    className: "card",
+    style: {
+      borderLeft: "4px solid #d97706",
+      marginBottom: 12,
+      display: "flex",
+      gap: 12,
+      alignItems: "center",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      minWidth: 260
+    }
+  }, "\u26A0 Os Modelos foram salvos em outra sess\xE3o", outraSessao.em ? " às " + fmtHora(outraSessao.em) : "", ", depois que voc\xEA abriu esta p\xE1gina. Suas altera\xE7\xF5es n\xE3o salvas est\xE3o sobre a vers\xE3o antiga \u2014 se salvar, as mudan\xE7as da outra sess\xE3o ser\xE3o sobrescritas."), /*#__PURE__*/React.createElement("button", {
+    className: "btn btn-sm btn-primary",
+    onClick: async () => {
+      if (await ui.confirm("Descartar suas alterações não salvas e carregar a versão atual dos Modelos?", {
+        okLabel: "Descartar e carregar",
+        perigo: true
+      })) onCarregarAtual();
+    }
+  }, "Descartar minhas altera\xE7\xF5es e carregar a vers\xE3o atual")), /*#__PURE__*/React.createElement("div", {
     className: "card"
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -10190,6 +10290,41 @@ function App({
   const [conhecidoServidor, setConhecidoServidor] = useState({});
   const [modelos, setModelos] = useState([]);
   const [modelosAtualizadoEm, setModelosAtualizadoEm] = useState(null);
+  // Modelos salvos em outra sessão enquanto esta tinha alterações não salvas na página Modelos (não troca o rascunho).
+  const [modelosOutraSessao, setModelosOutraSessao] = useState(null);
+  const modelosRef = useRef(modelos);
+  modelosRef.current = modelos;
+  const modelosEmRef = useRef(null);
+  modelosEmRef.current = modelosAtualizadoEm;
+  const modelosSujoRef = useRef(false);
+  const rotaTelaRef = useRef(null);
+  // Relê os Modelos do banco (ao entrar na página Modelos e ao voltar para a aba). Antes só eram lidos na abertura
+  // do sistema — outro navegador aberto antes de uma gravação continuava vendo a versão antiga.
+  async function recarregarModelos() {
+    try {
+      const s = await kvLoad(KV_MODELOS_KEY);
+      if (!s || !s.modelos || !modelosRef.current.length) return;
+      const {
+        lista
+      } = completarModelosPadrao(s.modelos);
+      if (JSON.stringify(lista) === JSON.stringify(modelosRef.current)) {
+        setModelosOutraSessao(null);
+        return;
+      }
+      if (modelosSujoRef.current) {
+        setModelosOutraSessao({
+          modelos: lista,
+          em: s.atualizadoEm || null
+        });
+        return;
+      }
+      setModelos(lista);
+      setModelosAtualizadoEm(s.atualizadoEm || null);
+      setModelosOutraSessao(null);
+    } catch (e) {
+      console.warn("Não consegui reler os Modelos:", e.message);
+    }
+  }
   const [modelosVersoes, setModelosVersoes] = useState([]); // histórico de versões dos Modelos
   const [lotes, setLotes] = useState([]); // aplicações de Modelo em cronogramas (com desfazer)
   const [loteModal, setLoteModal] = useState(null);
@@ -10683,6 +10818,21 @@ function App({
     }
     return out;
   }
+  useEffect(() => {
+    rotaTelaRef.current = rota.tela;
+    if (rota.tela === "modelos") recarregarModelos();
+  }, [rota.tela]);
+  useEffect(() => {
+    const aoVoltar = e => {
+      if ((e.type === "focus" || document.visibilityState === "visible") && rotaTelaRef.current === "modelos") recarregarModelos();
+    };
+    document.addEventListener("visibilitychange", aoVoltar);
+    window.addEventListener("focus", aoVoltar);
+    return () => {
+      document.removeEventListener("visibilitychange", aoVoltar);
+      window.removeEventListener("focus", aoVoltar);
+    };
+  }, []);
 
   // Boot: Modelos, base de clientes e o ÍNDICE (leve). Nenhum cronograma é aberto aqui.
   useEffect(() => {
@@ -11331,6 +11481,23 @@ function App({
       ...c,
       processos: c.processos.map(p => p.id === processoId ? novoProcesso : p)
     }));
+  }
+  async function atualizarBlocoDoModelo(processo, procModelo) {
+    const r = atualizarBlocoPeloModelo(processo, procModelo);
+    const lista = l => l.slice(0, 15).map(x => "• " + x).join("\n") + (l.length > 15 ? "\n• … e mais " + (l.length - 15) : "");
+    if (!(await ui.confirm('Atualizar o bloco "' + processo.nome + '" com as tarefas do Modelo "' + (modeloAtual ? modeloAtual.nome : "") + '"?\n\n' + (r.linhas.length ? "O que muda:\n" + lista(r.linhas) : "Só ajustes internos.") + "\n\nFicam como estão: nome do bloco e meses escolhidos neste cronograma." + (r.extras.length ? "\nTarefas só deste cronograma (continuam, no fim do bloco): " + r.extras.join(", ") + "." : "") + (r.perdidos.length ? "\n\n⚠ Serão perdidos:\n" + lista(r.perdidos) : "") + "\n\nAntes de trocar, o estado atual é guardado como versão (aba Histórico). A mudança só é gravada ao clicar Salvar.", {
+      titulo: "Atualizar bloco pelo Modelo",
+      okLabel: "Atualizar bloco"
+    }))) return;
+    try {
+      await registrarFoto(clienteId, ano, clienteAtual, "antes_modelo", 'antes de atualizar o bloco "' + processo.nome + '" pelo Modelo');
+    } catch (e) {
+      if (!(await ui.confirm("Não consegui guardar a versão de segurança (" + e.message + "). Atualizar mesmo assim?", {
+        okLabel: "Atualizar"
+      }))) return;
+    }
+    updateProcesso(processo.id, r.processo);
+    showToast('Bloco "' + processo.nome + '" atualizado pelo Modelo — confira e clique Salvar.');
   }
   function toggleProcessoAtivo(processoId, ativo) {
     setCliente(clienteId, c => ({
@@ -12134,7 +12301,13 @@ function App({
       return;
     }
     try {
-      const noServidor = await kvLoad(KV_MODELOS_KEY).catch(() => null);
+      let noServidor;
+      try {
+        noServidor = await kvLoad(KV_MODELOS_KEY);
+      } catch (e) {
+        ui.alert("Não consegui ler os Modelos do banco agora (" + e.message + "). Nada foi criado — tente de novo em instantes.");
+        return;
+      }
       const atuais = noServidor && noServidor.modelos || modelos;
       if (atuais.some(m => normalizar(m.nome).trim() === normalizar(nome).trim())) {
         ui.alert('Já existe um Modelo chamado "' + nome.trim() + '". Escolha outro nome.');
@@ -12170,7 +12343,13 @@ function App({
       return;
     }
     try {
-      const noServidor = await kvLoad(KV_MODELOS_KEY).catch(() => null);
+      let noServidor;
+      try {
+        noServidor = await kvLoad(KV_MODELOS_KEY);
+      } catch (e) {
+        ui.alert("Não consegui ler os Modelos do banco agora (" + e.message + "). Nada foi gravado — tente de novo em instantes.");
+        return;
+      }
       const servidor = noServidor && noServidor.modelos || modelos;
       // Conflito só se algum Modelo que ESTA pessoa edita mudou no servidor desde que ela abriu a página.
       const mudouLa = servidor.filter(podeEditarModelo).some(m => JSON.stringify(m) !== JSON.stringify(modelos.find(x => x.id === m.id)));
@@ -12197,6 +12376,7 @@ function App({
       await gravarVersoesModelos(antes, final, motivos);
       setModelos(final);
       setModelosAtualizadoEm(em);
+      setModelosOutraSessao(null);
       showToast("Modelos salvos. Para levar as mudanças aos cronogramas, use “Aplicar Modelo atualizado” na tela inicial (você escolhe quais).");
       if (renomes && renomes.length && clientesResumo.length && podeEditar) await prepararRenomeio(renomes);
     } catch (e) {
@@ -12812,6 +12992,17 @@ function App({
     podeRestaurar: podeRestaurar,
     onSalvar: salvarModelos,
     ano: ano,
+    onSujo: v => {
+      modelosSujoRef.current = v;
+    },
+    outraSessao: modelosOutraSessao,
+    onCarregarAtual: () => {
+      const o = modelosOutraSessao;
+      if (!o) return;
+      setModelos(o.modelos);
+      setModelosAtualizadoEm(o.em);
+      setModelosOutraSessao(null);
+    },
     podeEditarModelo: podeEditarModelo,
     gerentes: gerentes,
     escopo: escopo,
@@ -13202,6 +13393,7 @@ function App({
     }, "Remover se\xE7\xE3o")),
     destaqueEventoId: destaque && destaque.processoId === processo.id ? destaque.eventoId + ":" + destaque.n : null,
     onUpdate: novo => updateProcesso(processo.id, novo),
+    onAtualizarPeloModelo: atualizarBlocoDoModelo,
     onDesdobrar: novos => desdobrarProcesso(processo, novos)
   })), !processosAtivos.length && /*#__PURE__*/React.createElement("div", {
     className: "muted"
