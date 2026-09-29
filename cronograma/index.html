@@ -1996,7 +1996,7 @@ function aplicarImportacao(base, analise){
 const STATUS_FLOW = [
   { id:"em_desenvolvimento", label:"Em desenvolvimento" },
   { id:"aguardando_cliente", label:"Aguardando cliente" },
-  { id:"aprovado_analista", label:"Aprovado pelo analista" },
+  { id:"aprovado_analista", label:"Aprovado pelo cliente" }, // id antigo mantido (dados já gravados); nome mudou em 29/09/2026
   { id:"aguardando_aprovacao_superior", label:"Aguardando coordenador/gerente/diretor" },
   { id:"aprovado", label:"Aprovado — pronto para gerar tarefas" },
 ];
@@ -3018,7 +3018,7 @@ function rodarAutoTestes(){
      build de lá (Vite/esbuild) — o Babel aqui é só pra rodar como arquivo único.
      ========================================================================= -->
 <script>
-/* Telas compiladas a partir de cronograma_v4.html em 29/09/2026 17:15 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
+/* Telas compiladas a partir de cronograma_v4.html em 29/09/2026 18:05 — NÃO editar aqui; edite o cronograma_v4.html e gere de novo. */
 function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
@@ -10285,7 +10285,7 @@ function Ajuda({
 }
 const AJUDA = {
   cronogramas: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Lista dos cronogramas ", /*#__PURE__*/React.createElement("strong", null, "do ano de trabalho"), " (seletor no menu). Voc\xEA v\xEA s\xF3 os da ", /*#__PURE__*/React.createElement("strong", null, "sua ger\xEAncia"), " \u2014 Administrador/Diretor v\xEA todos."), /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Contadores"), " (Todos, por status, Com alerta, Sem clientes\u2026): clique para filtrar."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Meus cronogramas"), ": em que voc\xEA \xE9 o analista, ou gerente/coordenador/analista de algum cliente vinculado."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "A\xE7\xF5es em massa"), ": marque as caixas \u2014 abrir o ano, exportar, mudar status, definir analista, aplicar Modelo atualizado, arquivar."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Novo cronograma"), ": sempre pelo assistente de datas-chave; ger\xEAncia obrigat\xF3ria."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Arquivar"), " s\xF3 tira da lista (volta quando quiser). ", /*#__PURE__*/React.createElement("strong", null, "Excluir"), " manda para a Lixeira por 15 dias."))),
-  cronograma: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Cada cronograma tem ", /*#__PURE__*/React.createElement("strong", null, "uma vers\xE3o por ano"), " (chips 2026/2027\u2026). Editar um ano n\xE3o mexe nos outros. Clique em ", /*#__PURE__*/React.createElement("strong", null, "Salvar"), " (ou Ctrl+S) \u2014 nada vai para o banco antes disso."), /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Status"), ": Em desenvolvimento \u2192 Aguardando cliente \u2192 Aprovado pelo analista \u2192 Aguardando coordenador/gerente/diretor \u2192 Aprovado (trava a edi\xE7\xE3o). Enviar ao cliente e aprovar criam uma ", /*#__PURE__*/React.createElement("strong", null, "vers\xE3o"), " autom\xE1tica (aba Hist\xF3rico)."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Prazos (\u270E editar)"), ": dia fixo, N-\xE9simo dia \xFAtil, \xFAltimo/pen\xFAltimo \xFAtil, dia da semana do m\xEAs, \"N d.u. antes/depois de outra tarefa\", \"dia da semana antes/depois de outra tarefa\" (com m\xEDnimo de d.u.), v\xEDnculo com tarefa de ", /*#__PURE__*/React.createElement("strong", null, "outro bloco"), ", recorr\xEAncia semanal."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "+ limite"), ": \"ou N d.u. antes de X \u2014 o que vier primeiro\"."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Mudar a partir de\u2026"), ": nova regra de um m\xEAs em diante, sem mexer nos meses anteriores."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ajuste pontual"), ": data manual s\xF3 para uma compet\xEAncia."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ciclo semanal"), " (caixa no bloco): as tarefas seguem a 1\xAA tarefa semanal, ciclo a ciclo."), /*#__PURE__*/React.createElement("li", null, "Feriados considerados: S\xE3o Paulo capital. Alertas \u26A0 avisam o que foge das regras (ex.: folha depois do cont\xE1bil)."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Excel cliente"), " vai para valida\xE7\xE3o (sem dados internos); ", /*#__PURE__*/React.createElement("strong", null, "Excel interno"), " \xE9 para a equipe."))),
+  cronograma: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Cada cronograma tem ", /*#__PURE__*/React.createElement("strong", null, "uma vers\xE3o por ano"), " (chips 2026/2027\u2026). Editar um ano n\xE3o mexe nos outros. Clique em ", /*#__PURE__*/React.createElement("strong", null, "Salvar"), " (ou Ctrl+S) \u2014 nada vai para o banco antes disso."), /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Status"), ": Em desenvolvimento \u2192 Aguardando cliente (editar pergunta se deseja reabrir) \u2192 Aprovado pelo cliente \u2192 Aguardando coordenador/gerente/diretor \u2192 Aprovado (trava a edi\xE7\xE3o). Enviar ao cliente e aprovar criam uma ", /*#__PURE__*/React.createElement("strong", null, "vers\xE3o"), " autom\xE1tica (aba Hist\xF3rico)."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Prazos (\u270E editar)"), ": dia fixo, N-\xE9simo dia \xFAtil, \xFAltimo/pen\xFAltimo \xFAtil, dia da semana do m\xEAs, \"N d.u. antes/depois de outra tarefa\", \"dia da semana antes/depois de outra tarefa\" (com m\xEDnimo de d.u.), v\xEDnculo com tarefa de ", /*#__PURE__*/React.createElement("strong", null, "outro bloco"), ", recorr\xEAncia semanal."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "+ limite"), ": \"ou N d.u. antes de X \u2014 o que vier primeiro\"."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Mudar a partir de\u2026"), ": nova regra de um m\xEAs em diante, sem mexer nos meses anteriores."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ajuste pontual"), ": data manual s\xF3 para uma compet\xEAncia."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ciclo semanal"), " (caixa no bloco): as tarefas seguem a 1\xAA tarefa semanal, ciclo a ciclo."), /*#__PURE__*/React.createElement("li", null, "Feriados considerados: S\xE3o Paulo capital. Alertas \u26A0 avisam o que foge das regras (ex.: folha depois do cont\xE1bil)."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Excel cliente"), " vai para valida\xE7\xE3o (sem dados internos); ", /*#__PURE__*/React.createElement("strong", null, "Excel interno"), " \xE9 para a equipe."))),
   clientes: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Ger\xEAncia (gerente) \xE9 obrigat\xF3ria"), ". Coordenador(es) e analista(s) s\xE3o opcionais, v\xEAm da lista de usu\xE1rios do painel daquela ger\xEAncia e servem ", /*#__PURE__*/React.createElement("strong", null, "s\xF3 para os filtros"), " \"Meus\"."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Um CNPJ pertence a um cronograma s\xF3"), ", em cada ano. O v\xEDnculo \xE9 feito dentro do cronograma."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Importar planilha / Colar do Excel"), ": o cliente \xE9 identificado pelo ", /*#__PURE__*/React.createElement("strong", null, "ID"), " \u2014 o mesmo CNPJ pode ter v\xE1rios clientes (ex.: AUT\xD4NOMOS \xD7 PJ), cada um com seu ID. Cliente que j\xE1 existe \xE9 atualizado (c\xE9lula vazia n\xE3o apaga). ID repetido, CNPJ repetido ", /*#__PURE__*/React.createElement("em", null, "sem ID"), " e gerente que n\xE3o existe v\xE3o para \"Com problema\"; coordenador/analista inv\xE1lido aparece em \"Avisos\" e n\xE3o \xE9 gravado."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Sele\xE7\xE3o em lote"), ": definir ger\xEAncia, coordenador/analista, inativar/reativar, excluir."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Inativar"), " mant\xE9m o hist\xF3rico (cliente com cronograma n\xE3o pode ser exclu\xEDdo). Inativo n\xE3o aparece para novos v\xEDnculos."), /*#__PURE__*/React.createElement("li", null, "Filtros ", /*#__PURE__*/React.createElement("strong", null, "\u26A0 Sem ger\xEAncia"), " e ", /*#__PURE__*/React.createElement("strong", null, "\u26A0 Respons\xE1vel sem usu\xE1rio"), " mostram o que precisa ser acertado."))),
   modelos: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("ul", null, /*#__PURE__*/React.createElement("li", null, "Modelo \xE9 de ", /*#__PURE__*/React.createElement("strong", null, "toda a empresa"), " ou de ", /*#__PURE__*/React.createElement("strong", null, "uma ger\xEAncia"), ". Quem n\xE3o \xE9 Administrador edita s\xF3 os da pr\xF3pria ger\xEAncia; os da empresa ficam s\xF3 leitura \u2014 use ", /*#__PURE__*/React.createElement("strong", null, "Duplicar"), "."), /*#__PURE__*/React.createElement("li", null, /*#__PURE__*/React.createElement("strong", null, "Salvar"), " tem dupla confirma\xE7\xE3o: revis\xE3o de tudo o que mudou \u2192 confirma\xE7\xE3o final. Cada grava\xE7\xE3o guarda uma vers\xE3o (\uD83D\uDD58 Vers\xF5es)."), /*#__PURE__*/React.createElement("li", null, "Os cronogramas existentes ", /*#__PURE__*/React.createElement("strong", null, "n\xE3o mudam"), " ao salvar. Para levar a mudan\xE7a a eles: \"Aplicar Modelo atualizado\" (tela Cronogramas) ou o renomear que aparece ao salvar \u2014 voc\xEA escolhe quais, e fica em ", /*#__PURE__*/React.createElement("strong", null, "Aplica\xE7\xF5es recentes"), " com ", /*#__PURE__*/React.createElement("strong", null, "Desfazer"), "."), /*#__PURE__*/React.createElement("li", null, "Modelo ", /*#__PURE__*/React.createElement("strong", null, "em uso"), " n\xE3o pode ser removido \u2014 s\xF3 inativado (some do Novo cronograma)."), /*#__PURE__*/React.createElement("li", null, "Tarefas ", /*#__PURE__*/React.createElement("strong", null, "\uD83D\uDD12 padr\xE3o"), " n\xE3o podem ser renomeadas nem exclu\xEDdas dentro do cronograma de um cliente."))),
   pendencias: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "Re\xFAne o que precisa de a\xE7\xE3o, s\xF3 da sua ger\xEAncia. Marque ", /*#__PURE__*/React.createElement("strong", null, "S\xF3 os meus"), " para ver apenas o que est\xE1 ligado a voc\xEA (como analista do cronograma ou respons\xE1vel de algum cliente)."), /*#__PURE__*/React.createElement("p", null, "Os prazos de \"aguardando cliente\" e \"parado\" s\xE3o ajust\xE1veis no topo. Clique no nome para abrir o cronograma.")),
@@ -11463,7 +11463,11 @@ function App({
   }
 
   // Toda edição trabalha na VISÃO do ano (processos, status... do ano) e é gravada de volta só nesse ano.
-  function setCliente(id, fn) {
+  // Em "Aguardando cliente" (a versão enviada já está guardada), a 1ª edição de conteúdo — blocos, tarefas,
+  // prazos, clientes — pergunta antes e volta o cronograma para "Em desenvolvimento" (decisão do usuário, 29/09/2026).
+  // Nome/analista/gerência (campos internos do topo) não contam.
+  const perguntandoVoltaRef = useRef(false);
+  function aplicarEdicao(id, fn) {
     setClientesCache(prev => {
       const cr = prev[id];
       if (!cr) return prev;
@@ -11474,6 +11478,37 @@ function App({
         [id]: gravarVisao(cr, ano, fn(v))
       };
     });
+  }
+  function setCliente(id, fn) {
+    const cr = cacheRef.current[id];
+    const v = cr ? visaoDoAno(cr, ano) : null;
+    if (v && v.status === "aguardando_cliente") {
+      const conteudo = x => JSON.stringify({
+        p: x.processos || [],
+        c: x.clientesIds || [],
+        m: x.modeloId || null
+      });
+      if (conteudo(fn(v)) !== conteudo(v)) {
+        if (perguntandoVoltaRef.current) return; // já há uma pergunta aberta (ex.: digitação rápida)
+        perguntandoVoltaRef.current = true;
+        (async () => {
+          try {
+            const ok = await ui.confirm('Cronograma aguardando aprovação do cliente. Deseja reabrir para edição?\n\n' + '"' + v.nome + '" (' + ano + ') volta para "Em desenvolvimento". A versão enviada ao cliente continua guardada no Histórico; depois do ajuste, envie a nova versão.', {
+              titulo: "Reabrir para edição?",
+              okLabel: "Reabrir para edição",
+              cancelLabel: "Não"
+            });
+            if (!ok) return;
+            aplicarEdicao(id, x => comNovoStatus(fn(x), "em_desenvolvimento", "Ajuste durante a validação do cliente — voltou para Em desenvolvimento"));
+            showToast('Voltou para "Em desenvolvimento". Salve e, quando terminar, envie de novo ao cliente.');
+          } finally {
+            perguntandoVoltaRef.current = false;
+          }
+        })();
+        return;
+      }
+    }
+    aplicarEdicao(id, fn);
   }
   function updateClienteAtual(patch) {
     if (clienteId) setCliente(clienteId, c => ({
@@ -12324,7 +12359,7 @@ function App({
       setLoteModal({
         titulo: "Aplicar Modelo atualizado",
         okLabel: "Aplicar",
-        descricao: resumoTxt + avisoPendentes + "\n\nMarque em quais cronogramas aplicar.",
+        descricao: resumoTxt + avisoPendentes + (comMudanca.some(p => p.c.status === "aguardando_cliente") ? "\n\n⚠ Os que estão \u201cAguardando cliente\u201d voltam para \u201cEm desenvolvimento\u201d (envie de novo ao cliente depois)." : "") + "\n\nMarque em quais cronogramas aplicar.",
         itens: comMudanca.map(p => ({
           id: p.c.id,
           nome: p.c.nome,
@@ -12336,7 +12371,7 @@ function App({
           const itensLote = [];
           for (const p of comMudanca.filter(x => sel.has(x.c.id))) {
             const f = await registrarFoto(p.c.id, ano, p.c, "antes_modelo", "antes de aplicar o Modelo atualizado").catch(() => null);
-            const novo = {
+            let novo = {
               ...p.cronograma,
               acoes: [...(p.cronograma.acoes || []), {
                 tipo: "edicao",
@@ -12345,6 +12380,7 @@ function App({
                 quem: usuario.nome || null
               }]
             };
+            if (novo.status === "aguardando_cliente") novo = comNovoStatus(novo, "em_desenvolvimento", "Modelo atualizado aplicado durante a validação do cliente");
             const antesOp = cacheRef.current[p.c.id];
             gravarNoCache(novo);
             const okSalvo = await salvarCliente(novo, {
@@ -12923,14 +12959,14 @@ function App({
       ui.alert("O cronograma já está igual à v" + foto.n + ".");
       return;
     }
-    const ok = await ui.confirm("Restaurar a v" + foto.n + " (" + fmtHora(foto.em) + ")?\n\nOs blocos, tarefas e prazos voltam a ser como nessa versão (" + difs.length + " diferença(s)). Os clientes vinculados e o status continuam como estão.\n\nAntes, o estado atual é guardado como versão, então dá pra desfazer.", {
+    const ok = await ui.confirm("Restaurar a v" + foto.n + " (" + fmtHora(foto.em) + ")?\n\nOs blocos, tarefas e prazos voltam a ser como nessa versão (" + difs.length + " diferença(s)). Os clientes vinculados continuam como estão." + (clienteAtual.status === "aguardando_cliente" ? "\n\n⚠ Está AGUARDANDO CLIENTE: restaurar volta o cronograma para \"Em desenvolvimento\" (depois, envie de novo ao cliente)." : " O status continua como está.") + "\n\nAntes, o estado atual é guardado como versão, então dá pra desfazer.", {
       titulo: "Restaurar versão",
       okLabel: "Restaurar v" + foto.n
     });
     if (!ok) return;
     await registrarFoto(clienteId, ano, clienteAtual, "antes_restaurar", "antes de restaurar a v" + foto.n).catch(() => {});
     const agora = new Date().toISOString();
-    const novo = {
+    let novo = {
       ...restaurarDaFoto(clienteAtual, foto),
       acoes: [...(clienteAtual.acoes || []), {
         tipo: "edicao",
@@ -12939,6 +12975,7 @@ function App({
         quem: usuario.nome || null
       }]
     };
+    if (clienteAtual.status === "aguardando_cliente") novo = comNovoStatus(novo, "em_desenvolvimento", "Versão v" + foto.n + " restaurada durante a validação do cliente");
     gravarNoCache(novo);
     if (await salvarCliente(novo, {
       silencioso: true
@@ -13978,7 +14015,9 @@ function App({
       marginLeft: 8
     },
     onClick: travarAnoDeNovo
-  }, "Travar de novo"))), !consulta && clienteAtual.status === "aprovado" && /*#__PURE__*/React.createElement("div", {
+  }, "Travar de novo"))), !consulta && clienteAtual.status === "aguardando_cliente" && !travado && /*#__PURE__*/React.createElement("div", {
+    className: "note"
+  }, "\uD83D\uDCE8 Aguardando aprova\xE7\xE3o do cliente \u2014 a vers\xE3o enviada est\xE1 guardada no Hist\xF3rico. Ao editar, o sistema pergunta se deseja reabrir para edi\xE7\xE3o (volta para \u201CEm desenvolvimento\u201D)."), !consulta && clienteAtual.status === "aprovado" && /*#__PURE__*/React.createElement("div", {
     className: "note note-lock"
   }, "\uD83D\uDD12 Cronograma aprovado \u2014 a edi\xE7\xE3o est\xE1 travada. Para alterar algo, volte o status para uma etapa anterior."), aba === "parametrizar" && /*#__PURE__*/React.createElement("div", {
     className: "layout-crono"
