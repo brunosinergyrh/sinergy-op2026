@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.7.3)</title>
+  <title>SinergyRH – Operação - 2026 (v10.7.4)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -195,7 +195,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.7.3";
+window.OP2026_BUILD = "v10.7.4";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -1342,7 +1342,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.7.3", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.7.4", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -5298,6 +5298,7 @@ function CalendarView(props) {
   // [v10.6.17] Coordenador, gerente e admin podem reatribuir o analista direto por aqui.
   var canReassign = isAdminP || isGerenteP || isCoordP;
   var onReassign = props.onReassign;
+  var onShowHistory = props.onShowHistory; // [v10.7.4] botao de historico ao lado do lapis
   var memberNames = props.memberNames || [];
   var _reass = React.useState(null); var reassignKey = _reass[0], setReassignKey = _reass[1]; // "<eid>|<taskId>"
   var _reassVal = React.useState([]); var reassignVal = _reassVal[0], setReassignVal = _reassVal[1];
@@ -5734,6 +5735,14 @@ function CalendarView(props) {
                     )
                   : e("div", { style: { color: T.textM, fontSize: 10.5, marginTop: 2, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" } },
                       detalhes && e("span", null, detalhes),
+                      // [v10.7.4] Historico de alteracoes ao lado do lapis de reatribuir,
+                      // a pedido do usuario ("quero poder visualizar o botao de historico
+                      // na tela de calendario ao lado do lapis").
+                      onShowHistory && e("button", {
+                        title: "Ver histórico de alterações",
+                        onClick: function () { return onShowHistory(t); },
+                        style: { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 16, height: 16, border: "none", background: "transparent", color: T.textD, cursor: "pointer", flexShrink: 0 }
+                      }, e(Clock, { size: 10.5 })),
                       canReassign && e("button", {
                         title: "Reatribuir analista",
                         onClick: function () {
@@ -6018,6 +6027,8 @@ function WsDash(props) {
           Esteira: estLabel[t._eid] || t._eid || "",
           Prazo: t.deadline ? t.deadline.split("-").reverse().join("/") : "",
           "Data Credito": t.dataCredito ? t.dataCredito.split("-").reverse().join("/") : "",
+          // [v10.7.4] campo exclusivo da esteira "rescisao" — vazio nas demais.
+          "Data Desligamento": t.dataDesligamento ? t.dataDesligamento.split("-").reverse().join("/") : "",
           Situacao: t.status === "concluida" ? "Concluida" : (t.deadline && t.deadline < todayStr ? "ATRASADA" : "Pendente"),
           "Mes Ref": t.mes || "",
           Prioridade: t.priority || "",
@@ -8534,6 +8545,10 @@ var TaskTableRow = memo(function TaskTableRow(_refTR) {
       isDone && /*#__PURE__*/React.createElement("span", {
         style: { padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 600, color: "#22c55e", background: "rgba(34,197,94,0.1)" }
       }, "Conclu\xEDda"),
+      // [v10.7.4] Desligamento agrupado com Credito, sempre antes dele.
+      task.dataDesligamento && /*#__PURE__*/React.createElement("span", {
+        style: { fontSize: 11.5, color: T.textM }
+      }, "Desligamento ", fmtDate(task.dataDesligamento)),
       task.dataCredito && /*#__PURE__*/React.createElement("span", {
         style: { fontSize: 11.5, color: T.textM }
       }, "Cr\xE9dito ", fmtDate(task.dataCredito))
@@ -8676,6 +8691,8 @@ function App() {
       descricaoSolicitacao: "",
       mes: "",
       esteira: "",
+      // [v10.7.4] campo exclusivo da esteira "rescisao" (opcional)
+      dataDesligamento: "",
       repeat: false,
       repeatFreq: "mensal",
       repeatCount: 12
@@ -10676,6 +10693,8 @@ function App() {
                   Processo: t.processo || "",
                   Mes: t.mes ? fmtMonth(t.mes) : "",
                   Prazo: t.deadline ? fmtDate(t.deadline) : "",
+                  // [v10.7.4] campo exclusivo da esteira "rescisao" — vazio nas demais.
+                  "Data Desligamento": t.dataDesligamento ? fmtDate(t.dataDesligamento) : "",
                   Prioridade: ((_PRI$t$priority = PRI[t.priority]) === null || _PRI$t$priority === void 0 ? void 0 : _PRI$t$priority.label) || "",
                   Status: t.status === "concluida" ? "Concluida" : "Pendente",
                   "Concluido por": t.completedBy || "",
@@ -10915,7 +10934,9 @@ function App() {
                 situacao: form.situacao,
                 solicitacaoWorkflow: form.solicitacaoWorkflow,
                 descricaoSolicitacao: form.descricaoSolicitacao,
-                mes: form.mes
+                mes: form.mes,
+                // [v10.7.4] campos exclusivos da esteira "rescisao" (opcionais)
+                dataDesligamento: form.dataDesligamento
             };
             var _marca33 = _carimbarEdicaoManual(old, _upd33,
                              (sessionRef.current && sessionRef.current.name) || "");
@@ -10947,6 +10968,9 @@ function App() {
               _diffs.push('Sit.: "' + (old.situacao || '-') + '" \u2192 "' + (form.situacao || '-') + '"');
             if ((old.dataCredito || '') !== (form.dataCredito || ''))
               _diffs.push('Credito: ' + (fmtDate(old.dataCredito) || '-') + ' \u2192 ' + (fmtDate(form.dataCredito) || '-'));
+            // [v10.7.4] campos exclusivos da esteira "rescisao"
+            if ((old.dataDesligamento || '') !== (form.dataDesligamento || ''))
+              _diffs.push('Desligamento: ' + (fmtDate(old.dataDesligamento) || '-') + ' \u2192 ' + (fmtDate(form.dataDesligamento) || '-'));
             // [FIX v10.7.2 P-HISTORICO-MISTURADO] O log so guardava codigo (quando
             // existia) + titulo em texto livre. Tarefa sem codigo (comum em
             // importadas/antigas) so tinha o titulo — e titulo de tarefa rotineira se
@@ -10984,6 +11008,8 @@ function App() {
                 solicitacaoWorkflow: form.solicitacaoWorkflow,
                 descricaoSolicitacao: form.descricaoSolicitacao,
                 mes: shiftMonth(form.mes, form.repeatFreq, _ri),
+                // [v10.7.4] campos exclusivos da esteira "rescisao" (opcionais)
+                dataDesligamento: form.dataDesligamento,
                 status: "pendente",
                 createdAt: new Date().toISOString(),
                 createdBy: session.name,
@@ -11015,6 +11041,7 @@ function App() {
               descricaoSolicitacao: "",
               mes: "",
               esteira: "",
+              dataDesligamento: "",
               repeat: false,
               repeatFreq: "mensal",
               repeatCount: 12
@@ -11544,7 +11571,9 @@ function App() {
       situacao: t.situacao || "",
       solicitacaoWorkflow: t.solicitacaoWorkflow || "",
       descricaoSolicitacao: t.descricaoSolicitacao || "",
-      mes: t.mes || ""
+      mes: t.mes || "",
+      // [v10.7.4] campos exclusivos da esteira "rescisao" (opcionais)
+      dataDesligamento: t.dataDesligamento || ""
     });
     setEditId(t.id);
     if (isWS) setTab(t._eid);
@@ -11568,6 +11597,7 @@ function App() {
       descricaoSolicitacao: "",
       mes: "",
       esteira: "",
+      dataDesligamento: "",
       repeat: false,
       repeatFreq: "mensal",
       repeatCount: 12
@@ -11579,7 +11609,7 @@ function App() {
     setForm({
       title: "", responsibles: [], coordenador: "", gerente: "", deadline: "", dataCredito: "",
       priority: "alta", cliente: "", processo: "", situacao: "", solicitacaoWorkflow: "", descricaoSolicitacao: "", mes: "",
-      esteira: "", repeat: false, repeatFreq: "mensal", repeatCount: 12
+      esteira: "", dataDesligamento: "", repeat: false, repeatFreq: "mensal", repeatCount: 12
     });
   };
   // Edicao de tarefa recorrente: usuario escolheu "somente esta" — atualiza so a ocorrencia clicada
@@ -11605,7 +11635,9 @@ function App() {
         situacao: p.form.situacao,
         solicitacaoWorkflow: p.form.solicitacaoWorkflow,
         descricaoSolicitacao: p.form.descricaoSolicitacao,
-        mes: p.form.mes
+        mes: p.form.mes,
+        // [v10.7.4] campos exclusivos da esteira "rescisao" (opcionais)
+        dataDesligamento: p.form.dataDesligamento
     };
     var _marcaRS = _carimbarEdicaoManual(p.old, _updRS,
                     (sessionRef.current && sessionRef.current.name) || "");
@@ -11642,7 +11674,9 @@ function App() {
         processo: p.form.processo,
         situacao: p.form.situacao,
         solicitacaoWorkflow: p.form.solicitacaoWorkflow,
-        descricaoSolicitacao: p.form.descricaoSolicitacao
+        descricaoSolicitacao: p.form.descricaoSolicitacao,
+        // [v10.7.4] campo exclusivo da esteira "rescisao" (opcional)
+        dataDesligamento: p.form.dataDesligamento
     };
     var _quemRS = (sessionRef.current && sessionRef.current.name) || "";
     var nt = _objectSpread(_objectSpread({}, tasksRef.current), {}, _defineProperty({}, p.eid, (tasksRef.current[p.eid] || []).map(function (t) {
@@ -13459,6 +13493,7 @@ function App() {
     isCoord: isCoordUser(session, groups),
     esteiras: esteiras,
     onReassign: reassignResponsibles, // [v10.6.17]
+    onShowHistory: function onShowHistory(t) { return setSituacaoHistFor({ id: t.id, code: t.code, title: t.title }); }, // [v10.7.4]
     memberNames: userNames, // [v10.6.17]
     T: T
   })), /*#__PURE__*/React.createElement("div", {
@@ -14428,7 +14463,28 @@ function App() {
     value: "media"
   }, "Media"), /*#__PURE__*/React.createElement("option", {
     value: "baixa"
-  }, "Baixa")))), /*#__PURE__*/React.createElement(DetailsField, {
+  }, "Baixa")))),
+  // [v10.7.4] "Data Desligamento" — campo opcional exclusivo da esteira
+  // "rescisao", a pedido do usuario. So aparece quando a tarefa pertence a essa
+  // esteira (em modo workspace, olha o select "form.esteira"; nas abas normais,
+  // a propria aba "tab" ja E a esteira). ["Motivo" foi removido por pedido —
+  // "retirar por hora o campo motivo desligamento" — mas dataDesligamento
+  // continua valendo normalmente.]
+  (isWS ? form.esteira : tab) === "rescisao" && /*#__PURE__*/React.createElement("div", {
+    style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 10 }
+  },
+    /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: { fontSize: 11, color: T.textM, marginBottom: 4 }
+    }, "Data Desligamento"), /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      value: form.dataDesligamento,
+      onChange: function onChange(ev) {
+        var v = ev.target.value;
+        return setForm(function (f) { return _objectSpread(_objectSpread({}, f), {}, { dataDesligamento: v }); });
+      },
+      style: _objectSpread(_objectSpread({}, I), {}, { colorScheme: T.cs })
+    }))
+  ), /*#__PURE__*/React.createElement(DetailsField, {
     label: "Descri\u00E7\u00E3o Solicita\u00E7\u00E3o",
     value: form.descricaoSolicitacao,
     onChange: function onChange(v) {
