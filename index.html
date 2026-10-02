@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
   <meta http-equiv="Pragma" content="no-cache"/>
   <meta http-equiv="Expires" content="0"/>
-  <title>SinergyRH – Operação - 2026 (v10.7.4)</title>
+  <title>SinergyRH – Operação - 2026 (v10.7.5)</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -195,7 +195,7 @@ async function sbFetch(method, path, body) {
 
 // Carimbo de build — para confirmar instantaneamente qual versao esta no ar.
 // No console digite:  window.OP2026_BUILD   -> deve mostrar a string abaixo.
-window.OP2026_BUILD = "v10.7.4";
+window.OP2026_BUILD = "v10.7.5";
 try { console.log("%c[OP2026] build " + window.OP2026_BUILD + " carregado", "color:#10b981;font-weight:bold"); } catch (_) {}
 
 // Base KV original (usuarios, grupos, esteiras, lixeira, prefs) — inalterada.
@@ -1342,7 +1342,7 @@ window.testarV9 = async function () {
   const R = function (ok, label, extra) { console.log((ok ? "%c✓" : "%c✗") + " " + label + (extra ? "  → " + extra : ""), "color:" + (ok ? "#10b981" : "#ef4444") + ";font-weight:bold"); return ok; };
   console.log("%c===== DIAGNOSTICO v10 =====", "font-weight:bold;font-size:13px");
   // 1) build correto carregado?
-  R(window.OP2026_BUILD === "v10.7.4", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
+  R(window.OP2026_BUILD === "v10.7.5", "Build correto no ar", window.OP2026_BUILD || "(antigo/indefinido)");
   // 2) camada nova ativa? (window.storage trata tarefas pela tabela)
   R(window.storage && window.storage.get && window.storage.get.toString().indexOf("TASKS_PREFIX_SB") >= 0, "Camada de tarefas ativa (tabela)");
   // 3) tabela tasks existe e tem linhas?
@@ -10518,6 +10518,26 @@ function App() {
             });
             firstEst = Object.keys(preview.mapped)[0];
             mutate(next);
+            // [FIX v10.7.4 P-IMPORT-GRAVACAO-DUPLICADA] mutate() ja agenda, para CADA
+            // esteira alterada, um saveEsteira() com debounce de 50ms que chama
+            // window.storage.set()/_tasksSet() sozinho. O loop logo abaixo faz a SUA
+            // PROPRIA gravacao explicita (com 3 tentativas) para as mesmas esteiras.
+            // Sem isto, as duas gravacoes disparavam quase juntas para o MESMO lote
+            // de tarefas novas — duas chamadas a _tasksSet() concorrentes, cada uma
+            // com sua propria consulta de conferencia ao servidor (GET id=in.(...)
+            // com ate 200 ids). Em importacoes grandes essa dobra de carga fazia uma
+            // das duas consultas falhar, e a tarefa (ja gravada pela OUTRA chamada,
+            // por isso aparecia normalmente na tela) caia em _naoGravar32() com o
+            // aviso "a rede falhou na conferencia" -- alarme falso, mas que soava a
+            // cada importacao. Cancela aqui o agendamento automatico: so a gravacao
+            // explicita do import (mais abaixo) roda para estas esteiras.
+            Object.keys(preview.mapped).forEach(function (_eidCancel) {
+              if (saveTimersRef.current[_eidCancel]) {
+                clearTimeout(saveTimersRef.current[_eidCancel]);
+                delete saveTimersRef.current[_eidCancel];
+              }
+              delete savePendingRef.current[_eidCancel];
+            });
             anyFail = false;
             _i7 = 0, _Object$keys = Object.keys(preview.mapped);
           case 2:
